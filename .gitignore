@@ -1,0 +1,25 @@
+# Flutter/Dart
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+pubspec.lock
+
+# IDE
+.idea/
+*.iml
+.vscode/exceptions.json
+
+# Android
+android/.gradle/
+android/local.properties
+android/app/.cxx/
+*.jks
+*.keystore
+key.properties
+
+# 系统与临时
+Thumbs.db
+.DS_Store
+*.log

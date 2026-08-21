@@ -1,0 +1,25 @@
+name: bead_studio
+description: 拼豆图案工作室 - 图片导入/像素化/调色板量化/画布编辑/用料统计
+publish_to: "none"
+version: 0.1.0
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # 图像解码/编码/缩放（自带量化所需基础能力）
+  image: ^4.2.0
+  # 相册/拍照选图
+  image_picker: ^1.1.2
+  # 本地草稿目录
+  path_provider: ^2.1.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
