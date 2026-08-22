@@ -23,3 +23,12 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+  # 中文本地字体：引擎默认从 fonts.gstatic.com 拉 Noto Sans SC 分片（被墙则文字
+  # 布局阻塞重试、首帧画不出），打包为应用字体后彻底摆脱网络依赖
+  fonts:
+    - family: NotoSansSC
+      fonts:
+        - asset: assets/fonts/NotoSansSC-Regular.otf
+        - asset: assets/fonts/NotoSansSC-Bold.otf
+          weight: 700

@@ -18,6 +18,7 @@ class BeadStudioApp extends StatelessWidget {
         colorSchemeSeed: const Color(0xFF4FA8E8),
         useMaterial3: true,
         brightness: Brightness.light,
+        fontFamily: "NotoSansSC", // 本地打包字体，避免 web 端从 gstatic 拉中文分片被墙
       ),
       home: const ImportPage(),
     );
