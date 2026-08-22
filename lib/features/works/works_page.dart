@@ -1,0 +1,420 @@
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+
+import '../../core/draft_store.dart';
+import '../../core/palette.dart';
+import '../editor/editor_page.dart';
+import '../editor/grid_painter.dart';
+
+/// 作品库页：缩略图网格 + 分组筛选 + 重命名/移动/复制/删除 + 多选批量操作
+class WorksPage extends StatefulWidget {
+  final BeadPalette palette;
+
+  const WorksPage({super.key, required this.palette});
+
+  @override
+  State<WorksPage> createState() => _WorksPageState();
+}
+
+class _WorksPageState extends State<WorksPage> {
+  List<WorkEntry> _works = [];
+  var _loading = true;
+  String? _folderFilter; ///< null = 全部
+  var _multiSelect = false;
+  final Set<File> _selected = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
+  }
+
+  Future<void> _reload() async {
+    final works = await DraftStore.listWorks();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _works = works;
+      _loading = false;
+      _selected.clear();
+      if (_multiSelect && _selected.isEmpty) {
+        _multiSelect = false;
+      }
+    });
+  }
+
+  List<String> get _folders => _works.map((w) => w.folder).where((f) => f.isNotEmpty).toSet().toList()..sort();
+
+  List<WorkEntry> get _filtered => _folderFilter == null
+      ? _works
+      : _works.where((w) => w.folder == _folderFilter).toList();
+
+  // ==================== 操作 ====================
+
+  void _open(WorkEntry w) {
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => EditorPage(model: w.model, palette: widget.palette, sourceFile: w.file),
+      ),
+    );
+  }
+
+  Future<void> _rename(WorkEntry w) async {
+    final ctrl = TextEditingController(text: w.name);
+    final name = await _inputDialog("重命名", "作品名", ctrl);
+    if (name == null || name.trim().isEmpty) {
+      return;
+    }
+    await DraftStore.renameWork(w.file, name.trim());
+    _reload();
+  }
+
+  Future<void> _move(List<File> files) async {
+    final folders = _folders;
+    final folder = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text("移动到分组", style: Theme.of(sheetContext).textTheme.titleMedium),
+            ),
+            for (final f in folders)
+              ListTile(
+                leading: const Icon(Icons.folder_outlined),
+                title: Text(f),
+                onTap: () => Navigator.of(sheetContext).pop(f),
+              ),
+            ListTile(
+              leading: const Icon(Icons.folder_off_outlined),
+              title: const Text("未分组"),
+              onTap: () => Navigator.of(sheetContext).pop(""),
+            ),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.create_new_folder_outlined),
+              title: const Text("新建分组"),
+              onTap: () async {
+                final name = await _inputDialog("新建分组", "分组名", TextEditingController());
+                if (!sheetContext.mounted) {
+                  return;
+                }
+                Navigator.of(sheetContext).pop(name?.trim().isEmpty == true ? null : name?.trim());
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+    if (folder == null) {
+      return;
+    }
+    for (final f in files) {
+      await DraftStore.moveWork(f, folder);
+    }
+    _reload();
+  }
+
+  Future<void> _copy(WorkEntry w) async {
+    await DraftStore.copyWork(w.file);
+    _reload();
+  }
+
+  Future<void> _delete(List<File> files) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(files.length == 1 ? "删除作品？" : "删除 ${files.length} 个作品？"),
+        content: const Text("删除后无法恢复"),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text("取消")),
+          FilledButton(onPressed: () => Navigator.of(dialogContext).pop(true), child: const Text("删除")),
+        ],
+      ),
+    );
+    if (ok != true) {
+      return;
+    }
+    for (final f in files) {
+      await DraftStore.deleteWork(f);
+    }
+    _reload();
+  }
+
+  /// 单行输入对话框，取消返回 null
+  Future<String?> _inputDialog(String title, String hint, TextEditingController ctrl) {
+    return showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: InputDecoration(hintText: hint, border: const OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text("取消")),
+          FilledButton(onPressed: () => Navigator.of(dialogContext).pop(ctrl.text), child: const Text("确定")),
+        ],
+      ),
+    );
+  }
+
+  void _toggleSelect(File f) => setState(() {
+        if (_selected.contains(f)) {
+          _selected.remove(f);
+        } else {
+          _selected.add(f);
+        }
+        if (_selected.isEmpty) {
+          _multiSelect = false;
+        }
+      });
+
+  // ==================== UI ====================
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: _multiSelect ? Text("已选 ${_selected.length} 项") : const Text("我的作品"),
+        actions: [
+          if (_multiSelect)
+            IconButton(
+              onPressed: () => setState(() {
+                _multiSelect = false;
+                _selected.clear();
+              }),
+              icon: const Icon(Icons.close),
+              tooltip: "退出多选",
+            )
+          else
+            IconButton(
+              onPressed: () async {
+                final name = await _inputDialog("新建分组", "分组名", TextEditingController());
+                if (name == null || name.trim().isEmpty) {
+                  return;
+                }
+                setState(() => _folderFilter = name.trim());
+              },
+              icon: const Icon(Icons.create_new_folder_outlined),
+              tooltip: "新建分组",
+            ),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : Column(
+              children: [
+                _buildFolderBar(),
+                Expanded(child: _filtered.isEmpty ? _buildEmpty() : _buildGrid()),
+                if (_multiSelect) _buildBatchBar(),
+              ],
+            ),
+    );
+  }
+
+  /// 分组筛选条
+  Widget _buildFolderBar() {
+    final folders = _folders;
+    if (folders.isEmpty && _folderFilter == null) {
+      return const SizedBox.shrink();
+    }
+    return SizedBox(
+      height: 48,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(right: 6),
+            child: FilterChip(
+              label: const Text("全部"),
+              selected: _folderFilter == null,
+              onSelected: (_) => setState(() => _folderFilter = null),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(right: 6),
+            child: FilterChip(
+              label: const Text("未分组"),
+              selected: _folderFilter == "",
+              onSelected: (_) => setState(() => _folderFilter = ""),
+            ),
+          ),
+          for (final f in folders)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: FilterChip(
+                label: Text(f),
+                selected: _folderFilter == f,
+                onSelected: (_) => setState(() => _folderFilter = f),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmpty() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.collections_outlined, size: 72, color: Colors.black26),
+          const SizedBox(height: 16),
+          Text(_folderFilter == null ? "还没有作品，去导入图片生成一个吧" : "该分组下暂无作品"),
+        ],
+      ),
+    );
+  }
+
+  /// 缩略图网格
+  Widget _buildGrid() {
+    return GridView.builder(
+      padding: const EdgeInsets.all(12),
+      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+        maxCrossAxisExtent: 160,
+        mainAxisSpacing: 12,
+        crossAxisSpacing: 12,
+        childAspectRatio: 0.82, // 缩略图 + 名字 + 尺寸行
+      ),
+      itemCount: _filtered.length,
+      itemBuilder: (context, i) {
+        final w = _filtered[i];
+        final checked = _selected.contains(w.file);
+        return GestureDetector(
+          onTap: () {
+            if (_multiSelect) {
+              _toggleSelect(w.file);
+            } else {
+              _open(w);
+            }
+          },
+          onLongPress: () {
+            setState(() {
+              _multiSelect = true;
+              _selected.add(w.file);
+            });
+          },
+          child: Card(
+            clipBehavior: Clip.antiAlias,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Stack(
+                  children: [
+                    AspectRatio(
+                      aspectRatio: 1,
+                      child: Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: CustomPaint(
+                          size: Size.infinite,
+                          painter: GridPainter(model: w.model, palette: widget.palette, selectedColorIndex: -1),
+                        ),
+                      ),
+                    ),
+                    if (checked)
+                      Positioned.fill(
+                        child: Container(
+                          color: Colors.blue.withValues(alpha: 0.25),
+                          child: const Icon(Icons.check_circle, color: Colors.blue, size: 32),
+                        ),
+                      ),
+                    if (!_multiSelect)
+                      Positioned(
+                        top: 0,
+                        right: 0,
+                        child: SizedBox(
+                          width: 32,
+                          height: 32,
+                          child: PopupMenuButton<String>(
+                            padding: EdgeInsets.zero,
+                            iconSize: 18,
+                            onSelected: (action) {
+                              switch (action) {
+                                case "open":
+                                  _open(w);
+                                case "rename":
+                                  _rename(w);
+                                case "move":
+                                  _move([w.file]);
+                                case "copy":
+                                  _copy(w);
+                                case "delete":
+                                  _delete([w.file]);
+                              }
+                            },
+                            itemBuilder: (menuContext) => const [
+                              PopupMenuItem(value: "open", child: Text("打开")),
+                              PopupMenuItem(value: "rename", child: Text("重命名")),
+                              PopupMenuItem(value: "move", child: Text("移动到分组")),
+                              PopupMenuItem(value: "copy", child: Text("复制")),
+                              PopupMenuItem(value: "delete", child: Text("删除")),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 4, 8, 6),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        w.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      Text(
+                        "${w.model.width}×${w.model.height} · ${_fmtTime(w.updatedAt)}",
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.black45, fontSize: 10),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// 多选模式底部批量操作条
+  Widget _buildBatchBar() {
+    return SafeArea(
+      child: BottomAppBar(
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceAround,
+          children: [
+            TextButton.icon(
+              onPressed: _selected.isEmpty ? null : () => _move(_selected.toList()),
+              icon: const Icon(Icons.drive_file_move_outlined),
+              label: const Text("移动"),
+            ),
+            TextButton.icon(
+              onPressed: _selected.isEmpty ? null : () => _delete(_selected.toList()),
+              icon: const Icon(Icons.delete_outline),
+              label: const Text("删除"),
+            ),
+            TextButton(
+              onPressed: _filtered.isEmpty || _selected.length == _filtered.length
+                  ? null
+                  : () => setState(() => _selected.addAll(_filtered.map((w) => w.file))),
+              child: const Text("全选"),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _fmtTime(DateTime t) => "${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')} ${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}";
+}

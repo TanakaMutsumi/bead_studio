@@ -31,8 +31,9 @@ class _Snapshot {
 class EditorPage extends StatefulWidget {
   final PatternModel model;
   final BeadPalette palette;
+  final File? sourceFile; ///< 来源作品文件（作品库打开时传入：保存=覆写而非另存）
 
-  const EditorPage({super.key, required this.model, required this.palette});
+  const EditorPage({super.key, required this.model, required this.palette, this.sourceFile});
 
   @override
   State<EditorPage> createState() => _EditorPageState();
@@ -322,9 +323,10 @@ class _EditorPageState extends State<EditorPage> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("网页版暂不支持本地草稿")));
       return;
     }
-    final file = await DraftStore.save(_model);
+    // 从作品库打开的：覆写原文件（保留名字/分组），否则另存新作品
+    final file = await DraftStore.saveWork(_model, overwrite: widget.sourceFile);
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("草稿已保存：${file.path.split(Platform.pathSeparator).last}")));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(widget.sourceFile != null ? "作品已更新" : "已保存到作品库：${file.path.split(Platform.pathSeparator).last}")));
     }
   }
 

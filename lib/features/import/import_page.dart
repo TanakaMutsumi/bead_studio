@@ -1,15 +1,13 @@
-import 'dart:io';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
-import '../../core/draft_store.dart';
 import '../../core/pixel_engine.dart';
 import '../../core/quantizer.dart';
 import '../../data/demo_palette.dart';
 import '../editor/editor_page.dart';
 import '../restore/restore_page.dart';
+import '../works/works_page.dart';
 
 /// 导入页：选图 -> 选板尺寸/抖动 -> 转换进编辑器；支持打开历史草稿
 class ImportPage extends StatefulWidget {
@@ -75,57 +73,12 @@ class _ImportPageState extends State<ImportPage> {
 
   Future<void> _openDrafts() async {
     if (kIsWeb) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("网页版暂不支持本地草稿")));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("网页版暂不支持本地作品库")));
       return;
     }
-    final files = await DraftStore.list();
-    if (!mounted) {
-      return;
-    }
-    if (files.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("暂无草稿")));
-      return;
-    }
-    await showModalBottomSheet<void>(
-      context: context,
-      builder: (sheetContext) => SafeArea(
-        child: ListView(
-          children: [
-            for (final f in files)
-              ListTile(
-                leading: const Icon(Icons.drafts_outlined),
-                title: Text(f.path.split(Platform.pathSeparator).last),
-                subtitle: Text(_fmtTime(f)),
-                onTap: () async {
-                  final model = await DraftStore.read(f);
-                  if (!sheetContext.mounted) {
-                    return;
-                  }
-                  Navigator.of(sheetContext).pop();
-                  if (!mounted) {
-                    return;
-                  }
-                  await Navigator.of(context).pushReplacement(
-                    MaterialPageRoute(builder: (_) => EditorPage(model: model, palette: demoPalette)),
-                  );
-                },
-              ),
-          ],
-        ),
-      ),
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const WorksPage(palette: demoPalette)),
     );
-  }
-
-  String _fmtTime(File f) {
-    final name = f.path.split(Platform.pathSeparator).last;
-    // draft_YYYYMMDD_HHMMSS.json -> YYYY-MM-DD HH:MM:SS
-    if (name.startsWith("draft_") && name.length >= 24) {
-      final d = name.substring(6, 14);
-      final t = name.substring(15, 21);
-      return "${d.substring(0, 4)}-${d.substring(4, 6)}-${d.substring(6, 8)} "
-          "${t.substring(0, 2)}:${t.substring(2, 4)}:${t.substring(4, 6)}";
-    }
-    return "";
   }
 
   @override
