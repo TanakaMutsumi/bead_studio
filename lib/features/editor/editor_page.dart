@@ -6,7 +6,6 @@ import 'package:path_provider/path_provider.dart';
 import '../../core/draft_store.dart';
 import '../../core/palette.dart';
 import '../../core/pattern_model.dart';
-import '../../data/demo_palette.dart';
 import '../stats/stats_page.dart';
 import 'grid_painter.dart';
 

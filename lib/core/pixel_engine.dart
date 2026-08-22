@@ -11,6 +11,12 @@ import 'palette.dart';
 import 'pattern_model.dart';
 import 'quantizer.dart';
 
+/// 源图裁剪区域（像素坐标）——image 4.x 无 Rect 公共类，自定义轻量版
+class SourceRect {
+  final int x, y, width, height;
+  const SourceRect(this.x, this.y, this.width, this.height);
+}
+
 class PixelEngine {
   final BeadPalette palette;
 
@@ -20,12 +26,12 @@ class PixelEngine {
   ///
   /// [boardSize] 板边长（如 26/29/52/78）
   /// [dither] 是否开启 Floyd–Steinberg 抖动
-  /// [sourceRect] 可选裁剪区域（像素坐标，null = 整图）
+  /// [sourceRect] 可选裁剪区域（像素坐标，null = 取中心最大正方形）
   PatternModel convert({
     required Uint8List bytes,
     required int boardSize,
     bool dither = false,
-    img.Rect? sourceRect,
+    SourceRect? sourceRect,
   }) {
     final decoded = img.decodeImage(bytes);
     if (decoded == null) {
@@ -73,10 +79,10 @@ class PixelEngine {
   }
 
   /// 取中心最大正方形
-  img.Rect _centerSquare(img.Image image) {
+  SourceRect _centerSquare(img.Image image) {
     final side = image.width < image.height ? image.width : image.height;
     final x = (image.width - side) ~/ 2;
     final y = (image.height - side) ~/ 2;
-    return img.Rect(x, y, x + side, y + side);
+    return SourceRect(x, y, side, side);
   }
 }

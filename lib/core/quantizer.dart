@@ -12,7 +12,7 @@ import 'palette.dart';
 /// 把 RGB 转 CIE Lab（人眼感知较均匀的空间，匹配效果优于 RGB 距离）
 List<double> _rgbToLab(int r, int g, int b) {
   // sRGB -> 线性化
-  double f(double c) {
+  double f(num c) {
     final v = c / 255.0;
     return v <= 0.04045 ? v / 12.92 : math.pow((v + 0.055) / 1.055, 2.4).toDouble();
   }
@@ -28,9 +28,9 @@ List<double> _rgbToLab(int r, int g, int b) {
   x /= 0.95047;
   z /= 1.08883;
 
-  double g(double t) => t > 0.008856 ? math.pow(t, 1.0 / 3.0).toDouble() : 7.787 * t + 16.0 / 116.0;
+  double pivot(double t) => t > 0.008856 ? math.pow(t, 1.0 / 3.0).toDouble() : 7.787 * t + 16.0 / 116.0;
 
-  final fx = g(x), fy = g(y), fz = g(z);
+  final fx = pivot(x), fy = pivot(y), fz = pivot(z);
 
   return [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)];
 }

@@ -15,8 +15,8 @@ class GridPainter extends CustomPainter {
     required this.model,
     required this.palette,
     required this.selectedColorIndex,
-    Listenable? repaint,
-  }) : super(repaint: repaint);
+    super.repaint,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {

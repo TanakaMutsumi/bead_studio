@@ -4,8 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../core/draft_store.dart';
-import '../../core/palette.dart';
-import '../../core/pattern_model.dart';
 import '../../core/pixel_engine.dart';
 import '../../data/demo_palette.dart';
 import '../editor/editor_page.dart';
