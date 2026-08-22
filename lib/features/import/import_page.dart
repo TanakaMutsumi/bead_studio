@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -20,6 +21,7 @@ class _ImportPageState extends State<ImportPage> {
   static const _boardSizes = [26, 29, 52, 78];
 
   XFile? _pickedFile;
+  Uint8List? _pickedBytes; ///< 跨平台图片字节（web 上 XFile.path 是 blob URL 不能走 dart:io）
   var _boardSize = 52;
   var _dither = false;
   var _converting = false;
@@ -28,8 +30,10 @@ class _ImportPageState extends State<ImportPage> {
     final picker = ImagePicker();
     final picked = await picker.pickImage(source: source, imageQuality: 100);
     if (picked != null) {
+      final bytes = await picked.readAsBytes();
       setState(() {
         _pickedFile = picked;
+        _pickedBytes = bytes;
       });
     }
   }
@@ -42,7 +46,7 @@ class _ImportPageState extends State<ImportPage> {
       _converting = true;
     });
     try {
-      final bytes = File(_pickedFile!.path).readAsBytesSync();
+      final bytes = _pickedBytes!;
       final model = PixelEngine(demoPalette).convert(
         bytes: bytes,
         boardSize: _boardSize,
@@ -68,6 +72,10 @@ class _ImportPageState extends State<ImportPage> {
   }
 
   Future<void> _openDrafts() async {
+    if (kIsWeb) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("网页版暂不支持本地草稿")));
+      return;
+    }
     final files = await DraftStore.list();
     if (!mounted) {
       return;
@@ -130,7 +138,7 @@ class _ImportPageState extends State<ImportPage> {
           // 预览区
           AspectRatio(
             aspectRatio: 1,
-            child: _pickedFile == null
+            child: _pickedBytes == null
                 ? Container(
                     decoration: BoxDecoration(
                       color: Theme.of(context).colorScheme.surface,
@@ -141,7 +149,7 @@ class _ImportPageState extends State<ImportPage> {
                   )
                 : ClipRRect(
                     borderRadius: BorderRadius.circular(12),
-                    child: Image.file(File(_pickedFile!.path), fit: BoxFit.cover),
+                    child: Image.memory(_pickedBytes!, fit: BoxFit.cover),
                   ),
           ),
           const SizedBox(height: 12),

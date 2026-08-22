@@ -1,9 +1,11 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../../core/draft_store.dart';
+import '../../core/file_saver.dart';
 import '../../core/palette.dart';
 import '../../core/pattern_model.dart';
 import '../stats/stats_page.dart';
@@ -88,6 +90,10 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   Future<void> _saveDraft() async {
+    if (kIsWeb) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("网页版暂不支持本地草稿")));
+      return;
+    }
     final file = await DraftStore.save(_model);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("草稿已保存：${file.path.split(Platform.pathSeparator).last}")));
@@ -96,6 +102,13 @@ class _EditorPageState extends State<EditorPage> {
 
   Future<void> _exportPng() async {
     final bytes = _model.exportPng(cellPixels: 24, palette: widget.palette);
+    if (kIsWeb) {
+      await downloadBytes(bytes, "pattern_${DateTime.now().millisecondsSinceEpoch}.png");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("已触发浏览器下载")));
+      }
+      return;
+    }
     final root = await getApplicationDocumentsDirectory();
     final dir = Directory("${root.path}${Platform.pathSeparator}bead_exports")..createSync(recursive: true);
     final file = File("${dir.path}${Platform.pathSeparator}pattern_${DateTime.now().millisecondsSinceEpoch}.png");
