@@ -10,11 +10,15 @@ class GridPainter extends CustomPainter {
   final PatternModel model;
   final BeadPalette palette;
   final int selectedColorIndex; ///< 当前选中色（画布上描高亮框提示）
+  final Rect? selectionRect; ///< 矩形选区（画布坐标，null = 无）
+  final int? highlightIndex; ///< 拼装模式高亮色索引（null = 关闭；其余色降饱和显示）
 
   GridPainter({
     required this.model,
     required this.palette,
     required this.selectedColorIndex,
+    this.selectionRect,
+    this.highlightIndex,
     super.repaint,
   });
 
@@ -41,7 +45,12 @@ class GridPainter extends CustomPainter {
         if (c == null) {
           continue;
         }
-        gridPaint.color = Color.fromARGB(255, c.r, c.g, c.b);
+        var color = Color.fromARGB(255, c.r, c.g, c.b);
+        // 拼装模式：非高亮色混入深灰降饱和，让目标色一眼可见
+        if (highlightIndex != null && v != highlightIndex) {
+          color = Color.lerp(color, const Color.fromARGB(255, 0x30, 0x30, 0x30), 0.65)!;
+        }
+        gridPaint.color = color;
         canvas.drawRect(Rect.fromLTWH(x * cell, y * cell, cell, cell), gridPaint);
       }
     }
@@ -55,12 +64,28 @@ class GridPainter extends CustomPainter {
       final p = (y * cell);
       canvas.drawLine(Offset(0, p), Offset(size.width, p), y % 10 == 0 ? majorLinePaint : linePaint);
     }
+
+    // 矩形选区高亮
+    final sel = selectionRect;
+    if (sel != null) {
+      final fill = Paint()
+        ..color = Colors.blue.withValues(alpha: 0.15)
+        ..style = PaintingStyle.fill;
+      final border = Paint()
+        ..color = Colors.blue
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2;
+      canvas.drawRect(sel, fill);
+      canvas.drawRect(sel, border);
+    }
   }
 
   @override
   bool shouldRepaint(covariant GridPainter oldDelegate) {
     return oldDelegate.model != model ||
         oldDelegate.selectedColorIndex != selectedColorIndex ||
-        oldDelegate.palette != palette;
+        oldDelegate.palette != palette ||
+        oldDelegate.selectionRect != selectionRect ||
+        oldDelegate.highlightIndex != highlightIndex;
   }
 }

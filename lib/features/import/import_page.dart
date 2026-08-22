@@ -6,8 +6,10 @@ import 'package:image_picker/image_picker.dart';
 
 import '../../core/draft_store.dart';
 import '../../core/pixel_engine.dart';
+import '../../core/quantizer.dart';
 import '../../data/demo_palette.dart';
 import '../editor/editor_page.dart';
+import '../restore/restore_page.dart';
 
 /// 导入页：选图 -> 选板尺寸/抖动 -> 转换进编辑器；支持打开历史草稿
 class ImportPage extends StatefulWidget {
@@ -23,7 +25,7 @@ class _ImportPageState extends State<ImportPage> {
   XFile? _pickedFile;
   Uint8List? _pickedBytes; ///< 跨平台图片字节（web 上 XFile.path 是 blob URL 不能走 dart:io）
   var _boardSize = 52;
-  var _dither = false;
+  var _kernel = DitherKernel.none;
   var _converting = false;
 
   Future<void> _pickImage(ImageSource source) async {
@@ -50,7 +52,7 @@ class _ImportPageState extends State<ImportPage> {
       final model = PixelEngine(demoPalette).convert(
         bytes: bytes,
         boardSize: _boardSize,
-        dither: _dither,
+        kernel: _kernel,
       );
       if (!mounted) {
         return;
@@ -130,6 +132,13 @@ class _ImportPageState extends State<ImportPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text("拼豆图案工作室"), actions: [
+        IconButton(
+          onPressed: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const RestorePage()),
+          ),
+          icon: const Icon(Icons.document_scanner),
+          tooltip: "图纸还原",
+        ),
         IconButton(onPressed: _openDrafts, icon: const Icon(Icons.folder_open), tooltip: "打开草稿"),
       ]),
       body: ListView(
@@ -186,13 +195,31 @@ class _ImportPageState extends State<ImportPage> {
           Text("$_boardSize×$_boardSize = ${_boardSize * _boardSize} 颗", style: Theme.of(context).textTheme.bodySmall),
           const SizedBox(height: 12),
 
-          // 抖动开关
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text("抖动（渐变过渡更自然）"),
-            subtitle: const Text("关闭则色块干净、断层明显"),
-            value: _dither,
-            onChanged: (v) => setState(() => _dither = v),
+          // 抖动核选择
+          const Text("抖动算法", style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SegmentedButton<DitherKernel>(
+              segments: const [
+                ButtonSegment(value: DitherKernel.none, label: Text("无")),
+                ButtonSegment(value: DitherKernel.floydSteinberg, label: Text("FS")),
+                ButtonSegment(value: DitherKernel.atkinson, label: Text("Atkinson")),
+                ButtonSegment(value: DitherKernel.ordered, label: Text("有序")),
+              ],
+              selected: {_kernel},
+              onSelectionChanged: (sel) => setState(() => _kernel = sel.first),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            switch (_kernel) {
+              DitherKernel.none => "色块干净，渐变断层明显",
+              DitherKernel.floydSteinberg => "误差扩散，渐变过渡自然",
+              DitherKernel.atkinson => "扩散更强，整体更亮更均匀",
+              DitherKernel.ordered => "网点风格，无误差累积",
+            },
+            style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 20),
 

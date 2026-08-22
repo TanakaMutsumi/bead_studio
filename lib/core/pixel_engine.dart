@@ -25,12 +25,12 @@ class PixelEngine {
   /// 图片字节 -> 拼豆图案
   ///
   /// [boardSize] 板边长（如 26/29/52/78）
-  /// [dither] 是否开启 Floyd–Steinberg 抖动
+  /// [kernel] 抖动核（none = 每像素独立最近色）
   /// [sourceRect] 可选裁剪区域（像素坐标，null = 取中心最大正方形）
   PatternModel convert({
     required Uint8List bytes,
     required int boardSize,
-    bool dither = false,
+    DitherKernel kernel = DitherKernel.none,
     SourceRect? sourceRect,
   }) {
     final decoded = img.decodeImage(bytes);
@@ -72,7 +72,7 @@ class PixelEngine {
       pixelsB: pb,
       width: boardSize,
       height: boardSize,
-      dither: dither,
+      kernel: kernel,
     );
 
     return PatternModel(width: boardSize, height: boardSize, grid: grid, paletteIds: [for (final c in palette.colors) c.id]);
