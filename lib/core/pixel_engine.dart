@@ -7,6 +7,7 @@ import 'dart:typed_data';
 
 import 'package:image/image.dart' as img;
 
+import 'decode_image.dart';
 import 'palette.dart';
 import 'pattern_model.dart';
 import 'quantizer.dart';
@@ -27,16 +28,15 @@ class PixelEngine {
   /// [boardSize] 板边长（如 26/29/52/78）
   /// [kernel] 抖动核（none = 每像素独立最近色）
   /// [sourceRect] 可选裁剪区域（像素坐标，null = 取中心最大正方形）
-  PatternModel convert({
+  ///
+  /// 解码走 decodeImageRobust（image 包优先 + Skia 回退，兼容微信渐进式 JPEG）
+  Future<PatternModel> convert({
     required Uint8List bytes,
     required int boardSize,
     DitherKernel kernel = DitherKernel.none,
     SourceRect? sourceRect,
-  }) {
-    final decoded = img.decodeImage(bytes);
-    if (decoded == null) {
-      throw const FormatException("无法解码图片（支持 JPG/PNG/WebP/BMP）");
-    }
+  }) async {
+    final decoded = await decodeImageRobust(bytes);
 
     // 1. 裁剪（未指定则取中心最大正方形）
     final rect = sourceRect ?? _centerSquare(decoded);

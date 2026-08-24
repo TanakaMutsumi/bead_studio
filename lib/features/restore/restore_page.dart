@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 
+import '../../core/decode_image.dart';
 import '../../core/grid_detector.dart';
 import '../../core/palette.dart';
 import '../../core/palette_registry.dart';
@@ -117,23 +118,27 @@ class _RestorePageState extends State<RestorePage> {
       return;
     }
     final bytes = await picked.readAsBytes();
-    final decoded = img.decodeImage(bytes);
-    if (decoded == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("无法解码图片")));
+    try {
+      final decoded = await decodeImageRobust(bytes);
+      if (!mounted) {
+        return;
       }
-      return;
+      setState(() {
+        _bytes = bytes;
+        _image = decoded;
+        _legendSel = null;
+        _selDisplay = null;
+        _legend = [];
+        _pitchX = 0;
+        _model = null;
+        _stage = _Stage.legend;
+      });
+    } catch (e) {
+      // 解码失败必须弹提示（曾经异常被吞表现为"选图无反应"）
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("无法解码图片: $e")));
+      }
     }
-    setState(() {
-      _bytes = bytes;
-      _image = decoded;
-      _legendSel = null;
-      _selDisplay = null;
-      _legend = [];
-      _pitchX = 0;
-      _model = null;
-      _stage = _Stage.legend;
-    });
   }
 
   // ==================== 坐标换算 ====================

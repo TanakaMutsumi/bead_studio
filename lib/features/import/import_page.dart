@@ -87,7 +87,7 @@ class _ImportPageState extends State<ImportPage> {
     });
     try {
       final bytes = _pickedBytes!;
-      final model = PixelEngine(_palette).convert(
+      final model = await PixelEngine(_palette).convert(
         bytes: bytes,
         boardSize: _boardSize,
         kernel: _kernel,
