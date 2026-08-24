@@ -345,8 +345,10 @@ class _RestorePageState extends State<RestorePage> {
     }
     try {
       final crop = img.copyCrop(image, x: rx.toInt(), y: ry.toInt(), width: rw.toInt(), height: rh.toInt());
-      // 小字放大提高识别率（原图数字高约 15-20px，×3 后 ~60px）
-      final scaled = img.copyResize(crop, width: crop.width * 3);
+      // 小字放大提高识别率：按高度放大到 ~480px（数字高 ~60px+）。
+      // 固定 ×3 在小选区（裁剪后图例条带小）下分辨率不足，数字 64 会误读成 61
+      final scale = (480 / rh).clamp(2, 6);
+      final scaled = img.copyResize(crop, width: (crop.width * scale).round());
       final tmp = File("${(await getTemporaryDirectory()).path}/legend_ocr.png");
       await tmp.writeAsBytes(img.encodePng(scaled));
 
@@ -449,10 +451,12 @@ class _RestorePageState extends State<RestorePage> {
         if (dx > avgH * 3) {
           continue; // 水平接近（同列附近），不跨到邻条目
         }
+        // 水平距离优先：正下方布局里水平对齐是本质特征；top 只差 OCR 框
+        // 噪声几像素，若 top 优先会把邻条目的颗数抢过来（H2 抢到 H3 的 31）
         if (best == null ||
-            n.rect.top < best.rect.top ||
-            (n.rect.top == best.rect.top &&
-                dx < (best.rect.center.dx - c.rect.center.dx).abs())) {
+            dx < (best.rect.center.dx - c.rect.center.dx).abs() ||
+            (dx == (best.rect.center.dx - c.rect.center.dx).abs() &&
+                n.rect.top < best.rect.top)) {
           best = n;
         }
       }
