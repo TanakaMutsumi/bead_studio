@@ -117,8 +117,8 @@ class _RestorePageState extends State<RestorePage> {
     if (picked == null) {
       return;
     }
-    final bytes = await picked.readAsBytes();
     try {
+      final bytes = await picked.readAsBytes();
       final decoded = await decodeImageRobust(bytes);
       if (!mounted) {
         return;
