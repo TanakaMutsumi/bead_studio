@@ -10,6 +10,7 @@ import '../../core/grid_ops.dart';
 import '../../core/palette.dart';
 import '../../core/pattern_model.dart';
 import '../../core/quantizer.dart';
+import '../preview/preview_page.dart';
 import '../stats/stats_page.dart';
 import 'grid_painter.dart';
 import 'sheets.dart';
@@ -435,6 +436,13 @@ class _EditorPageState extends State<EditorPage> {
             }),
             icon: Icon(_boardMode ? Icons.view_module : Icons.view_module_outlined),
             tooltip: _boardMode ? "退出分板模式" : "分板拼装",
+          ),
+          IconButton(
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => PreviewPage(model: _model, palette: widget.palette)),
+            ),
+            icon: const Icon(Icons.view_in_ar_outlined),
+            tooltip: "预览",
           ),
           IconButton(
             onPressed: () => Navigator.of(context).push(
