@@ -35,6 +35,17 @@ const Map<String, List<String>> _ocrConfusions = {
   "4": ["A"], "A": ["4"],
 };
 
+/// 图例 OCR 识别元素（色号或颗数，带几何框供跨行配对）
+class _OcrElem {
+  final int seq; ///< 收集序（block/line/element 遍历序，保底配对用）
+  final Rect rect; ///< 元素框（放大图坐标系；个别平台可能退化为 0 框）
+  final int? code; ///< 色号 -> 调色板索引（与 count 互斥）
+  final int? count; ///< 颗数
+  bool used = false; ///< 已被配对消费（数字侧）
+  int? pairedCount; ///< 色号侧配到的颗数
+  _OcrElem(this.seq, this.rect, this.code, this.count);
+}
+
 /// 图例条目：图纸图例里识别出的一个用色
 class _LegendEntry {
   final int paletteIndex; ///< 调色板索引
@@ -320,8 +331,9 @@ class _RestorePageState extends State<RestorePage> {
 
   /// OCR 图例选区 -> [(印刷色号调色板索引, 印刷颗数)] 按阅读顺序
   ///
-  /// 图纸图例每条目 = 色块 + 色号 + 颗数（印刷数字）。裁剪选区放大 3 倍喂 ML Kit，
-  /// 行内按「色号 element -> 其后最近的数字 element」配对。
+  /// 图纸图例每条目 = 色块 + 色号 + 颗数（印刷数字）；颗数有时跟在色号右侧同行，
+  /// 有时印在色号/色块正下方。裁剪选区放大 3 倍喂 ML Kit，先收集全部色号/颗数
+  /// element（带几何框），再走 [_pairLegendOcr] 两轮配对。
   /// web 平台不可用 / 异常 / 无配对时返回 null（调用方回退色块量化清单）。
   Future<List<(int, int)>?> _ocrLegendPairs(double rx, double ry, double rw, double rh) async {
     if (kIsWeb) {
@@ -352,32 +364,129 @@ class _RestorePageState extends State<RestorePage> {
         }
       }
 
-      final pairs = <(int, int)>[];
+      // 收集全部色号/颗数元素（带几何框：颗数可能在色号下一行，纯行内序配不上）
+      final elems = <_OcrElem>[];
+      var seq = 0;
       for (final block in recognized.blocks) {
         for (final line in block.lines) {
-          int? current;
           for (final element in line.elements) {
             final text = element.text.trim().toUpperCase().replaceAll(" ", "");
             // 色号最多 4 字符（A1/H12 型），长文本是正文/杂项不做色号
             if (text.length <= 4) {
               final code = codeMap[text];
               if (code != null) {
-                current = code; // 色号：开始等待它的颗数
+                elems.add(_OcrElem(seq++, element.boundingBox, code, null));
                 continue;
               }
             }
             final n = _parseCountText(element.text);
-            if (n != null && current != null) {
-              pairs.add((current, n));
-              current = null; // 一条色号只配第一个数字，防后续串号
+            if (n != null) {
+              elems.add(_OcrElem(seq++, element.boundingBox, null, n));
             }
           }
         }
       }
-      return pairs;
+      return _pairLegendOcr(elems);
     } catch (_) {
       return null;
     }
+  }
+
+  /// 色号与颗数配对（两轮，几何驱动）
+  ///
+  /// 轮 1：颗数与色号同行且在其右侧 -> 最近者配对（A6 64 型布局）；
+  /// 轮 2：未配色号找正下方紧邻数字（垂直近 + 水平接近，H2/118 型布局），
+  ///       按色号从下往上处理——下方行的色号先消费下方数字，避免上一行
+  ///       漏配的色号抢走下一行的颗数。
+  /// 几何框缺失（个别平台 rect 退化）时退回收集序「色号后第一个数字」。
+  List<(int, int)> _pairLegendOcr(List<_OcrElem> elems) {
+    final codes = elems.where((e) => e.code != null).toList();
+    final nums = elems.where((e) => e.count != null).toList();
+    if (codes.isEmpty || nums.isEmpty) {
+      return const [];
+    }
+    final heights = [for (final e in elems) if (e.rect.height > 0) e.rect.height];
+    if (heights.isEmpty) {
+      return _pairInSeqOrder(codes, nums);
+    }
+    final avgH = heights.reduce((a, b) => a + b) / heights.length;
+
+    // 轮 1：同行右侧最近的未消费数字
+    for (final c in codes) {
+      _OcrElem? best;
+      for (final n in nums) {
+        if (n.used || n.rect.center.dx <= c.rect.center.dx) {
+          continue;
+        }
+        if ((n.rect.center.dy - c.rect.center.dy).abs() > avgH * 0.7) {
+          continue; // 不同行
+        }
+        if (best == null || n.rect.left < best.rect.left) {
+          best = n;
+        }
+      }
+      if (best != null) {
+        best.used = true;
+        c.pairedCount = best.count;
+      }
+    }
+
+    // 轮 2：正下方紧邻数字（从下往上的色号顺序）
+    final belowFirst = [...codes]..sort((a, b) => b.rect.top.compareTo(a.rect.top));
+    for (final c in belowFirst) {
+      if (c.pairedCount != null) {
+        continue;
+      }
+      _OcrElem? best;
+      for (final n in nums) {
+        if (n.used || n.rect.top <= c.rect.center.dy) {
+          continue; // 必须在色号下方
+        }
+        if (n.rect.top - c.rect.center.dy > avgH * 2.5) {
+          continue; // 只认紧邻下方
+        }
+        final dx = (n.rect.center.dx - c.rect.center.dx).abs();
+        if (dx > avgH * 3) {
+          continue; // 水平接近（同列附近），不跨到邻条目
+        }
+        if (best == null ||
+            n.rect.top < best.rect.top ||
+            (n.rect.top == best.rect.top &&
+                dx < (best.rect.center.dx - c.rect.center.dx).abs())) {
+          best = n;
+        }
+      }
+      if (best != null) {
+        best.used = true;
+        c.pairedCount = best.count;
+      }
+    }
+
+    // 阅读顺序输出：先上后下，同行先左后右
+    final sorted = [...codes]..sort((a, b) {
+        final dy = a.rect.top - b.rect.top;
+        return dy.abs() > avgH * 0.7 ? (dy > 0 ? 1 : -1) : a.rect.left.compareTo(b.rect.left);
+      });
+    return [
+      for (final c in sorted)
+        if (c.pairedCount != null) (c.code!, c.pairedCount!),
+    ];
+  }
+
+  /// 保底配对：按收集顺序「色号 -> 其后第一个数字」（几何框不可用时）
+  List<(int, int)> _pairInSeqOrder(List<_OcrElem> codes, List<_OcrElem> nums) {
+    final merged = [...codes, ...nums]..sort((a, b) => a.seq.compareTo(b.seq));
+    final pairs = <(int, int)>[];
+    int? cur;
+    for (final e in merged) {
+      if (e.code != null) {
+        cur = e.code;
+      } else if (cur != null) {
+        pairs.add((cur, e.count!));
+        cur = null; // 一条色号只配第一个数字，防后续串号
+      }
+    }
+    return pairs;
   }
 
   /// 递归生成色号的 OCR 混淆变体（0/O、1/I/L、2/Z、5/S、6/G、8/B、4/A）
