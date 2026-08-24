@@ -62,6 +62,9 @@ class _RestorePageState extends State<RestorePage> {
   final _legendRowsCtrl = TextEditingController();
   var _legendBusy = false;
   List<_LegendEntry> _legend = []; ///< 识别出的图例清单
+  var _viewMode = false; ///< true=查看模式（拖动滚动原图），false=框选模式（拖动改选区）
+  var _panelExpanded = true; ///< 图例确认面板展开（收起后图片区变大，便于对照原图校对）
+  final _legendSelKey = GlobalKey(); ///< 图例选区锚点（识别后自动滚动定位用）
 
   // ========== 主体对齐（步骤 3/4） ==========
   Rect? _selDisplay; ///< 主体选区（显示坐标）
@@ -241,6 +244,21 @@ class _RestorePageState extends State<RestorePage> {
           for (final entry in freq.entries.toList()..sort((a, b) => b.value - a.value))
             _LegendEntry(entry.key, entry.value),
         ];
+        // 识别完成自动切查看模式：拖动原图与清单对照校对（面板收起后可见整幅原图）
+        _viewMode = true;
+        _panelExpanded = true;
+      });
+      // 自动滚动到图例选区：原图下半部（图例所在）立即进入视野供校对
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final selCtx = _legendSelKey.currentContext;
+        if (selCtx != null) {
+          Scrollable.ensureVisible(
+            selCtx,
+            duration: const Duration(milliseconds: 350),
+            curve: Curves.easeOutCubic,
+            alignment: 0.5,
+          );
+        }
       });
       if (det == null) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -498,6 +516,14 @@ class _RestorePageState extends State<RestorePage> {
     });
   }
 
+  /// 进入「框选主体」阶段：回到框选模式（该阶段第一动作是重新框选）
+  void _goAlign() {
+    setState(() {
+      _viewMode = false;
+      _stage = _Stage.align;
+    });
+  }
+
   // ==================== 布局 ====================
 
   @override
@@ -592,25 +618,67 @@ class _RestorePageState extends State<RestorePage> {
     );
   }
 
-  /// 图片 + 框选手势 + 可选网格覆盖（图例/对齐阶段共用）
+  /// 图片 + 框选/查看双模式手势 + 可选网格覆盖（图例/对齐阶段共用）
+  ///
+  /// 框选模式：拖动 = 改选区（滚动锁定）；查看模式：拖动 = 上下滚动原图（不碰选区）。
+  /// 顶部浮动胶囊即时切换——识别出清单后需对照原图校对，查看模式让原图下半部（图例区）
+  /// 可滚入视野，不被底部面板永久遮挡。
   Widget _imageStage({
     required Rect? sel,
     required void Function(Rect) onSel,
     _GridOverlayPainter? overlay,
+    Key? selAnchorKey,
   }) {
     final ds = _displaySize();
-    return SingleChildScrollView(
-      child: GestureDetector(
-        onPanDown: (d) => onSel(Rect.fromPoints(d.localPosition, d.localPosition)),
-        onPanUpdate: (d) => onSel(Rect.fromPoints(sel!.topLeft, d.localPosition)),
-        child: Stack(
-          children: [
-            Image.memory(_bytes!, width: ds.width, height: ds.height, fit: BoxFit.fill),
-            if (sel != null && sel.width > 2)
-              Positioned.fill(child: CustomPaint(painter: _SelPainter(sel))),
-            if (overlay != null)
-              Positioned.fill(child: CustomPaint(painter: overlay, size: ds)),
-          ],
+    return Stack(
+      children: [
+        SingleChildScrollView(
+          physics: _viewMode ? null : const NeverScrollableScrollPhysics(),
+          child: GestureDetector(
+            onPanDown: _viewMode ? null : (d) => onSel(Rect.fromPoints(d.localPosition, d.localPosition)),
+            onPanUpdate: _viewMode ? null : (d) => onSel(Rect.fromPoints(sel!.topLeft, d.localPosition)),
+            child: Stack(
+              children: [
+                Image.memory(_bytes!, width: ds.width, height: ds.height, fit: BoxFit.fill),
+                if (sel != null && sel.width > 2)
+                  Positioned.fill(child: CustomPaint(painter: _SelPainter(sel))),
+                // 选区锚点：给 Scrollable.ensureVisible 定位（透明占位，不参与绘制）
+                if (selAnchorKey != null && sel != null && sel.width > 2)
+                  Positioned.fromRect(rect: sel, child: SizedBox(key: selAnchorKey)),
+                if (overlay != null)
+                  Positioned.fill(child: CustomPaint(painter: overlay, size: ds)),
+              ],
+            ),
+          ),
+        ),
+        Positioned(top: 4, left: 0, right: 0, child: Center(child: _modePill())),
+      ],
+    );
+  }
+
+  /// 模式切换胶囊（浮在图片顶部）
+  Widget _modePill() {
+    final viewing = _viewMode;
+    return Material(
+      elevation: 3,
+      borderRadius: BorderRadius.circular(16),
+      color: viewing ? const Color(0xFF1565C0) : const Color(0xFFE65100),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => setState(() => _viewMode = !_viewMode),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(viewing ? Icons.open_with : Icons.crop_free, size: 14, color: Colors.white),
+              const SizedBox(width: 4),
+              Text(
+                viewing ? "查看模式 · 上下拖动原图，点此切回框选" : "框选模式 · 拖出选区，点此切为拖动查看",
+                style: const TextStyle(fontSize: 11, color: Colors.white),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -668,6 +736,7 @@ class _RestorePageState extends State<RestorePage> {
               sel: _legendSel,
               onSel: (r) => setState(() => _legendSel = r),
               overlay: scanned ? _legendOverlay() : null,
+              selAnchorKey: _legendSelKey,
             ),
           ),
         ),
@@ -676,12 +745,9 @@ class _RestorePageState extends State<RestorePage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                scanned ? "图例已识别（拖动可重新框选）· 点色块可改色号" : "① 只框出图纸的图例区域（色号对照表）",
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 8),
-              if (!scanned)
+              if (!scanned) ...[
+                const Text("① 只框出图纸底部的图例区（色号 + 颗数对照表）", style: TextStyle(fontSize: 12, color: Colors.black54)),
+                const SizedBox(height: 8),
                 Row(
                   children: [
                     Expanded(
@@ -695,85 +761,131 @@ class _RestorePageState extends State<RestorePage> {
                     ),
                     const SizedBox(width: 12),
                     TextButton(
-                      onPressed: () => setState(() => _stage = _Stage.align),
+                      onPressed: _goAlign,
                       child: const Text("跳过图例"),
                     ),
                   ],
-                )
-              else ...[
+                ),
+              ] else ...[
+                // 摘要行：点击展开/收起核对清单——收起后底部只占一行，
+                // 原图下半部（图例区）进入视野，用户按原图图例逐一核对色号与颗数
                 Row(
                   children: [
-                    SizedBox(
-                      width: 64,
-                      child: TextField(
-                        controller: _legendColsCtrl,
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(labelText: "列", border: OutlineInputBorder(), isDense: true),
-                      ),
-                    ),
-                    const Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Text("×")),
-                    SizedBox(
-                      width: 64,
-                      child: TextField(
-                        controller: _legendRowsCtrl,
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(labelText: "行", border: OutlineInputBorder(), isDense: true),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
                     Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: _legendBusy ? null : _scanLegend,
-                        icon: const Icon(Icons.refresh, size: 18),
-                        label: const Text("重新识别"),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(6),
+                        onTap: () => setState(() => _panelExpanded = !_panelExpanded),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: Row(
+                            children: [
+                              Icon(
+                                _panelExpanded ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_up,
+                                size: 22,
+                                color: Colors.black54,
+                              ),
+                              const SizedBox(width: 2),
+                              Expanded(
+                                child: Text(
+                                  _panelExpanded
+                                      ? "图例 ${_legend.length} 色 · 已勾 ${_legend.where((e) => e.checked).length} 色（点此收起，露出原图核对）"
+                                      : "图例 ${_legend.length} 色 · 已勾 ${_legend.where((e) => e.checked).length} 色（点此展开核对清单）",
+                                  style: const TextStyle(fontSize: 12, color: Colors.black54),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
                     ),
+                    if (!_panelExpanded)
+                      FilledButton.tonal(
+                        onPressed: _goAlign,
+                        child: const Text("下一步"),
+                      ),
                   ],
                 ),
-                const SizedBox(height: 8),
-                SizedBox(
-                  height: 168,
-                  child: ListView.builder(
-                    itemCount: _legend.length,
-                    itemBuilder: (_, i) {
-                      final e = _legend[i];
-                      final c = _palette.colors[e.paletteIndex];
-                      return Row(
-                        children: [
-                          InkWell(
-                            onTap: () => _changeLegendColor(e),
-                            child: Container(width: 28, height: 28, color: Color.fromARGB(255, c.r, c.g, c.b)),
-                          ),
-                          const SizedBox(width: 8),
-                          SizedBox(width: 52, child: Text(c.id)),
-                          Text("图例${e.legendCount}格", style: const TextStyle(fontSize: 12, color: Colors.black45)),
-                          const Spacer(),
-                          SizedBox(
-                            width: 76,
-                            child: TextField(
-                              controller: e.countCtrl,
-                              keyboardType: TextInputType.number,
-                              decoration: const InputDecoration(labelText: "标注数量", border: OutlineInputBorder(), isDense: true),
-                            ),
-                          ),
-                          Checkbox(value: e.checked, onChanged: (v) => setState(() => e.checked = v ?? false)),
-                        ],
-                      );
-                    },
+                if (_panelExpanded) ...[
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      SizedBox(
+                        width: 64,
+                        child: TextField(
+                          controller: _legendColsCtrl,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(labelText: "列", border: OutlineInputBorder(), isDense: true),
+                        ),
+                      ),
+                      const Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Text("×")),
+                      SizedBox(
+                        width: 64,
+                        child: TextField(
+                          controller: _legendRowsCtrl,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(labelText: "行", border: OutlineInputBorder(), isDense: true),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _legendBusy ? null : _scanLegend,
+                          icon: const Icon(Icons.refresh, size: 18),
+                          label: const Text("重新识别"),
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-                const SizedBox(height: 4),
-                Row(
-                  children: [
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: () => setState(() => _stage = _Stage.align),
-                        icon: const Icon(Icons.arrow_forward),
-                        label: Text("下一步：框选主体（勾选${_legend.where((e) => e.checked).length}色）"),
-                      ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    height: 168,
+                    child: ListView.builder(
+                      itemCount: _legend.length,
+                      itemBuilder: (_, i) {
+                        final e = _legend[i];
+                        final c = _palette.colors[e.paletteIndex];
+                        return Row(
+                          children: [
+                            InkWell(
+                              onTap: () => _changeLegendColor(e),
+                              child: Container(width: 28, height: 28, color: Color.fromARGB(255, c.r, c.g, c.b)),
+                            ),
+                            const SizedBox(width: 8),
+                            SizedBox(width: 52, child: Text(c.id)),
+                            Text("图例占${e.legendCount}格", style: const TextStyle(fontSize: 12, color: Colors.black45)),
+                            const Spacer(),
+                            SizedBox(
+                              width: 72,
+                              child: TextField(
+                                controller: e.countCtrl,
+                                keyboardType: TextInputType.number,
+                                decoration: const InputDecoration(
+                                  labelText: "颗数",
+                                  hintText: "按原图填",
+                                  border: OutlineInputBorder(),
+                                  isDense: true,
+                                ),
+                              ),
+                            ),
+                            Checkbox(value: e.checked, onChanged: (v) => setState(() => e.checked = v ?? false)),
+                          ],
+                        );
+                      },
                     ),
-                  ],
-                ),
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton.icon(
+                          onPressed: _goAlign,
+                          icon: const Icon(Icons.arrow_forward),
+                          label: Text("下一步：框选主体（勾选${_legend.where((e) => e.checked).length}色）"),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ],
             ],
           ),
