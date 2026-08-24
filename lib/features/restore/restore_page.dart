@@ -214,7 +214,7 @@ class _RestorePageState extends State<RestorePage> {
       return;
     }
     setState(() => _legendBusy = true);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       final (rx, ry, rw, rh) = _selToImage(_legendSel);
       final gray = <int>[];
       for (var y = ry.toInt(); y < ry + rh; y++) {
@@ -245,20 +245,43 @@ class _RestorePageState extends State<RestorePage> {
           freq[idx] = (freq[idx] ?? 0) + 1;
         }
       }
+      // OCR 权威模式：印刷色号是图纸的权威声明。读到的色号直接构成清单
+      // （宽松框选把图案区框进来时，杂色量化条目全部被剔净），颗数随配对填入；
+      // 读不到（web/异常/配对太少）回退纯色块量化清单（现状行为，颗数手填）。
+      final pairs = await _ocrLegendPairs(rx, ry, rw, rh);
       if (!mounted) {
         return;
       }
       for (final e in _legend) {
         e.countCtrl.dispose();
       }
+      var entries = [
+        for (final entry in freq.entries.toList()..sort((a, b) => b.value - a.value))
+          _LegendEntry(entry.key, entry.value),
+      ];
+      var ocrHit = 0;
+      if (pairs != null && pairs.length >= 3) {
+        final byOcr = <_LegendEntry>[];
+        final seen = <int>{};
+        for (final (idx, count) in pairs) {
+          if (!seen.add(idx)) {
+            continue; // 同一色号多次出现（图例重复/误读），取首条
+          }
+          final e = _LegendEntry(idx, freq[idx] ?? 1);
+          e.countCtrl.text = count.toString();
+          byOcr.add(e);
+        }
+        for (final e in entries) {
+          e.countCtrl.dispose(); // fallback 条目被 OCR 清单取代
+        }
+        entries = byOcr;
+        ocrHit = byOcr.length;
+      }
       setState(() {
         _legendBusy = false;
         _legendColsCtrl.text = cols.toString();
         _legendRowsCtrl.text = rows.toString();
-        _legend = [
-          for (final entry in freq.entries.toList()..sort((a, b) => b.value - a.value))
-            _LegendEntry(entry.key, entry.value),
-        ];
+        _legend = entries;
         // 识别完成自动切查看模式：拖动原图与清单对照校对（面板收起后可见整幅原图）
         _viewMode = true;
         _panelExpanded = true;
@@ -275,9 +298,15 @@ class _RestorePageState extends State<RestorePage> {
           );
         }
       });
-      // 自动读取图例印刷颗数（ML Kit 端侧 OCR；web 平台不支持，静默跳过手填兜底）
-      _ocrLegendCounts();
-      if (det == null) {
+      if (ocrHit > 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("已按图例印刷色号识别 $ocrHit 色，颗数自动读取 $ocrHit 条，请对照原图核对")),
+        );
+      } else if (pairs != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("图例印刷识别不足，按色块识别；颗数请按原图手填")),
+        );
+      } else if (det == null) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text("未检出图例网格，按 8×1 均分识别；不准可改行列数后重新识别")),
         );
@@ -285,22 +314,20 @@ class _RestorePageState extends State<RestorePage> {
     });
   }
 
-  /// OCR 自动读取图例印刷颗数
+  /// OCR 图例选区 -> [(印刷色号调色板索引, 印刷颗数)] 按阅读顺序
   ///
-  /// 图纸图例每条目 = 色块 + 色号 + 颗数（印刷数字）。裁剪图例选区放大 3 倍
-  /// 喂 ML Kit，行内按「色号 element -> 其后最近的数字 element」配对写入颗数；
-  /// 未配对到的条目保持空，用户按原图手填兜底。
-  Future<void> _ocrLegendCounts() async {
+  /// 图纸图例每条目 = 色块 + 色号 + 颗数（印刷数字）。裁剪选区放大 3 倍喂 ML Kit，
+  /// 行内按「色号 element -> 其后最近的数字 element」配对。
+  /// web 平台不可用 / 异常 / 无配对时返回 null（调用方回退色块量化清单）。
+  Future<List<(int, int)>?> _ocrLegendPairs(double rx, double ry, double rw, double rh) async {
     if (kIsWeb) {
-      return;
+      return null;
     }
     final image = _image;
-    final sel = _legendSel;
-    if (image == null || sel == null) {
-      return;
+    if (image == null) {
+      return null;
     }
     try {
-      final (rx, ry, rw, rh) = _selToImage(sel);
       final crop = img.copyCrop(image, x: rx.toInt(), y: ry.toInt(), width: rw.toInt(), height: rh.toInt());
       // 小字放大提高识别率（原图数字高约 15-20px，×3 后 ~60px）
       final scaled = img.copyResize(crop, width: crop.width * 3);
@@ -311,68 +338,42 @@ class _RestorePageState extends State<RestorePage> {
       final recognized = await recognizer.processImage(InputImage.fromFilePath(tmp.path));
       await recognizer.close();
 
-      final matched = _pairLegendCounts(recognized);
-      if (!mounted) {
-        return;
+      // 精确 + 混淆变体查找表：variant -> 调色板索引
+      final codeMap = <String, int>{};
+      for (var i = 0; i < _palette.colors.length; i++) {
+        final variants = <String>{};
+        _collectCodeVariants(_palette.colors[i].id.toUpperCase(), 0, "", variants);
+        for (final v in variants) {
+          codeMap[v] ??= i; // 变体撞车时先到先得
+        }
       }
-      setState(() {}); // 颗数写进了 countCtrl，刷新清单显示
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            matched == _legend.length
-                ? "颗数已自动读取 $matched/${_legend.length} 条，请对照原图核对"
-                : "颗数自动读取 $matched/${_legend.length} 条，未识别的请按原图手填",
-          ),
-        ),
-      );
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("颗数自动读取失败，请按原图手填")));
-      }
-    }
-  }
 
-  /// 行内配对：色号 element（查色卡，含 OCR 混淆变体）-> 其后最近的纯数字 element = 该色颗数
-  ///
-  /// 返回成功写入颗数的条目数。
-  int _pairLegendCounts(RecognizedText recognized) {
-    // 精确 + 混淆变体查找表：variant -> 调色板索引
-    final codeMap = <String, int>{};
-    for (var i = 0; i < _palette.colors.length; i++) {
-      final variants = <String>{};
-      _collectCodeVariants(_palette.colors[i].id.toUpperCase(), 0, "", variants);
-      for (final v in variants) {
-        codeMap[v] ??= i; // 变体撞车时先到先得（精确 id 已排最前）
-      }
-    }
-
-    final byIndex = <int, int>{};
-    for (final block in recognized.blocks) {
-      for (final line in block.lines) {
-        int? current;
-        for (final element in line.elements) {
-          final code = codeMap[element.text.trim().toUpperCase().replaceAll(" ", "")];
-          if (code != null) {
-            current = code; // 色号：开始等待它的颗数
-            continue;
-          }
-          final n = _parseCountText(element.text);
-          if (n != null && current != null && !byIndex.containsKey(current)) {
-            byIndex[current] = n;
+      final pairs = <(int, int)>[];
+      for (final block in recognized.blocks) {
+        for (final line in block.lines) {
+          int? current;
+          for (final element in line.elements) {
+            final text = element.text.trim().toUpperCase().replaceAll(" ", "");
+            // 色号最多 4 字符（A1/H12 型），长文本是正文/杂项不做色号
+            if (text.length <= 4) {
+              final code = codeMap[text];
+              if (code != null) {
+                current = code; // 色号：开始等待它的颗数
+                continue;
+              }
+            }
+            final n = _parseCountText(element.text);
+            if (n != null && current != null) {
+              pairs.add((current, n));
+              current = null; // 一条色号只配第一个数字，防后续串号
+            }
           }
         }
       }
+      return pairs;
+    } catch (_) {
+      return null;
     }
-
-    var matched = 0;
-    for (final e in _legend) {
-      final n = byIndex[e.paletteIndex];
-      if (n != null) {
-        e.countCtrl.text = n.toString();
-        matched++;
-      }
-    }
-    return matched;
   }
 
   /// 递归生成色号的 OCR 混淆变体（0/O、1/I/L、2/Z、5/S、6/G、8/B、4/A）
