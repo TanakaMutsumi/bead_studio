@@ -7,6 +7,7 @@ import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../../core/app_build.dart';
 import '../../core/decode_image.dart';
 import '../../core/grid_detector.dart';
 import '../../core/palette.dart';
@@ -77,6 +78,7 @@ class _RestorePageState extends State<RestorePage> {
   final _legendRowsCtrl = TextEditingController();
   var _legendBusy = false;
   List<_LegendEntry> _legend = []; ///< 识别出的图例清单
+  var _legendByOcr = false; ///< true=清单来自印刷色号（行列输入隐藏，网格层不画）
   var _viewMode = false; ///< true=查看模式（拖动滚动原图），false=框选模式（拖动改选区）
   var _panelExpanded = true; ///< 图例确认面板展开（收起后图片区变大，便于对照原图校对）
   final _legendSelKey = GlobalKey(); ///< 图例选区锚点（识别后自动滚动定位用）
@@ -147,6 +149,7 @@ class _RestorePageState extends State<RestorePage> {
         _legendSel = null;
         _selDisplay = null;
         _legend = [];
+        _legendByOcr = false;
         _pitchX = 0;
         _model = null;
         _stage = _Stage.legend;
@@ -282,6 +285,7 @@ class _RestorePageState extends State<RestorePage> {
         _legendColsCtrl.text = cols.toString();
         _legendRowsCtrl.text = rows.toString();
         _legend = entries;
+        _legendByOcr = ocrHit > 0;
         // 识别完成自动切查看模式：拖动原图与清单对照校对（面板收起后可见整幅原图）
         _viewMode = true;
         _panelExpanded = true;
@@ -661,12 +665,19 @@ class _RestorePageState extends State<RestorePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(switch (_stage) {
-          _Stage.pick => "图纸还原 · 选图",
-          _Stage.legend => "图纸还原 · ① 框图例",
-          _Stage.align => "图纸还原 · ② 网格对齐",
-          _Stage.review => "图纸还原 · ③ 识别复核",
-        }),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(switch (_stage) {
+              _Stage.pick => "图纸还原 · 选图",
+              _Stage.legend => "图纸还原 · ① 框图例",
+              _Stage.align => "图纸还原 · ② 网格对齐",
+              _Stage.review => "图纸还原 · ③ 识别复核",
+            }),
+            Text("构建 $appBuildLabel", style: const TextStyle(fontSize: 10, color: Colors.black38)),
+          ],
+        ),
         actions: [
           if (_stage == _Stage.legend || _stage == _Stage.align)
             PopupMenuButton<String>(
@@ -714,6 +725,7 @@ class _RestorePageState extends State<RestorePage> {
         e.countCtrl.dispose();
       }
       _legend = [];
+      _legendByOcr = false;
     });
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("已切换到${target.label}，图例需重新识别")));
   }
@@ -866,7 +878,7 @@ class _RestorePageState extends State<RestorePage> {
             child: _imageStage(
               sel: _legendSel,
               onSel: (r) => setState(() => _legendSel = r),
-              overlay: scanned ? _legendOverlay() : null,
+              overlay: scanned && !_legendByOcr ? _legendOverlay() : null, // 网格层仅量化模式有参考意义
               selAnchorKey: _legendSelKey,
             ),
           ),
@@ -938,35 +950,47 @@ class _RestorePageState extends State<RestorePage> {
                 ),
                 if (_panelExpanded) ...[
                   const SizedBox(height: 4),
-                  Row(
-                    children: [
-                      SizedBox(
-                        width: 64,
-                        child: TextField(
-                          controller: _legendColsCtrl,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(labelText: "列", border: OutlineInputBorder(), isDense: true),
+                  if (!_legendByOcr)
+                    Row(
+                      children: [
+                        SizedBox(
+                          width: 64,
+                          child: TextField(
+                            controller: _legendColsCtrl,
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(labelText: "列", border: OutlineInputBorder(), isDense: true),
+                          ),
                         ),
-                      ),
-                      const Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Text("×")),
-                      SizedBox(
-                        width: 64,
-                        child: TextField(
-                          controller: _legendRowsCtrl,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(labelText: "行", border: OutlineInputBorder(), isDense: true),
+                        const Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Text("×")),
+                        SizedBox(
+                          width: 64,
+                          child: TextField(
+                            controller: _legendRowsCtrl,
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(labelText: "行", border: OutlineInputBorder(), isDense: true),
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: _legendBusy ? null : _scanLegend,
-                          icon: const Icon(Icons.refresh, size: 18),
-                          label: const Text("重新识别"),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: _legendBusy ? null : _scanLegend,
+                            icon: const Icon(Icons.refresh, size: 18),
+                            label: const Text("重新识别"),
+                          ),
                         ),
+                      ],
+                    )
+                  else
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        onPressed: _legendBusy ? null : _scanLegend,
+                        icon: _legendBusy
+                            ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.refresh, size: 18),
+                        label: Text(_legendBusy ? "识别中…" : "重新框选后识别"),
                       ),
-                    ],
-                  ),
+                    ),
                   const SizedBox(height: 8),
                   SizedBox(
                     height: 168,

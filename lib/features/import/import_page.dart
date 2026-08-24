@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../../core/app_build.dart';
 import '../../core/palette.dart';
 import '../../core/palette_registry.dart';
 import '../../core/pixel_engine.dart';
@@ -239,6 +240,15 @@ class _ImportPageState extends State<ImportPage> {
                 ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                 : const Icon(Icons.auto_awesome),
             label: Text(_converting ? "转换中…" : "开始转换"),
+          ),
+          const SizedBox(height: 12),
+          // 构建标识：现场确认模拟器/设备上跑的是哪次构建
+          Align(
+            alignment: Alignment.centerRight,
+            child: Text(
+              "构建 $appBuildLabel",
+              style: const TextStyle(fontSize: 10, color: Colors.black26),
+            ),
           ),
         ],
       ),
