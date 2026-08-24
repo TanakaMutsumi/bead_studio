@@ -58,10 +58,17 @@ class Quantizer {
   Quantizer(this.palette);
 
   /// 单个 RGB 找最近调色板索引（Lab 距离）
-  int nearestIndex(int r, int g, int b) => _nearest(_rgbToLab(r, g, b), null);
+  int nearestIndex(int r, int g, int b) => _nearest(_rgbToLab(r, g, b), null).$1;
+
+  /// 在候选索引子集内找最近色，返回 (索引, Lab 距离平方)（图纸还原限色识别用）
+  ///
+  /// [candidates] 为 null 时搜全表；调用方可用距离平方做空白判定
+  (int, double) nearestWithin(int r, int g, int b, Set<int>? candidates) {
+    return _nearest(_rgbToLab(r, g, b), candidates);
+  }
 
   /// 在候选索引子集内找最近色（限制色数重量化用），candidates 为 null 时搜全表
-  int _nearest(List<double> lab, Set<int>? candidates) {
+  (int, double) _nearest(List<double> lab, Set<int>? candidates) {
     var best = -1;
     var bestDist = double.infinity;
     for (var i = 0; i < _labCache.length; i++) {
@@ -78,7 +85,7 @@ class Quantizer {
         best = i;
       }
     }
-    return best < 0 ? 0 : best;
+    return best < 0 ? (0, bestDist) : (best, bestDist);
   }
 
   /// 整图量化（调用方保证 img 尺寸已是目标网格尺寸）
@@ -209,7 +216,7 @@ class Quantizer {
     final mapping = <int, int>{};
     for (final v in freq.keys.where((k) => !keep.contains(k))) {
       final c = palette.colors[v];
-      mapping[v] = _nearest(_rgbToLab(c.r, c.g, c.b), keep);
+      mapping[v] = _nearest(_rgbToLab(c.r, c.g, c.b), keep).$1;
     }
 
     return [for (final v in grid) v < 0 ? v : (keep.contains(v) ? v : mapping[v]!)];

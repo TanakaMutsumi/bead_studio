@@ -2,6 +2,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../../core/palette.dart';
+import '../../core/palette_registry.dart';
 import '../../core/pixel_engine.dart';
 import '../../core/quantizer.dart';
 import '../../data/demo_palette.dart';
@@ -9,7 +11,7 @@ import '../editor/editor_page.dart';
 import '../restore/restore_page.dart';
 import '../works/works_page.dart';
 
-/// 导入页：选图 -> 选板尺寸/抖动 -> 转换进编辑器；支持打开历史草稿
+/// 导入页：选图 -> 选色卡/板尺寸/抖动 -> 转换进编辑器；支持打开历史草稿
 class ImportPage extends StatefulWidget {
   const ImportPage({super.key});
 
@@ -25,6 +27,44 @@ class _ImportPageState extends State<ImportPage> {
   var _boardSize = 52;
   var _kernel = DitherKernel.none;
   var _converting = false;
+
+  // 色卡（默认演示色卡，initState 异步换为用户选中的色卡）
+  BeadPalette _palette = demoPalette;
+  List<PaletteInfo> _palettes = const [];
+  String _paletteId = "";
+
+  @override
+  void initState() {
+    super.initState();
+    _initPalette();
+  }
+
+  /// 加载选中色卡 + 全部可选色卡
+  Future<void> _initPalette() async {
+    final selected = await PaletteRegistry.loadSelected();
+    final all = await PaletteRegistry.load();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _palette = selected.palette;
+      _paletteId = selected.id;
+      _palettes = all;
+    });
+  }
+
+  /// 切换色卡并持久化
+  Future<void> _switchPalette(String id) async {
+    if (id == _paletteId) {
+      return;
+    }
+    await PaletteRegistry.saveSelectedId(id);
+    final target = _palettes.where((p) => p.id == id).first;
+    setState(() {
+      _paletteId = id;
+      _palette = target.palette;
+    });
+  }
 
   Future<void> _pickImage(ImageSource source) async {
     final picker = ImagePicker();
@@ -47,7 +87,7 @@ class _ImportPageState extends State<ImportPage> {
     });
     try {
       final bytes = _pickedBytes!;
-      final model = PixelEngine(demoPalette).convert(
+      final model = PixelEngine(_palette).convert(
         bytes: bytes,
         boardSize: _boardSize,
         kernel: _kernel,
@@ -56,7 +96,7 @@ class _ImportPageState extends State<ImportPage> {
         return;
       }
       await Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => EditorPage(model: model, palette: demoPalette)),
+        MaterialPageRoute(builder: (_) => EditorPage(model: model, palette: _palette)),
       );
     } catch (e) {
       if (mounted) {
@@ -77,7 +117,7 @@ class _ImportPageState extends State<ImportPage> {
       return;
     }
     await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const WorksPage(palette: demoPalette)),
+      MaterialPageRoute(builder: (_) => WorksPage(palette: _palette)),
     );
   }
 
@@ -133,6 +173,23 @@ class _ImportPageState extends State<ImportPage> {
             ),
           ]),
           const SizedBox(height: 20),
+
+          // 色卡选择
+          if (_palettes.length > 1) ...[
+            const Text("色卡", style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            SegmentedButton<String>(
+              segments: [for (final p in _palettes) ButtonSegment(value: p.id, label: Text(p.label))],
+              selected: {_paletteId},
+              onSelectionChanged: (sel) => _switchPalette(sel.first),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              "色号与实物拼豆对齐（如 MARD A1~M15）；切换后新作品用新色卡，旧作品按原色号打开",
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+          ],
 
           // 板尺寸
           const Text("板尺寸", style: TextStyle(fontWeight: FontWeight.bold)),

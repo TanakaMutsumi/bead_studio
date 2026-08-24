@@ -4,12 +4,21 @@ import 'package:flutter/material.dart';
 
 import '../../core/draft_store.dart';
 import '../../core/palette.dart';
+import '../../core/palette_registry.dart';
 import '../editor/editor_page.dart';
 import '../editor/grid_painter.dart';
 
+/// 作品条目 + 渲染用调色板（按作品自己的 paletteIds 解析，跨色卡旧作不串色）
+class _WorkVM {
+  final WorkEntry entry;
+  final BeadPalette palette;
+
+  const _WorkVM(this.entry, this.palette);
+}
+
 /// 作品库页：缩略图网格 + 分组筛选 + 重命名/移动/复制/删除 + 多选批量操作
 class WorksPage extends StatefulWidget {
-  final BeadPalette palette;
+  final BeadPalette palette; ///< 兜底调色板（作品色号解析失败时用）
 
   const WorksPage({super.key, required this.palette});
 
@@ -18,7 +27,7 @@ class WorksPage extends StatefulWidget {
 }
 
 class _WorksPageState extends State<WorksPage> {
-  List<WorkEntry> _works = [];
+  List<_WorkVM> _works = [];
   var _loading = true;
   String? _folderFilter; ///< null = 全部
   var _multiSelect = false;
@@ -32,11 +41,15 @@ class _WorksPageState extends State<WorksPage> {
 
   Future<void> _reload() async {
     final works = await DraftStore.listWorks();
+    final vms = <_WorkVM>[];
+    for (final w in works) {
+      vms.add(_WorkVM(w, await PaletteRegistry.resolveForModel(w.model, widget.palette)));
+    }
     if (!mounted) {
       return;
     }
     setState(() {
-      _works = works;
+      _works = vms;
       _loading = false;
       _selected.clear();
       if (_multiSelect && _selected.isEmpty) {
@@ -45,29 +58,29 @@ class _WorksPageState extends State<WorksPage> {
     });
   }
 
-  List<String> get _folders => _works.map((w) => w.folder).where((f) => f.isNotEmpty).toSet().toList()..sort();
+  List<String> get _folders => _works.map((w) => w.entry.folder).where((f) => f.isNotEmpty).toSet().toList()..sort();
 
-  List<WorkEntry> get _filtered => _folderFilter == null
+  List<_WorkVM> get _filtered => _folderFilter == null
       ? _works
-      : _works.where((w) => w.folder == _folderFilter).toList();
+      : _works.where((w) => w.entry.folder == _folderFilter).toList();
 
   // ==================== 操作 ====================
 
-  void _open(WorkEntry w) {
+  void _open(_WorkVM w) {
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
-        builder: (_) => EditorPage(model: w.model, palette: widget.palette, sourceFile: w.file),
+        builder: (_) => EditorPage(model: w.entry.model, palette: w.palette, sourceFile: w.entry.file),
       ),
     );
   }
 
-  Future<void> _rename(WorkEntry w) async {
-    final ctrl = TextEditingController(text: w.name);
+  Future<void> _rename(_WorkVM w) async {
+    final ctrl = TextEditingController(text: w.entry.name);
     final name = await _inputDialog("重命名", "作品名", ctrl);
     if (name == null || name.trim().isEmpty) {
       return;
     }
-    await DraftStore.renameWork(w.file, name.trim());
+    await DraftStore.renameWork(w.entry.file, name.trim());
     _reload();
   }
 
@@ -119,8 +132,8 @@ class _WorksPageState extends State<WorksPage> {
     _reload();
   }
 
-  Future<void> _copy(WorkEntry w) async {
-    await DraftStore.copyWork(w.file);
+  Future<void> _copy(_WorkVM w) async {
+    await DraftStore.copyWork(w.entry.file);
     _reload();
   }
 
@@ -286,11 +299,11 @@ class _WorksPageState extends State<WorksPage> {
       itemCount: _filtered.length,
       itemBuilder: (context, i) {
         final w = _filtered[i];
-        final checked = _selected.contains(w.file);
+        final checked = _selected.contains(w.entry.file);
         return GestureDetector(
           onTap: () {
             if (_multiSelect) {
-              _toggleSelect(w.file);
+              _toggleSelect(w.entry.file);
             } else {
               _open(w);
             }
@@ -298,7 +311,7 @@ class _WorksPageState extends State<WorksPage> {
           onLongPress: () {
             setState(() {
               _multiSelect = true;
-              _selected.add(w.file);
+              _selected.add(w.entry.file);
             });
           },
           child: Card(
@@ -314,7 +327,7 @@ class _WorksPageState extends State<WorksPage> {
                         padding: const EdgeInsets.all(4),
                         child: CustomPaint(
                           size: Size.infinite,
-                          painter: GridPainter(model: w.model, palette: widget.palette, selectedColorIndex: -1),
+                          painter: GridPainter(model: w.entry.model, palette: w.palette, selectedColorIndex: -1),
                         ),
                       ),
                     ),
@@ -342,11 +355,11 @@ class _WorksPageState extends State<WorksPage> {
                                 case "rename":
                                   _rename(w);
                                 case "move":
-                                  _move([w.file]);
+                                  _move([w.entry.file]);
                                 case "copy":
                                   _copy(w);
                                 case "delete":
-                                  _delete([w.file]);
+                                  _delete([w.entry.file]);
                               }
                             },
                             itemBuilder: (menuContext) => const [
@@ -367,13 +380,13 @@ class _WorksPageState extends State<WorksPage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        w.name,
+                        w.entry.name,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
                       Text(
-                        "${w.model.width}×${w.model.height} · ${_fmtTime(w.updatedAt)}",
+                        "${w.entry.model.width}×${w.entry.model.height} · ${_fmtTime(w.entry.updatedAt)}",
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.black45, fontSize: 10),
                       ),
                     ],
@@ -407,7 +420,7 @@ class _WorksPageState extends State<WorksPage> {
             TextButton(
               onPressed: _filtered.isEmpty || _selected.length == _filtered.length
                   ? null
-                  : () => setState(() => _selected.addAll(_filtered.map((w) => w.file))),
+                  : () => setState(() => _selected.addAll(_filtered.map((w) => w.entry.file))),
               child: const Text("全选"),
             ),
           ],

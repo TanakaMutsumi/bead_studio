@@ -42,6 +42,7 @@ class EditorPage extends StatefulWidget {
 class _EditorPageState extends State<EditorPage> {
   static const _maxUndo = 50;
   static const _brushSizes = [1, 2, 3, 5];
+  static const _boardSizes = [26, 29, 52]; ///< 常见拼豆板边长
 
   late PatternModel _model;
   final _revision = ValueNotifier<int>(0); ///< 网格内容版本号，驱动画布重绘
@@ -55,8 +56,64 @@ class _EditorPageState extends State<EditorPage> {
   var _assembleMode = false;
   int? _highlightIndex;
 
+  // 分板模式：按底板边长把图案切块导航，板外格子淡出，颜色条显示本板用量
+  var _boardMode = false;
+  var _boardSize = 29;
+  var _boardIndex = 0; ///< 当前板序号（行优先）
+
   // 矩形选区（格子坐标，拖拽中实时更新）
   int? _selX0, _selY0, _selX1, _selY1;
+
+  // ==================== 分板 ====================
+
+  int get _boardsAcross => (_model.width / _boardSize).ceil();
+
+  int get _boardsDown => (_model.height / _boardSize).ceil();
+
+  int get _boardCount => _boardsAcross * _boardsDown;
+
+  /// 第 [index] 块板的格子范围（clamp 到图案边界）
+  Rect _boardRectOf(int index) {
+    final left = (index % _boardsAcross) * _boardSize;
+    final top = (index ~/ _boardsAcross) * _boardSize;
+    var right = left + _boardSize;
+    var bottom = top + _boardSize;
+    if (right > _model.width) {
+      right = _model.width;
+    }
+    if (bottom > _model.height) {
+      bottom = _model.height;
+    }
+    return Rect.fromLTRB(left.toDouble(), top.toDouble(), right.toDouble(), bottom.toDouble());
+  }
+
+  /// 本板用料统计
+  Map<int, int> _boardCounts(Rect r) {
+    final counts = <int, int>{};
+    for (var y = r.top.toInt(); y < r.bottom.toInt(); y++) {
+      for (var x = r.left.toInt(); x < r.right.toInt(); x++) {
+        final v = _model.cell(x, y);
+        if (v >= 0) {
+          counts[v] = (counts[v] ?? 0) + 1;
+        }
+      }
+    }
+    return counts;
+  }
+
+  /// 切换板尺寸：索引 clamp 到新板数
+  void _setBoardSize(int size) {
+    setState(() {
+      _boardSize = size;
+      _boardIndex = _boardIndex.clamp(0, _boardCount - 1);
+    });
+  }
+
+  void _stepBoard(int delta) {
+    setState(() {
+      _boardIndex = (_boardIndex + delta).clamp(0, _boardCount - 1);
+    });
+  }
 
   @override
   void initState() {
@@ -370,6 +427,16 @@ class _EditorPageState extends State<EditorPage> {
             tooltip: _assembleMode ? "退出拼装模式" : "拼装模式",
           ),
           IconButton(
+            onPressed: () => setState(() {
+              _boardMode = !_boardMode;
+              if (_boardMode) {
+                _boardIndex = _boardIndex.clamp(0, _boardCount - 1);
+              }
+            }),
+            icon: Icon(_boardMode ? Icons.view_module : Icons.view_module_outlined),
+            tooltip: _boardMode ? "退出分板模式" : "分板拼装",
+          ),
+          IconButton(
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => StatsPage(model: _model, palette: widget.palette)),
             ),
@@ -384,17 +451,18 @@ class _EditorPageState extends State<EditorPage> {
           if (_selRectCells != null) _buildSelectionBar(),
           Expanded(child: _buildCanvas()),
           _buildOpsRow(),
+          if (_boardMode) _buildBoardBar(),
           if (_assembleMode)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
               child: Text(
                 _highlightIndex == null
                     ? "拼装模式：点下方颜色高亮该色全部格子，再点一次取消"
-                    : "已高亮 ${widget.palette.colors[_highlightIndex!].id}（${_model.countByColor()[_highlightIndex!] ?? 0} 颗）",
+                    : "已高亮 ${widget.palette.colors[_highlightIndex!].id}（${_boardMode ? (_boardCounts(_boardRectOf(_boardIndex))[_highlightIndex!] ?? 0) : (_model.countByColor()[_highlightIndex!] ?? 0)} 颗）",
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ),
-          _buildColorBar(_model.countByColor()),
+          _buildColorBar(_boardMode ? _boardCounts(_boardRectOf(_boardIndex)) : _model.countByColor()),
         ],
       ),
     );
@@ -481,6 +549,7 @@ class _EditorPageState extends State<EditorPage> {
                 repaint: _revision,
                 selectionRect: _selectionPixels(canvasSize),
                 highlightIndex: _assembleMode ? _highlightIndex : null,
+                boardRect: _boardMode ? _boardRectOf(_boardIndex) : null,
               ),
             ),
           );
@@ -515,6 +584,41 @@ class _EditorPageState extends State<EditorPage> {
           ActionChip(avatar: const Icon(Icons.auto_fix_high), label: const Text("降噪"), onPressed: _openDenoiseSheet),
           ActionChip(avatar: const Icon(Icons.palette_outlined), label: const Text("限制色数"), onPressed: _openLimitColorsSheet),
           ActionChip(avatar: const Icon(Icons.swap_horiz), label: const Text("全局换色"), onPressed: _openReplaceColorSheet),
+        ],
+      ),
+    );
+  }
+
+  /// 分板控制条：板尺寸 + 板导航 + 本板颗数
+  Widget _buildBoardBar() {
+    final rect = _boardRectOf(_boardIndex);
+    final counts = _boardCounts(rect);
+    final total = counts.values.fold(0, (a, b) => a + b);
+    final row = _boardIndex ~/ _boardsAcross + 1;
+    final col = _boardIndex % _boardsAcross + 1;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+      child: Row(
+        children: [
+          SegmentedButton<int>(
+            showSelectedIcon: false,
+            style: const ButtonStyle(visualDensity: VisualDensity.compact),
+            segments: [for (final s in _boardSizes) ButtonSegment(value: s, label: Text("$s"))],
+            selected: {_boardSize},
+            onSelectionChanged: (sel) => _setBoardSize(sel.first),
+          ),
+          const SizedBox(width: 8),
+          IconButton(onPressed: _boardIndex > 0 ? () => _stepBoard(-1) : null, icon: const Icon(Icons.chevron_left)),
+          Text("${_boardIndex + 1}/$_boardCount", style: Theme.of(context).textTheme.labelMedium),
+          IconButton(onPressed: _boardIndex < _boardCount - 1 ? () => _stepBoard(1) : null, icon: const Icon(Icons.chevron_right)),
+          const SizedBox(width: 4),
+          Expanded(
+            child: Text(
+              "第$row行·第$col列 · 本板 $total 颗",
+              style: Theme.of(context).textTheme.bodySmall,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
         ],
       ),
     );

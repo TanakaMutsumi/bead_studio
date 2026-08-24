@@ -12,6 +12,7 @@ class GridPainter extends CustomPainter {
   final int selectedColorIndex; ///< 当前选中色（画布上描高亮框提示）
   final Rect? selectionRect; ///< 矩形选区（画布坐标，null = 无）
   final int? highlightIndex; ///< 拼装模式高亮色索引（null = 关闭；其余色降饱和显示）
+  final Rect? boardRect; ///< 分板模式当前底板的格子范围（null = 关闭；板外格子大幅降透明）
 
   GridPainter({
     required this.model,
@@ -19,6 +20,7 @@ class GridPainter extends CustomPainter {
     required this.selectedColorIndex,
     this.selectionRect,
     this.highlightIndex,
+    this.boardRect,
     super.repaint,
   });
 
@@ -49,6 +51,12 @@ class GridPainter extends CustomPainter {
         // 拼装模式：非高亮色混入深灰降饱和，让目标色一眼可见
         if (highlightIndex != null && v != highlightIndex) {
           color = Color.lerp(color, const Color.fromARGB(255, 0x30, 0x30, 0x30), 0.65)!;
+        }
+        // 分板模式：当前底板外的格子大幅降透明
+        final br = boardRect;
+        final outsideBoard = br != null && (x < br.left || x >= br.right || y < br.top || y >= br.bottom);
+        if (outsideBoard) {
+          color = color.withValues(alpha: 0.18);
         }
         gridPaint.color = color;
         canvas.drawRect(Rect.fromLTWH(x * cell, y * cell, cell, cell), gridPaint);
@@ -86,6 +94,7 @@ class GridPainter extends CustomPainter {
         oldDelegate.selectedColorIndex != selectedColorIndex ||
         oldDelegate.palette != palette ||
         oldDelegate.selectionRect != selectionRect ||
-        oldDelegate.highlightIndex != highlightIndex;
+        oldDelegate.highlightIndex != highlightIndex ||
+        oldDelegate.boardRect != boardRect;
   }
 }
