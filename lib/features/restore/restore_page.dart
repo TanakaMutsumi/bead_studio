@@ -56,7 +56,9 @@ class _OcrDebugInfo {
   final String imgPath; ///< 喂给 ML Kit 的放大选区图路径
   final int imgW, imgH; ///< 放大图尺寸（元素框坐标系）
   final List<_OcrElem> elems; ///< 全部识别元素（含配对引用）
-  _OcrDebugInfo(this.source, this.imgPath, this.imgW, this.imgH, this.elems);
+  final double selX, selY, selW, selH; ///< 框选区（原图坐标）——复现框选用
+  _OcrDebugInfo(this.source, this.imgPath, this.imgW, this.imgH, this.elems,
+      this.selX, this.selY, this.selW, this.selH);
 }
 
 /// 图例条目：图纸图例里识别出的一个用色
@@ -109,6 +111,7 @@ class _RestorePageState extends State<RestorePage> {
   // 【临时调试】最近一次图例 OCR 的调试信息（放大图/元素/配对），正式版随调试视图一起移除
   _OcrDebugInfo? _ocrDebug;
   final _legendScrollCtrl = ScrollController(); ///< 图例阶段滚动控制（进入时滚到图片底部露出图例）
+  int _selHandleDrag = -1; ///< 选区把手拖拽中（-1=画新框，0-7=把手索引）
 
   // ========== 主体对齐（步骤 3/4） ==========
   Rect? _selDisplay; ///< 主体选区（显示坐标）
@@ -431,14 +434,14 @@ class _RestorePageState extends State<RestorePage> {
           }
         }
       }
-      // 【临时调试】保存本次 OCR 快照（放大图 + 元素 + 配对前状态），正式版移除
-      _ocrDebug = _OcrDebugInfo(source, tmp.path, scaled.width, scaled.height, elems);
+      // 【临时调试】保存本次 OCR 快照（放大图 + 元素 + 配对前状态 + 框选区），正式版移除
+      _ocrDebug = _OcrDebugInfo(source, tmp.path, scaled.width, scaled.height, elems, rx, ry, rw, rh);
       return _pairLegendOcr(elems);
     } catch (_) {
       // 【临时调试】识别抛异常也记快照（source 标"异常"）：调试视图能看到放大图 + 0 个
       // 元素——比入口直接消失更有排障价值；放大图都没产出（crop 就失败）则保持 null
       if (dbgPath.isNotEmpty) {
-        _ocrDebug = _OcrDebugInfo("$source（异常）", dbgPath, dbgW, dbgH, const []);
+        _ocrDebug = _OcrDebugInfo("$source（异常）", dbgPath, dbgW, dbgH, const [], rx, ry, rw, rh);
       }
       return null;
     }
@@ -937,9 +940,67 @@ class _RestorePageState extends State<RestorePage> {
     );
   }
 
+  /// 命中选区把手（返回 0-7 索引，未命中返回 -1）
+  ///
+  /// 布局：0─1─2 / 3   4 / 5─6─7（四角 + 四边中点），命中半径按手指友好的 22px
+  int _hitSelHandle(Rect sel, Offset p) {
+    final pts = [
+      sel.topLeft,
+      Offset(sel.center.dx, sel.top),
+      sel.topRight,
+      Offset(sel.left, sel.center.dy),
+      Offset(sel.right, sel.center.dy),
+      sel.bottomLeft,
+      Offset(sel.center.dx, sel.bottom),
+      sel.bottomRight,
+    ];
+    for (var i = 0; i < pts.length; i++) {
+      if ((pts[i] - p).distance <= 22) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  /// 按把手索引更新选区（角把手锁对角、边中把手只动一条边），防反转最小 4px
+  Rect _applySelHandle(Rect sel, int h, Offset p) {
+    var l = sel.left;
+    var t = sel.top;
+    var r = sel.right;
+    var b = sel.bottom;
+    if (h == 0 || h == 3 || h == 5) {
+      l = p.dx;
+    }
+    if (h == 2 || h == 4 || h == 7) {
+      r = p.dx;
+    }
+    if (h == 0 || h == 1 || h == 2) {
+      t = p.dy;
+    }
+    if (h == 5 || h == 6 || h == 7) {
+      b = p.dy;
+    }
+    if (r - l < 4) {
+      if (h == 0 || h == 3 || h == 5) {
+        l = r - 4;
+      } else {
+        r = l + 4;
+      }
+    }
+    if (b - t < 4) {
+      if (h == 0 || h == 1 || h == 2) {
+        t = b - 4;
+      } else {
+        b = t + 4;
+      }
+    }
+    return Rect.fromLTRB(l, t, r, b);
+  }
+
   /// 图片 + 框选/查看双模式手势 + 可选网格覆盖（图例/对齐阶段共用）
   ///
-  /// 框选模式：拖动 = 改选区（滚动锁定）；查看模式：拖动 = 上下滚动原图（不碰选区）。
+  /// 框选模式：空白处拖动 = 画新选区，拖选区四角/四边把手 = 微调大小（双指捏合可放大
+  /// 原图精确框选，滚动锁定）；查看模式：拖动 = 上下滚动原图（不碰选区）。
   /// 顶部浮动胶囊即时切换——识别出清单后需对照原图校对，查看模式让原图下半部（图例区）
   /// 可滚入视野，不被底部面板永久遮挡。
   Widget _imageStage({
@@ -955,20 +1016,50 @@ class _RestorePageState extends State<RestorePage> {
         SingleChildScrollView(
           controller: scrollCtrl,
           physics: _viewMode ? null : const NeverScrollableScrollPhysics(),
-          child: GestureDetector(
-            onPanDown: _viewMode ? null : (d) => onSel(Rect.fromPoints(d.localPosition, d.localPosition)),
-            onPanUpdate: _viewMode ? null : (d) => onSel(Rect.fromPoints(sel!.topLeft, d.localPosition)),
-            child: Stack(
-              children: [
-                Image.memory(_bytes!, width: ds.width, height: ds.height, fit: BoxFit.fill),
-                if (sel != null && sel.width > 2)
-                  Positioned.fill(child: CustomPaint(painter: _SelPainter(sel))),
-                // 选区锚点：给 Scrollable.ensureVisible 定位（透明占位，不参与绘制）
-                if (selAnchorKey != null && sel != null && sel.width > 2)
-                  Positioned.fromRect(rect: sel, child: SizedBox(key: selAnchorKey)),
-                if (overlay != null)
-                  Positioned.fill(child: CustomPaint(painter: overlay, size: ds)),
-              ],
+          // 双指捏合缩放原图（放大后双指拖动平移），单指平移禁用让给选区手势；
+          // 小图（微信压缩图）的图例条带不放大根本看不清、框不准
+          child: InteractiveViewer(
+            maxScale: 8,
+            minScale: 1,
+            panEnabled: false,
+            constrained: false,
+            boundaryMargin: const EdgeInsets.all(double.infinity),
+            child: GestureDetector(
+              onPanDown: _viewMode
+                  ? null
+                  : (d) {
+                      // 落点在把手上 -> 拖把手微调选区；空白处 -> 重新画框
+                      _selHandleDrag = (sel != null && sel.width > 2)
+                          ? _hitSelHandle(sel, d.localPosition)
+                          : -1;
+                      if (_selHandleDrag < 0) {
+                        onSel(Rect.fromPoints(d.localPosition, d.localPosition));
+                      }
+                    },
+              onPanUpdate: _viewMode
+                  ? null
+                  : (d) {
+                      if (sel == null) {
+                        return;
+                      }
+                      if (_selHandleDrag >= 0) {
+                        onSel(_applySelHandle(sel, _selHandleDrag, d.localPosition));
+                      } else {
+                        onSel(Rect.fromPoints(sel.topLeft, d.localPosition));
+                      }
+                    },
+              child: Stack(
+                children: [
+                  Image.memory(_bytes!, width: ds.width, height: ds.height, fit: BoxFit.fill),
+                  if (sel != null && sel.width > 2)
+                    Positioned.fill(child: CustomPaint(painter: _SelPainter(sel))),
+                  // 选区锚点：给 Scrollable.ensureVisible 定位（透明占位，不参与绘制）
+                  if (selAnchorKey != null && sel != null && sel.width > 2)
+                    Positioned.fromRect(rect: sel, child: SizedBox(key: selAnchorKey)),
+                  if (overlay != null)
+                    Positioned.fill(child: CustomPaint(painter: overlay, size: ds)),
+                ],
+              ),
             ),
           ),
         ),
@@ -1265,6 +1356,14 @@ class _RestorePageState extends State<RestorePage> {
                   ),
                   IconButton(onPressed: () => Navigator.pop(ctx), icon: const Icon(Icons.close)),
                 ],
+              ),
+            ),
+            // 【临时调试】框选区（原图坐标）：报坐标可精确复现同一次框选
+            Padding(
+              padding: const EdgeInsets.fromLTRB(22, 0, 16, 4),
+              child: Text(
+                "框选(原图坐标): x=${dbg.selX.round()} y=${dbg.selY.round()} · ${dbg.selW.round()}×${dbg.selH.round()}",
+                style: const TextStyle(fontSize: 11, color: Colors.black54),
               ),
             ),
             // 放大图 1:1 显示（横向滚动看细节），元素框与连线直接用图坐标
@@ -1652,6 +1751,26 @@ class _SelPainter extends CustomPainter {
     path.addPath(Path()..addRect(rect), Offset.zero);
     canvas.drawPath(Path.combine(PathOperation.difference, path, Path()), mask);
     canvas.drawRect(rect, border);
+    // 8 个编辑把手（四角+四边中点）：白底橙圈，可拖动扩大缩小选区
+    final handlePts = [
+      rect.topLeft,
+      Offset(rect.center.dx, rect.top),
+      rect.topRight,
+      Offset(rect.left, rect.center.dy),
+      Offset(rect.right, rect.center.dy),
+      rect.bottomLeft,
+      Offset(rect.center.dx, rect.bottom),
+      rect.bottomRight,
+    ];
+    final fill = Paint()..color = Colors.white;
+    final stroke = Paint()
+      ..color = const Color(0xFFE65100)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+    for (final p in handlePts) {
+      canvas.drawCircle(p, 6, fill);
+      canvas.drawCircle(p, 6, stroke);
+    }
   }
 
   @override
