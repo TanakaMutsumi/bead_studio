@@ -108,6 +108,7 @@ class _RestorePageState extends State<RestorePage> {
   final _legendSelKey = GlobalKey(); ///< 图例选区锚点（识别后自动滚动定位用）
   // 【临时调试】最近一次图例 OCR 的调试信息（放大图/元素/配对），正式版随调试视图一起移除
   _OcrDebugInfo? _ocrDebug;
+  final _legendScrollCtrl = ScrollController(); ///< 图例阶段滚动控制（进入时滚到图片底部露出图例）
 
   // ========== 主体对齐（步骤 3/4） ==========
   Rect? _selDisplay; ///< 主体选区（显示坐标）
@@ -146,6 +147,7 @@ class _RestorePageState extends State<RestorePage> {
 
   @override
   void dispose() {
+    _legendScrollCtrl.dispose();
     _colsCtrl.dispose();
     _rowsCtrl.dispose();
     _legendColsCtrl.dispose();
@@ -180,8 +182,14 @@ class _RestorePageState extends State<RestorePage> {
         _model = null;
         _stage = _Stage.legend;
       });
-      // 自动图例检测：不依赖用户框选，直接扫底部区域（框错/漏框是主要失败来源）
-      unawaited(_autoScanLegend());
+      // 图例印在图纸底部，而图片高于视口时初始只显示到图案中部（底部面板又占掉
+      // 一截视口），用户根本看不到图例、只能框到猫身 -> OCR 失败回退量化错误清单。
+      // 进入图例阶段先滚到底部，图例条带直接可见。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_legendScrollCtrl.hasClients) {
+          _legendScrollCtrl.jumpTo(_legendScrollCtrl.position.maxScrollExtent);
+        }
+      });
     } catch (e) {
       // 解码失败必须弹提示（曾经异常被吞表现为"选图无反应"）
       if (mounted) {
@@ -237,79 +245,6 @@ class _RestorePageState extends State<RestorePage> {
   }
 
   // ==================== 步骤 1/2：图例识别 ====================
-
-  /// 自动图例检测：对图片底部几档区域直接 OCR，任一档配对 >= 3 即出清单
-  ///
-  /// 用户手框图例区是主要失败来源（框到图案区/水印区时 OCR 读不到色号，
-  /// 静默回退的色块量化清单全是误导性错误条目）。图纸图例固定印在底部，
-  /// 选图后自动按 [88%, 100%] / [78%, 100%] / [65%, 100%] 三档扫描，
-  /// 从窄到宽——窄档不含上方水印文字，命中即停。失败不阻塞：提示手动框选。
-  Future<void> _autoScanLegend() async {
-    final image = _image;
-    if (image == null || kIsWeb) {
-      return;
-    }
-    setState(() => _legendBusy = true);
-    List<(int, int)>? hit;
-    for (final top in const [0.88, 0.78, 0.65]) {
-      final pairs = await _ocrLegendPairs(
-        0, image.height * top, image.width.toDouble(), image.height * (1 - top),
-        source: "自动扫描 · 底部 ${(top * 100).round()}% 起");
-      if (pairs != null && pairs.length >= 3) {
-        hit = pairs;
-        break;
-      }
-    }
-    if (!mounted) {
-      return;
-    }
-    if (hit == null) {
-      setState(() => _legendBusy = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("未自动读到图例，请在图上框选底部图例区（色块+色号+数字）后点识别")),
-      );
-      return;
-    }
-    for (final e in _legend) {
-      e.countCtrl.dispose();
-    }
-    final byOcr = <_LegendEntry>[];
-    final seen = <int>{};
-    for (final (idx, count) in hit) {
-      if (!seen.add(idx)) {
-        continue; // 同一色号重复出现取首条
-      }
-      final e = _LegendEntry(idx, 1);
-      e.countCtrl.text = count.toString();
-      byOcr.add(e);
-    }
-    final ds = _displaySize();
-    setState(() {
-      _legendBusy = false;
-      _legend = byOcr;
-      _legendByOcr = true;
-      _viewMode = true; // 自动切查看模式供对照原图校对
-      _panelExpanded = true;
-      // 选区标到图例条带：滚动锚点定位 + 告诉用户识别的是哪块
-      _legendSel = Rect.fromLTWH(0, ds.height * 0.88, ds.width, ds.height * 0.12);
-    });
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final selCtx = _legendSelKey.currentContext;
-      if (selCtx != null) {
-        Scrollable.ensureVisible(
-          selCtx,
-          duration: const Duration(milliseconds: 350),
-          curve: Curves.easeOutCubic,
-          alignment: 0.5,
-        );
-      }
-    });
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("已自动识别图例 ${byOcr.length} 色，请对照原图核对；不准可切框选模式重框")),
-      );
-    }
-  }
 
   /// 识别图例：框选区域自动检测行列 -> 逐格采样 -> 聚合用色清单
   void _scanLegend() {
@@ -895,6 +830,9 @@ class _RestorePageState extends State<RestorePage> {
           ],
         ),
         actions: [
+          // 【临时调试】图例 OCR 调试入口：识别后即可查看放大图/元素/配对，正式版移除
+          if (_stage == _Stage.legend && _ocrDebug != null)
+            IconButton(onPressed: _showOcrDebug, icon: const Icon(Icons.bug_report), tooltip: "OCR 调试"),
           if (_stage == _Stage.legend || _stage == _Stage.align)
             PopupMenuButton<String>(
               tooltip: "切换色卡",
@@ -987,11 +925,13 @@ class _RestorePageState extends State<RestorePage> {
     required void Function(Rect) onSel,
     _GridOverlayPainter? overlay,
     Key? selAnchorKey,
+    ScrollController? scrollCtrl,
   }) {
     final ds = _displaySize();
     return Stack(
       children: [
         SingleChildScrollView(
+          controller: scrollCtrl,
           physics: _viewMode ? null : const NeverScrollableScrollPhysics(),
           child: GestureDetector(
             onPanDown: _viewMode ? null : (d) => onSel(Rect.fromPoints(d.localPosition, d.localPosition)),
@@ -1096,6 +1036,7 @@ class _RestorePageState extends State<RestorePage> {
               onSel: (r) => setState(() => _legendSel = r),
               overlay: scanned && !_legendByOcr ? _legendOverlay() : null, // 网格层仅量化模式有参考意义
               selAnchorKey: _legendSelKey,
+              scrollCtrl: _legendScrollCtrl,
             ),
           ),
         ),
@@ -1254,13 +1195,6 @@ class _RestorePageState extends State<RestorePage> {
                           label: Text("下一步：框选主体（勾选${_legend.where((e) => e.checked).length}色）"),
                         ),
                       ),
-                      // 【临时调试】查看本次图例 OCR 的放大图/元素/配对，正式版移除
-                      if (_ocrDebug != null)
-                        IconButton(
-                          onPressed: _showOcrDebug,
-                          icon: const Icon(Icons.bug_report, size: 20),
-                          tooltip: "OCR 调试",
-                        ),
                     ],
                   ),
                 ],
