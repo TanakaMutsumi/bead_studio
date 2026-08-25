@@ -545,7 +545,11 @@ class _RestorePageState extends State<RestorePage> {
 
   /// 解析 OCR 数字文本为颗数（容忍逗号/空格/字母混淆），非法返回 null
   int? _parseCountText(String raw) {
-    var t = raw.trim().toUpperCase().replaceAll(",", "").replaceAll(" ", "");
+    // 图例颗数常带包围符号印制（如 "A6 (64)"、全角括号、书名号等），先剥掉再解析；
+    // 带括号的数字剥不掉会整条丢弃——色号找到了却配不上颗数就是这种格式
+    var t = raw.trim().toUpperCase();
+    t = t.replaceAll(RegExp(r"[()\[\]{}（）【】《》〈〉「」『』]"), "");
+    t = t.replaceAll(",", "").replaceAll(" ", "");
     t = t.replaceAll("O", "0").replaceAll("I", "1").replaceAll("L", "1").replaceAll("S", "5").replaceAll("B", "8");
     if (!RegExp(r"^\d+$").hasMatch(t)) {
       return null;
