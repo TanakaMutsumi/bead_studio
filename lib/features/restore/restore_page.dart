@@ -44,7 +44,19 @@ class _OcrElem {
   final int? count; ///< 颗数
   bool used = false; ///< 已被配对消费（数字侧）
   int? pairedCount; ///< 色号侧配到的颗数
+  // 【临时调试】配对的另一侧元素引用（调试视图画连线用，正式版随调试功能一起移除）
+  _OcrElem? pairedWith;
+  String dbgText = ""; ///< 【临时调试】OCR 原始文本
   _OcrElem(this.seq, this.rect, this.code, this.count);
+}
+
+/// 【临时调试】一次图例 OCR 的调试快照（正式版随调试视图一起移除）
+class _OcrDebugInfo {
+  final String source; ///< 来源（自动扫描档位 / 手动框选）
+  final String imgPath; ///< 喂给 ML Kit 的放大选区图路径
+  final int imgW, imgH; ///< 放大图尺寸（元素框坐标系）
+  final List<_OcrElem> elems; ///< 全部识别元素（含配对引用）
+  _OcrDebugInfo(this.source, this.imgPath, this.imgW, this.imgH, this.elems);
 }
 
 /// 图例条目：图纸图例里识别出的一个用色
@@ -94,6 +106,8 @@ class _RestorePageState extends State<RestorePage> {
   var _viewMode = false; ///< true=查看模式（拖动滚动原图），false=框选模式（拖动改选区）
   var _panelExpanded = true; ///< 图例确认面板展开（收起后图片区变大，便于对照原图校对）
   final _legendSelKey = GlobalKey(); ///< 图例选区锚点（识别后自动滚动定位用）
+  // 【临时调试】最近一次图例 OCR 的调试信息（放大图/元素/配对），正式版随调试视图一起移除
+  _OcrDebugInfo? _ocrDebug;
 
   // ========== 主体对齐（步骤 3/4） ==========
   Rect? _selDisplay; ///< 主体选区（显示坐标）
@@ -239,7 +253,8 @@ class _RestorePageState extends State<RestorePage> {
     List<(int, int)>? hit;
     for (final top in const [0.88, 0.78, 0.65]) {
       final pairs = await _ocrLegendPairs(
-        0, image.height * top, image.width.toDouble(), image.height * (1 - top));
+        0, image.height * top, image.width.toDouble(), image.height * (1 - top),
+        source: "自动扫描 · 底部 ${(top * 100).round()}% 起");
       if (pairs != null && pairs.length >= 3) {
         hit = pairs;
         break;
@@ -410,7 +425,8 @@ class _RestorePageState extends State<RestorePage> {
   /// 有时印在色号/色块正下方。裁剪选区放大 3 倍喂 ML Kit，先收集全部色号/颗数
   /// element（带几何框），再走 [_pairLegendOcr] 两轮配对。
   /// web 平台不可用 / 异常 / 无配对时返回 null（调用方回退色块量化清单）。
-  Future<List<(int, int)>?> _ocrLegendPairs(double rx, double ry, double rw, double rh) async {
+  Future<List<(int, int)>?> _ocrLegendPairs(double rx, double ry, double rw, double rh,
+      {String source = "手动框选"}) async {
     if (kIsWeb) {
       return null;
     }
@@ -452,17 +468,23 @@ class _RestorePageState extends State<RestorePage> {
             if (text.length <= 4) {
               final code = codeMap[text];
               if (code != null) {
-                elems.add(_OcrElem(seq++, element.boundingBox, code, null));
+                final e = _OcrElem(seq++, element.boundingBox, code, null);
+                e.dbgText = element.text; // 【临时调试】保留原始文本
+                elems.add(e);
                 continue;
               }
             }
             final n = _parseCountText(element.text);
             if (n != null) {
-              elems.add(_OcrElem(seq++, element.boundingBox, null, n));
+              final e = _OcrElem(seq++, element.boundingBox, null, n);
+              e.dbgText = element.text; // 【临时调试】保留原始文本
+              elems.add(e);
             }
           }
         }
       }
+      // 【临时调试】保存本次 OCR 快照（放大图 + 元素 + 配对前状态），正式版移除
+      _ocrDebug = _OcrDebugInfo(source, tmp.path, scaled.width, scaled.height, elems);
       return _pairLegendOcr(elems);
     } catch (_) {
       return null;
@@ -505,6 +527,9 @@ class _RestorePageState extends State<RestorePage> {
       if (best != null) {
         best.used = true;
         c.pairedCount = best.count;
+        // 【临时调试】记录配对引用供调试视图画连线
+        c.pairedWith = best;
+        best.pairedWith = c;
       }
     }
 
@@ -538,6 +563,9 @@ class _RestorePageState extends State<RestorePage> {
       if (best != null) {
         best.used = true;
         c.pairedCount = best.count;
+        // 【临时调试】记录配对引用供调试视图画连线
+        c.pairedWith = best;
+        best.pairedWith = c;
       }
     }
 
@@ -1226,6 +1254,13 @@ class _RestorePageState extends State<RestorePage> {
                           label: Text("下一步：框选主体（勾选${_legend.where((e) => e.checked).length}色）"),
                         ),
                       ),
+                      // 【临时调试】查看本次图例 OCR 的放大图/元素/配对，正式版移除
+                      if (_ocrDebug != null)
+                        IconButton(
+                          onPressed: _showOcrDebug,
+                          icon: const Icon(Icons.bug_report, size: 20),
+                          tooltip: "OCR 调试",
+                        ),
                     ],
                   ),
                 ],
@@ -1234,6 +1269,95 @@ class _RestorePageState extends State<RestorePage> {
           ),
         ),
       ],
+    );
+  }
+
+  /// 【临时调试】图例 OCR 调试视图：喂给 ML Kit 的放大图 + 元素框 + 配对连线
+  ///
+  /// 用于排查「为什么框选后读出来是错的」：
+  /// - 图本身不对（框错区域）-> 放大图一眼看出
+  /// - 字读错（OCR 误识别）-> 元素列表看原始文本
+  /// - 配对错（色号-颗数连错线）-> 红色连线直观可见
+  /// 正式版随调试功能一起移除。
+  void _showOcrDebug() {
+    final dbg = _ocrDebug;
+    if (dbg == null) {
+      return;
+    }
+    final codes = dbg.elems.where((e) => e.code != null).length;
+    final nums = dbg.elems.where((e) => e.count != null).length;
+    final paired = dbg.elems.where((e) => e.code != null && e.pairedCount != null).length;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => SizedBox(
+        height: MediaQuery.of(ctx).size.height * 0.85,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+              child: Row(
+                children: [
+                  const Icon(Icons.bug_report, size: 18, color: Colors.black54),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      "OCR 调试 · ${dbg.source} · 色号$codes/颗数$nums/配上$paired对",
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  IconButton(onPressed: () => Navigator.pop(ctx), icon: const Icon(Icons.close)),
+                ],
+              ),
+            ),
+            // 放大图 1:1 显示（横向滚动看细节），元素框与连线直接用图坐标
+            Expanded(
+              flex: 6,
+              child: SingleChildScrollView(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: SizedBox(
+                    width: dbg.imgW.toDouble(),
+                    height: dbg.imgH.toDouble(),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        Image.file(File(dbg.imgPath), fit: BoxFit.fill),
+                        CustomPaint(painter: _OcrDebugPainter(dbg.elems)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            // 元素明细：原始文本 + 几何框 + 配对结果
+            Expanded(
+              flex: 4,
+              child: ListView.builder(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                itemCount: dbg.elems.length,
+                itemBuilder: (_, i) {
+                  final e = dbg.elems[i];
+                  final geo = "(${e.rect.left.toInt()},${e.rect.top.toInt()} "
+                      "${e.rect.width.toInt()}×${e.rect.height.toInt()})";
+                  return Text(
+                    e.code != null
+                        ? "色号「${e.dbgText}」$geo → ${e.pairedCount ?? "✗未配上"}"
+                        : "颗数「${e.dbgText}」$geo ${e.used ? "已消费" : "未消费"}",
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: e.code != null
+                          ? (e.pairedCount != null ? Colors.green : Colors.red)
+                          : Colors.blue,
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1576,6 +1700,45 @@ class _SelPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _SelPainter oldDelegate) => oldDelegate.rect != rect;
+}
+
+/// 【临时调试】OCR 元素叠加层：绿框=色号、蓝框=颗数、红线=配对连线
+///
+/// 画布尺寸与放大图 1:1（外层 SizedBox 定死 imgW×imgH），元素框直接绘制。
+/// 正式版随调试功能一起移除。
+class _OcrDebugPainter extends CustomPainter {
+  final List<_OcrElem> elems;
+
+  _OcrDebugPainter(this.elems);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.clipRect(Offset.zero & size);
+    final codeP = Paint()
+      ..color = Colors.green
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+    final numP = Paint()
+      ..color = Colors.blue
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+    final lineP = Paint()
+      ..color = Colors.red
+      ..strokeWidth = 2;
+    for (final e in elems) {
+      if (e.rect.width <= 0 || e.rect.height <= 0) {
+        continue; // 几何框退化的元素画不了框
+      }
+      canvas.drawRect(e.rect, e.code != null ? codeP : numP);
+      final other = e.pairedWith;
+      if (e.code != null && other != null && other.rect.width > 0) {
+        canvas.drawLine(e.rect.center, other.rect.center, lineP);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _OcrDebugPainter oldDelegate) => true;
 }
 
 /// 网格覆盖层：把识别网格线画在图上，肉眼核对是否压住真实格线
