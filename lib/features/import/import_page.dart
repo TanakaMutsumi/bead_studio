@@ -69,7 +69,8 @@ class _ImportPageState extends State<ImportPage> {
 
   Future<void> _pickImage(ImageSource source) async {
     final picker = ImagePicker();
-    final picked = await picker.pickImage(source: source, imageQuality: 100);
+    // 不传 imageQuality：任何非空值都会触发解码->重编码（quality 100 也逃不掉）
+    final picked = await picker.pickImage(source: source);
     if (picked != null) {
       final bytes = await picked.readAsBytes();
       setState(() {

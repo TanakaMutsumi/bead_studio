@@ -161,7 +161,9 @@ class _RestorePageState extends State<RestorePage> {
   // ==================== 选图 ====================
 
   Future<void> _pickImage(ImageSource source) async {
-    final picked = await ImagePicker().pickImage(source: source, imageQuality: 100);
+    // 不传 imageQuality：任何非空值都会触发解码->重编码（quality 100 也逃不掉），
+    // 微信压过的小图再吃一次代际损失；不传则原字节直读
+    final picked = await ImagePicker().pickImage(source: source);
     if (picked == null) {
       return;
     }
