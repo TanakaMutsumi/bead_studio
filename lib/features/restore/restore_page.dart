@@ -50,6 +50,12 @@ class _OcrElem {
   _OcrElem(this.seq, this.rect, this.code, this.count);
 }
 
+/// 后台重编码显示用 JPEG（微信变体 JPEG 引擎解出空图导致纯白的兜底）。
+/// isolate 里跑：百万像素级 encodeJpg 同步执行会卡 UI 帧
+Uint8List _encodeDisplayJpeg(img.Image image) {
+  return Uint8List.fromList(img.encodeJpg(image, quality: 90));
+}
+
 /// 【临时调试】一次图例 OCR 的调试快照（正式版随调试视图一起移除）
 class _OcrDebugInfo {
   final String source; ///< 来源（自动扫描档位 / 手动框选）
@@ -112,6 +118,9 @@ class _RestorePageState extends State<RestorePage> {
   _OcrDebugInfo? _ocrDebug;
   final _legendScrollCtrl = ScrollController(); ///< 图例阶段滚动控制（进入时滚到图片底部露出图例）
   int _selHandleDrag = -1; ///< 选区把手拖拽中（-1=画新框，0-7=把手索引）
+  Uint8List? _displayBytes; ///< 显示用重编码 JPEG（微信变体 JPEG 引擎解码白屏的兜底）
+  String _decodeInfo = ""; ///< 【临时调试】图片信息条（原图尺寸/显示尺寸），白屏时定位用
+  bool _decoding = false; ///< 解码/重编码中（图片区遮罩，避免"白屏不知发生什么"）
 
   // ========== 主体对齐（步骤 3/4） ==========
   Rect? _selDisplay; ///< 主体选区（显示坐标）
@@ -171,13 +180,19 @@ class _RestorePageState extends State<RestorePage> {
       return;
     }
     try {
+      setState(() => _decoding = true);
       final bytes = await picked.readAsBytes();
       final decoded = await decodeImageRobust(bytes);
+      // 显示层兜底重编码：微信变体 JPEG 存在"纯 Dart 能解、Flutter 引擎解出空图"
+      // 的组合（症状=图片区纯白）——识别/裁剪仍用 decoded 原始像素，仅 Image.memory
+      // 改喂干净重编码字节，quality 90 视觉无损；isolate 里跑避免卡 UI
+      final display = await compute(_encodeDisplayJpeg, decoded);
       if (!mounted) {
         return;
       }
       setState(() {
         _bytes = bytes;
+        _displayBytes = display;
         _image = decoded;
         _legendSel = null;
         _selDisplay = null;
@@ -185,6 +200,9 @@ class _RestorePageState extends State<RestorePage> {
         _legendByOcr = false;
         _pitchX = 0;
         _model = null;
+        // 【临时调试】图片信息条：白屏/异常时用户能看到原图尺寸与显示尺寸，定位用
+        _decodeInfo = "原图 ${decoded.width}×${decoded.height} · 重编码显示";
+        _decoding = false;
         // 【临时调试】换图即清空调试快照：新图识别前 AppBar 不显示旧图的调试入口，
         // 否则点开看到的是上一张图的放大图/元素，误导排障
         _ocrDebug = null;
@@ -201,6 +219,7 @@ class _RestorePageState extends State<RestorePage> {
     } catch (e) {
       // 解码失败必须弹提示（曾经异常被吞表现为"选图无反应"）
       if (mounted) {
+        setState(() => _decoding = false);
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("无法解码图片: $e")));
       }
     }
@@ -1052,7 +1071,7 @@ class _RestorePageState extends State<RestorePage> {
                     },
               child: Stack(
                 children: [
-                  Image.memory(_bytes!, width: ds.width, height: ds.height, fit: BoxFit.fill),
+                  Image.memory(_displayBytes ?? _bytes!, width: ds.width, height: ds.height, fit: BoxFit.fill),
                   if (sel != null && sel.width > 2)
                     Positioned.fill(child: CustomPaint(painter: _SelPainter(sel))),
                   // 选区锚点：给 Scrollable.ensureVisible 定位（透明占位，不参与绘制）
@@ -1065,7 +1084,42 @@ class _RestorePageState extends State<RestorePage> {
             ),
           ),
         ),
+        // 【临时调试】图片信息条：白屏/加载异常时用户能看到数据状态，不再"不知发生了什么"
+        if (_decodeInfo.isNotEmpty)
+          Positioned(
+            top: 38,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.45),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  _decodeInfo,
+                  style: const TextStyle(fontSize: 10, color: Colors.white70),
+                ),
+              ),
+            ),
+          ),
         Positioned(top: 4, left: 0, right: 0, child: Center(child: _modePill())),
+        if (_decoding)
+          Positioned.fill(
+            child: Container(
+              color: Colors.white,
+              alignment: Alignment.center,
+              child: const Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 12),
+                  Text("正在解码图片…", style: TextStyle(fontSize: 13)),
+                ],
+              ),
+            ),
+          ),
       ],
     );
   }
