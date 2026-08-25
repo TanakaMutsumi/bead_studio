@@ -1017,13 +1017,15 @@ class _RestorePageState extends State<RestorePage> {
           controller: scrollCtrl,
           physics: _viewMode ? null : const NeverScrollableScrollPhysics(),
           // 双指捏合缩放原图（放大后双指拖动平移），单指平移禁用让给选区手势；
-          // 小图（微信压缩图）的图例条带不放大根本看不清、框不准
+          // 小图（微信压缩图）的图例条带不放大根本看不清、框不准。
+          // 注意 boundaryMargin 不能给 infinity：无限值进变换矩阵会算出 NaN，
+          // 矩阵含 NaN 时 child 整块渲染消失（图片区纯白），默认 zero 即可——
+          // 放大后平移范围=放大溢出量，正好满足浏览需求
           child: InteractiveViewer(
             maxScale: 8,
             minScale: 1,
             panEnabled: false,
             constrained: false,
-            boundaryMargin: const EdgeInsets.all(double.infinity),
             child: GestureDetector(
               onPanDown: _viewMode
                   ? null
