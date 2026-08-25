@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -165,6 +166,8 @@ class _RestorePageState extends State<RestorePage> {
         _model = null;
         _stage = _Stage.legend;
       });
+      // 自动图例检测：不依赖用户框选，直接扫底部区域（框错/漏框是主要失败来源）
+      unawaited(_autoScanLegend());
     } catch (e) {
       // 解码失败必须弹提示（曾经异常被吞表现为"选图无反应"）
       if (mounted) {
@@ -220,6 +223,78 @@ class _RestorePageState extends State<RestorePage> {
   }
 
   // ==================== 步骤 1/2：图例识别 ====================
+
+  /// 自动图例检测：对图片底部几档区域直接 OCR，任一档配对 >= 3 即出清单
+  ///
+  /// 用户手框图例区是主要失败来源（框到图案区/水印区时 OCR 读不到色号，
+  /// 静默回退的色块量化清单全是误导性错误条目）。图纸图例固定印在底部，
+  /// 选图后自动按 [88%, 100%] / [78%, 100%] / [65%, 100%] 三档扫描，
+  /// 从窄到宽——窄档不含上方水印文字，命中即停。失败不阻塞：提示手动框选。
+  Future<void> _autoScanLegend() async {
+    final image = _image;
+    if (image == null || kIsWeb) {
+      return;
+    }
+    setState(() => _legendBusy = true);
+    List<(int, int)>? hit;
+    for (final top in const [0.88, 0.78, 0.65]) {
+      final pairs = await _ocrLegendPairs(
+        0, image.height * top, image.width.toDouble(), image.height * (1 - top));
+      if (pairs != null && pairs.length >= 3) {
+        hit = pairs;
+        break;
+      }
+    }
+    if (!mounted) {
+      return;
+    }
+    if (hit == null) {
+      setState(() => _legendBusy = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("未自动读到图例，请在图上框选底部图例区（色块+色号+数字）后点识别")),
+      );
+      return;
+    }
+    for (final e in _legend) {
+      e.countCtrl.dispose();
+    }
+    final byOcr = <_LegendEntry>[];
+    final seen = <int>{};
+    for (final (idx, count) in hit) {
+      if (!seen.add(idx)) {
+        continue; // 同一色号重复出现取首条
+      }
+      final e = _LegendEntry(idx, 1);
+      e.countCtrl.text = count.toString();
+      byOcr.add(e);
+    }
+    final ds = _displaySize();
+    setState(() {
+      _legendBusy = false;
+      _legend = byOcr;
+      _legendByOcr = true;
+      _viewMode = true; // 自动切查看模式供对照原图校对
+      _panelExpanded = true;
+      // 选区标到图例条带：滚动锚点定位 + 告诉用户识别的是哪块
+      _legendSel = Rect.fromLTWH(0, ds.height * 0.88, ds.width, ds.height * 0.12);
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final selCtx = _legendSelKey.currentContext;
+      if (selCtx != null) {
+        Scrollable.ensureVisible(
+          selCtx,
+          duration: const Duration(milliseconds: 350),
+          curve: Curves.easeOutCubic,
+          alignment: 0.5,
+        );
+      }
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("已自动识别图例 ${byOcr.length} 色，请对照原图核对；不准可切框选模式重框")),
+      );
+    }
+  }
 
   /// 识别图例：框选区域自动检测行列 -> 逐格采样 -> 聚合用色清单
   void _scanLegend() {
@@ -319,7 +394,7 @@ class _RestorePageState extends State<RestorePage> {
         );
       } else if (pairs != null) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("图例印刷识别不足，按色块识别；颗数请按原图手填")),
+          const SnackBar(content: Text("框选区域未读到图例文字，以下按色块识别仅作参考；请只框选图纸底部的色块+色号+数字区域")),
         );
       } else if (det == null) {
         ScaffoldMessenger.of(context).showSnackBar(
