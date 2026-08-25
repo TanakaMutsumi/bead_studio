@@ -180,6 +180,9 @@ class _RestorePageState extends State<RestorePage> {
         _legendByOcr = false;
         _pitchX = 0;
         _model = null;
+        // 【临时调试】换图即清空调试快照：新图识别前 AppBar 不显示旧图的调试入口，
+        // 否则点开看到的是上一张图的放大图/元素，误导排障
+        _ocrDebug = null;
         _stage = _Stage.legend;
       });
       // 图例印在图纸底部，而图片高于视口时初始只显示到图案中部（底部面板又占掉
@@ -369,6 +372,11 @@ class _RestorePageState extends State<RestorePage> {
     if (image == null) {
       return null;
     }
+    // 【临时调试】每次识别尝试先清旧快照：本次失败不留上一张图的旧数据
+    _ocrDebug = null;
+    var dbgPath = ""; // 【临时调试】异常路径已产出的放大图路径（crop/写盘成功后才有值）
+    var dbgW = 0;
+    var dbgH = 0;
     try {
       final crop = img.copyCrop(image, x: rx.toInt(), y: ry.toInt(), width: rw.toInt(), height: rh.toInt());
       // 小字放大提高识别率：按高度放大到 ~480px（数字高 ~60px+）。
@@ -377,6 +385,9 @@ class _RestorePageState extends State<RestorePage> {
       final scaled = img.copyResize(crop, width: (crop.width * scale).round());
       final tmp = File("${(await getTemporaryDirectory()).path}/legend_ocr.png");
       await tmp.writeAsBytes(img.encodePng(scaled));
+      dbgPath = tmp.path; // 【临时调试】记下放大图，异常路径的快照也要能看图
+      dbgW = scaled.width;
+      dbgH = scaled.height;
 
       final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
       final recognized = await recognizer.processImage(InputImage.fromFilePath(tmp.path));
@@ -422,6 +433,11 @@ class _RestorePageState extends State<RestorePage> {
       _ocrDebug = _OcrDebugInfo(source, tmp.path, scaled.width, scaled.height, elems);
       return _pairLegendOcr(elems);
     } catch (_) {
+      // 【临时调试】识别抛异常也记快照（source 标"异常"）：调试视图能看到放大图 + 0 个
+      // 元素——比入口直接消失更有排障价值；放大图都没产出（crop 就失败）则保持 null
+      if (dbgPath.isNotEmpty) {
+        _ocrDebug = _OcrDebugInfo("$source（异常）", dbgPath, dbgW, dbgH, const []);
+      }
       return null;
     }
   }
