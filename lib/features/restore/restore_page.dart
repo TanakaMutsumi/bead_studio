@@ -50,12 +50,6 @@ class _OcrElem {
   _OcrElem(this.seq, this.rect, this.code, this.count);
 }
 
-/// 后台重编码显示用 PNG（引擎 JPEG 解码器对部分字节流会"永远挂起"的兜底）。
-/// isolate 里跑：百万像素级编码同步执行会卡 UI 帧
-Uint8List _encodeDisplayPng(img.Image image) {
-  return Uint8List.fromList(img.encodePng(image));
-}
-
 /// 【临时调试】一次图例 OCR 的调试快照（正式版随调试视图一起移除）
 class _OcrDebugInfo {
   final String source; ///< 来源（自动扫描档位 / 手动框选）
@@ -182,11 +176,10 @@ class _RestorePageState extends State<RestorePage> {
     try {
       setState(() => _decoding = true);
       final bytes = await picked.readAsBytes();
-      final decoded = await decodeImageRobust(bytes);
-      // 显示层兜底重编码：引擎 JPEG 解码器对部分字节流会"解出空图"甚至
-      // "永远挂起（首帧不到达）"——识别/裁剪仍用 decoded 原始像素，仅 Image.memory
-      // 改喂重编码 PNG（引擎 PNG 解码极稳）；isolate 里跑避免卡 UI
-      final display = await compute(_encodeDisplayPng, decoded);
+      // 显示层兜底重编码（导入页/还原页共用）：Impeller 引擎对部分 JPEG 字节流
+      // （微信变体）首帧解码挂起，Image.memory 改喂重编码 PNG；识别/裁剪仍用
+      // decoded 原始像素
+      final (decoded, display) = await decodeForDisplay(bytes);
       if (!mounted) {
         return;
       }

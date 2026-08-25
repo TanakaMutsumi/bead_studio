@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../core/app_build.dart';
+import '../../core/decode_image.dart';
 import '../../core/palette.dart';
 import '../../core/palette_registry.dart';
 import '../../core/pixel_engine.dart';
@@ -25,6 +26,8 @@ class _ImportPageState extends State<ImportPage> {
 
   XFile? _pickedFile;
   Uint8List? _pickedBytes; ///< 跨平台图片字节（web 上 XFile.path 是 blob URL 不能走 dart:io）
+  Uint8List? _displayBytes; ///< 预览用重编码 PNG（Impeller 对部分 JPEG 首帧挂起的兜底，转换仍用原始字节）
+  var _decoding = false; ///< 解码/重编码中（预览区转圈，避免"白屏不知发生什么"）
   var _boardSize = 52;
   var _kernel = DitherKernel.none;
   var _converting = false;
@@ -73,10 +76,28 @@ class _ImportPageState extends State<ImportPage> {
     final picked = await picker.pickImage(source: source);
     if (picked != null) {
       final bytes = await picked.readAsBytes();
-      setState(() {
-        _pickedFile = picked;
-        _pickedBytes = bytes;
-      });
+      setState(() => _decoding = true);
+      try {
+        // 预览必须走重编码：Impeller 引擎对部分 JPEG 字节流（微信变体）首帧
+        // 解码挂起，Image.memory 直接喂原始字节会永远空白（2026-08-25 实锤）
+        final (_, display) = await decodeForDisplay(bytes);
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _pickedFile = picked;
+          _pickedBytes = bytes;
+          _displayBytes = display;
+        });
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("无法解码图片: $e")));
+        }
+      } finally {
+        if (mounted) {
+          setState(() => _decoding = false);
+        }
+      }
     }
   }
 
@@ -142,18 +163,51 @@ class _ImportPageState extends State<ImportPage> {
           // 预览区
           AspectRatio(
             aspectRatio: 1,
-            child: _pickedBytes == null
+            child: _pickedBytes == null || _decoding
                 ? Container(
                     decoration: BoxDecoration(
                       color: Theme.of(context).colorScheme.surface,
                       border: Border.all(color: Colors.black12),
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: const Center(child: Text("选择一张图片开始")),
+                    child: Center(
+                      // 【临时调试】解码遮罩：与空白占位同框，白屏排障不再靠猜，正式版只留占位文字
+                      child: _decoding
+                          ? const Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                CircularProgressIndicator(),
+                                SizedBox(height: 10),
+                                Text("正在解码图片…", style: TextStyle(fontSize: 13)),
+                              ],
+                            )
+                          : const Text("选择一张图片开始"),
+                    ),
                   )
                 : ClipRRect(
                     borderRadius: BorderRadius.circular(12),
-                    child: Image.memory(_pickedBytes!, fit: BoxFit.cover),
+                    // 喂重编码 PNG 而非原始字节：Impeller 对部分 JPEG 首帧挂起
+                    child: Image.memory(
+                      _displayBytes!,
+                      fit: BoxFit.cover,
+                      // 【临时调试】暴露引擎解码状态：黄底=首帧未到（解码挂起）、
+                      // 红底=解码抛异常，正式版移除
+                      frameBuilder: (ctx, child, frame, wasSync) {
+                        if (frame == null && !wasSync) {
+                          return const ColoredBox(
+                            color: Colors.amber,
+                            child: Center(child: Text("显示解码中…", style: TextStyle(color: Colors.black87))),
+                          );
+                        }
+                        return child;
+                      },
+                      errorBuilder: (ctx, error, stack) {
+                        return ColoredBox(
+                          color: Colors.redAccent,
+                          child: Center(child: Text("显示解码失败: $error", textAlign: TextAlign.center, style: const TextStyle(color: Colors.white))),
+                        );
+                      },
+                    ),
                   ),
           ),
           const SizedBox(height: 12),

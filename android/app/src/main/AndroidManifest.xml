@@ -24,12 +24,12 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
-            <!-- 关闭 Impeller 渲染后端：模拟器 GLES 上 Impeller 对大图纹理上传会
-                 "挂起"（ImageStream 首帧永远不到达，图片区卡在解码中），换回稳定
-                 的 Skia 后端。观察期开关，真机验证后评估是否保留 -->
-            <meta-data
-                android:name="io.flutter.embedding.android.EnableImpeller"
-                android:value="false" />
+            <!-- 注：Flutter 3.47 起 Android 强制 Impeller 渲染，曾尝试的
+                 EnableImpeller=false meta-data 与 debug.flutter.impeller 系统
+                 属性均已无效（logcat 仍显示 Using the Impeller rendering
+                 backend）。Impeller GLES 对微信变体 JPEG 首帧解码挂起的问题
+                 由显示层喂重编码 PNG 解决（core/decode_image.dart
+                 decodeForDisplay），不再依赖关闭渲染后端 -->
         </activity>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
