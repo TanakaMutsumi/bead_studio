@@ -1449,7 +1449,13 @@ class _RestorePageState extends State<RestorePage> {
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
-                        Image.file(File(dbg.imgPath), fit: BoxFit.fill),
+                        // 放大图宽可达 ~4800，超 GLES 纹理上限（2048）会渲染成
+                        // 一条带——超限时按解码目标宽限幅（等比，不放大小图）
+                        Image.file(
+                          File(dbg.imgPath),
+                          fit: BoxFit.fill,
+                          cacheWidth: dbg.imgW > kDisplayMaxEdge ? kDisplayMaxEdge : null,
+                        ),
                         CustomPaint(painter: _OcrDebugPainter(dbg.elems)),
                       ],
                     ),

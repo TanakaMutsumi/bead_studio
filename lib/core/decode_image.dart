@@ -45,13 +45,22 @@ Future<img.Image> decodeImageRobust(Uint8List bytes) async {
   }
 }
 
+/// 显示位图长边上限：模拟器 GLES 纹理上限常见 2048（GL_MAX_TEXTURE_SIZE），
+/// 超限位图在 Impeller 下纹理创建残缺、只渲染出一条横带其余全白
+/// （2026-08-25 实测 1200x2300 必现、1200x2000 正常）。预览显示宽最大
+/// ~1056 逻辑像素，2048 已有两倍冗余；识别/裁剪不受此限幅影响。
+const int kDisplayMaxEdge = 2048;
+
 /// 解码并产出显示用重编码 PNG（导入页/还原页预览共用）
 ///
-/// 返回 (解码图, 显示 PNG 字节)。显示层必须兜底重编码：Flutter 3.47 起
-/// Android 强制 Impeller 渲染（manifest EnableImpeller=false 已是 no-op），
-/// Impeller GLES 对部分 JPEG 字节流（微信变体）的首帧解码会"挂起"——
-/// ImageStream 永不完成，Image.widget 喂原始字节就永远空白。喂重编码
-/// PNG 稳定；识别/裁剪继续用 decoded 原始像素，不受影响。
+/// 返回 (解码图, 显示 PNG 字节)。显示层必须兜底重编码 + 长边限幅：
+/// - 重编码：Flutter 3.47 起 Android 强制 Impeller 渲染（manifest
+///   EnableImpeller=false 已是 no-op），Impeller GLES 对部分 JPEG 字节流
+///   （微信变体）的首帧解码会"挂起"——ImageStream 永不完成，Image.widget
+///   喂原始字节就永远空白；
+/// - 限幅：任一边 > [kDisplayMaxEdge] 的位图超 GLES 纹理上限，等比缩到
+///   限幅内再编码（显示框由 BoxFit.fill 拉伸，等比缩放无变形）。
+/// 识别/裁剪继续用 decoded 原始像素，不受影响。
 Future<(img.Image, Uint8List)> decodeForDisplay(Uint8List bytes) async {
   final decoded = await decodeImageRobust(bytes);
   final display = await compute(encodeDisplayPng, decoded);
@@ -60,9 +69,19 @@ Future<(img.Image, Uint8List)> decodeForDisplay(Uint8List bytes) async {
 
 /// 重编码显示 PNG（顶层函数供 compute 调用）
 ///
-/// isolate 里跑：百万像素级编码同步执行会卡 UI 帧。
+/// isolate 里跑：百万像素级缩放/编码同步执行会卡 UI 帧。
 Uint8List encodeDisplayPng(img.Image image) {
-  return Uint8List.fromList(img.encodePng(image));
+  var display = image;
+  final longEdge = image.width >= image.height ? image.width : image.height;
+  if (longEdge > kDisplayMaxEdge) {
+    final scale = kDisplayMaxEdge / longEdge;
+    display = img.copyResize(
+      image,
+      width: (image.width * scale).round(),
+      height: (image.height * scale).round(),
+    );
+  }
+  return Uint8List.fromList(img.encodePng(display));
 }
 
 /// RGBA 原始字节 -> image 包 Image（拷贝进 ImageData）
