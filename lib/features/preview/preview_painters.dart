@@ -29,7 +29,8 @@ class BeadFlatPainter extends CustomPainter {
     final dx0 = (size.width - cell * model.width) / 2;
     final dy0 = (size.height - cell * model.height) / 2;
     final beadR = cell * 0.44;
-    final boardPaint = Paint()..color = const Color.fromARGB(255, 238, 238, 235);
+    final boardPaint = Paint()
+      ..color = const Color.fromARGB(255, 238, 238, 235);
     final beadPaint = Paint()..style = PaintingStyle.fill;
     final edgePaint = Paint()
       ..style = PaintingStyle.stroke
@@ -43,7 +44,9 @@ class BeadFlatPainter extends CustomPainter {
         final cx = dx0 + (x + 0.5) * cell;
         final cy = dy0 + (y + 0.5) * cell;
         final v = model.cell(x, y);
-        final c = v >= 0 && v < palette.colors.length ? palette.colors[v] : null;
+        final c = v >= 0 && v < palette.colors.length
+            ? palette.colors[v]
+            : null;
         if (c == null) {
           // 空格：板面钉点
           boardPaint.color = const Color.fromARGB(255, 213, 213, 210);
@@ -57,7 +60,11 @@ class BeadFlatPainter extends CustomPainter {
         canvas.drawCircle(center, beadR, edgePaint);
         if (cell >= 7) {
           glossPaint.color = Colors.white.withValues(alpha: 0.42);
-          canvas.drawCircle(Offset(cx - beadR * 0.34, cy - beadR * 0.34), beadR * 0.3, glossPaint);
+          canvas.drawCircle(
+            Offset(cx - beadR * 0.34, cy - beadR * 0.34),
+            beadR * 0.3,
+            glossPaint,
+          );
         }
       }
     }
@@ -73,11 +80,21 @@ class BeadFlatPainter extends CustomPainter {
 class BeadScenePainter extends CustomPainter {
   final PatternModel model;
   final BeadPalette palette;
-  final double yaw; ///< 水平旋转角（弧度）
-  final double pitch; ///< 俯仰角（弧度，正 = 从上往下看）
-  final double zoom; ///< 缩放（0.45-3.5）
-  final double brightness; ///< 亮度系数（0.6-1.4）
-  final bool ironed; ///< true = 熨烫压扁（次轴压缩 + 弱高光）
+  final double yaw;
+
+  ///< 水平旋转角（弧度）
+  final double pitch;
+
+  ///< 俯仰角（弧度，正 = 从上往下看）
+  final double zoom;
+
+  ///< 缩放（0.45-3.5）
+  final double brightness;
+
+  ///< 亮度系数（0.6-1.4）
+  final bool ironed;
+
+  ///< true = 熨烫压扁（次轴压缩 + 弱高光）
 
   BeadScenePainter({
     required this.model,
@@ -111,7 +128,8 @@ class BeadScenePainter extends CustomPainter {
     final nz = cosY * cosP;
 
     // 投影 + 深度收集
-    final projected = <(double sx, double sy, double depth, double scale, Color color)>[];
+    final projected =
+        <(double sx, double sy, double depth, double scale, Color color)>[];
     for (final b in beads) {
       // 绕 Y（yaw）：z=0 平面内旋转
       final rx = b.x * cosY;
@@ -121,7 +139,13 @@ class BeadScenePainter extends CustomPainter {
       final rz2 = b.y * sinP + rz1 * cosP;
       final viewZ = dist + rz2;
       final s = focal / viewZ;
-      projected.add((size.width / 2 + rx * s * unit, size.height / 2 - ry2 * s * unit, rz2, s, b.color));
+      projected.add((
+        size.width / 2 + rx * s * unit,
+        size.height / 2 - ry2 * s * unit,
+        rz2,
+        s,
+        b.color,
+      ));
     }
     // 远的先画（painter's algorithm）
     projected.sort((a, b) => a.$3.compareTo(b.$3));
@@ -148,9 +172,18 @@ class BeadScenePainter extends CustomPainter {
         _clamp255(base.g * lit * brightness),
         _clamp255(base.b * lit * brightness),
       );
-      canvas.drawOval(Rect.fromCenter(center: Offset(p.$1, p.$2), width: brx * 2, height: bry * 2), paint);
+      canvas.drawOval(
+        Rect.fromCenter(
+          center: Offset(p.$1, p.$2),
+          width: brx * 2,
+          height: bry * 2,
+        ),
+        paint,
+      );
       if (drawGloss) {
-        gloss.color = Colors.white.withValues(alpha: (0.16 + 0.42 * diffuse).clamp(0.0, 1.0));
+        gloss.color = Colors.white.withValues(
+          alpha: (0.16 + 0.42 * diffuse).clamp(0.0, 1.0),
+        );
         canvas.drawOval(
           Rect.fromCenter(
             center: Offset(p.$1 - brx * 0.3, p.$2 - bry * 0.32),
@@ -200,7 +233,9 @@ class BeadScenePainter extends CustomPainter {
           continue;
         }
         final c = palette.colors[v];
-        result.add(_SceneBead(x - cx, cy - y, Color.fromARGB(255, c.r, c.g, c.b)));
+        result.add(
+          _SceneBead(x - cx, cy - y, Color.fromARGB(255, c.r, c.g, c.b)),
+        );
       }
     }
     return result;

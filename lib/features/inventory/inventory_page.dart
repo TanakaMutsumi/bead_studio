@@ -59,11 +59,20 @@ class _InventoryPageState extends State<InventoryPage> {
           controller: ctrl,
           autofocus: true,
           keyboardType: TextInputType.number,
-          decoration: const InputDecoration(labelText: "库存颗数", border: OutlineInputBorder()),
+          decoration: const InputDecoration(
+            labelText: "库存颗数",
+            border: OutlineInputBorder(),
+          ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text("取消")),
-          FilledButton(onPressed: () => Navigator.of(dialogContext).pop(ctrl.text), child: const Text("确定")),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text("取消"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(ctrl.text),
+            child: const Text("确定"),
+          ),
         ],
       ),
     );
@@ -91,8 +100,14 @@ class _InventoryPageState extends State<InventoryPage> {
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text("取消")),
-          FilledButton(onPressed: () => Navigator.of(dialogContext).pop(ctrl.text), child: const Text("确定")),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text("取消"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(ctrl.text),
+            child: const Text("确定"),
+          ),
         ],
       ),
     );
@@ -117,7 +132,12 @@ class _InventoryPageState extends State<InventoryPage> {
       );
     }
     final colors = widget.palette.colors
-        .where((c) => _search.isEmpty || c.id.contains(_search) || c.name.contains(_search))
+        .where(
+          (c) =>
+              _search.isEmpty ||
+              c.id.contains(_search) ||
+              c.name.contains(_search),
+        )
         .toList();
     final total = _counts.values.fold(0, (a, b) => a + b);
 
@@ -125,7 +145,11 @@ class _InventoryPageState extends State<InventoryPage> {
       appBar: AppBar(
         title: Text("珠子库存 · 共 $total 颗"),
         actions: [
-          IconButton(onPressed: _batchSet, icon: const Icon(Icons.library_add), tooltip: "批量入库"),
+          IconButton(
+            onPressed: _batchSet,
+            icon: const Icon(Icons.library_add),
+            tooltip: "批量入库",
+          ),
           IconButton(
             onPressed: () async {
               await InventoryStore.clear();
@@ -170,12 +194,17 @@ class _InventoryPageState extends State<InventoryPage> {
                           ),
                         ),
                         title: Text("${c.id} ${c.name}"),
-                        subtitle: Text("点按清点 · 现有 $n 颗", style: const TextStyle(fontSize: 12)),
+                        subtitle: Text(
+                          "点按清点 · 现有 $n 颗",
+                          style: const TextStyle(fontSize: 12),
+                        ),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             IconButton(
-                              onPressed: n >= 100 ? () => _adjust(c.id, -100) : null,
+                              onPressed: n >= 100
+                                  ? () => _adjust(c.id, -100)
+                                  : null,
                               icon: const Icon(Icons.remove_circle_outline),
                               tooltip: "-100",
                             ),
@@ -184,7 +213,10 @@ class _InventoryPageState extends State<InventoryPage> {
                               child: Text(
                                 "$n",
                                 textAlign: TextAlign.center,
-                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 15,
+                                ),
                               ),
                             ),
                             IconButton(

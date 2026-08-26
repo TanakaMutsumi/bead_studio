@@ -32,9 +32,16 @@ class _Snapshot {
 class EditorPage extends StatefulWidget {
   final PatternModel model;
   final BeadPalette palette;
-  final File? sourceFile; ///< 来源作品文件（作品库打开时传入：保存=覆写而非另存）
+  final File? sourceFile;
 
-  const EditorPage({super.key, required this.model, required this.palette, this.sourceFile});
+  ///< 来源作品文件（作品库打开时传入：保存=覆写而非另存）
+
+  const EditorPage({
+    super.key,
+    required this.model,
+    required this.palette,
+    this.sourceFile,
+  });
 
   @override
   State<EditorPage> createState() => _EditorPageState();
@@ -43,15 +50,21 @@ class EditorPage extends StatefulWidget {
 class _EditorPageState extends State<EditorPage> {
   static const _maxUndo = 50;
   static const _brushSizes = [1, 2, 3, 5];
-  static const _boardSizes = [26, 29, 52]; ///< 常见拼豆板边长
+  static const _boardSizes = [26, 29, 52];
+
+  ///< 常见拼豆板边长
 
   late PatternModel _model;
-  final _revision = ValueNotifier<int>(0); ///< 网格内容版本号，驱动画布重绘
+  final _revision = ValueNotifier<int>(0);
+
+  ///< 网格内容版本号，驱动画布重绘
   final List<_Snapshot> _undoStack = [];
   final List<_Snapshot> _redoStack = [];
   var _tool = _Tool.brush;
   var _brushSize = 1;
-  var _currentColor = 9; ///< 默认选中红色（显眼）
+  var _currentColor = 9;
+
+  ///< 默认选中红色（显眼）
 
   // 拼装模式：点颜色条 = 高亮该色全部格子（其余色降饱和），辅助对照实物拼豆
   var _assembleMode = false;
@@ -60,7 +73,9 @@ class _EditorPageState extends State<EditorPage> {
   // 分板模式：按底板边长把图案切块导航，板外格子淡出，颜色条显示本板用量
   var _boardMode = false;
   var _boardSize = 29;
-  var _boardIndex = 0; ///< 当前板序号（行优先）
+  var _boardIndex = 0;
+
+  ///< 当前板序号（行优先）
 
   // 矩形选区（格子坐标，拖拽中实时更新）
   int? _selX0, _selY0, _selX1, _selY1;
@@ -85,7 +100,12 @@ class _EditorPageState extends State<EditorPage> {
     if (bottom > _model.height) {
       bottom = _model.height;
     }
-    return Rect.fromLTRB(left.toDouble(), top.toDouble(), right.toDouble(), bottom.toDouble());
+    return Rect.fromLTRB(
+      left.toDouble(),
+      top.toDouble(),
+      right.toDouble(),
+      bottom.toDouble(),
+    );
   }
 
   /// 本板用料统计
@@ -130,7 +150,8 @@ class _EditorPageState extends State<EditorPage> {
 
   // ==================== 撤销 / 重做 ====================
 
-  _Snapshot _snapshot() => _Snapshot(_model.copyGrid(), _model.width, _model.height);
+  _Snapshot _snapshot() =>
+      _Snapshot(_model.copyGrid(), _model.width, _model.height);
 
   void _pushUndo() {
     _undoStack.add(_snapshot());
@@ -143,7 +164,12 @@ class _EditorPageState extends State<EditorPage> {
   void _restore(_Snapshot s) {
     if (s.width != _model.width || s.height != _model.height) {
       // 尺寸变化：必须换新实例（width/height 是 final）
-      _model = PatternModel(width: s.width, height: s.height, grid: s.grid, paletteIds: _model.paletteIds);
+      _model = PatternModel(
+        width: s.width,
+        height: s.height,
+        grid: s.grid,
+        paletteIds: _model.paletteIds,
+      );
     } else {
       for (var i = 0; i < s.grid.length; i++) {
         _model.grid[i] = s.grid[i];
@@ -176,10 +202,16 @@ class _EditorPageState extends State<EditorPage> {
 
   /// 局部坐标 -> 格子坐标
   int _cellX(Offset local, double canvasSide) =>
-      (local.dx / (canvasSide / _model.width)).floor().clamp(0, _model.width - 1);
+      (local.dx / (canvasSide / _model.width)).floor().clamp(
+        0,
+        _model.width - 1,
+      );
 
   int _cellY(Offset local, double canvasSide) =>
-      (local.dy / (canvasSide / _model.height)).floor().clamp(0, _model.height - 1);
+      (local.dy / (canvasSide / _model.height)).floor().clamp(
+        0,
+        _model.height - 1,
+      );
 
   void _applyAt(Offset local, double canvasSide, {required bool isStart}) {
     final x = _cellX(local, canvasSide);
@@ -250,15 +282,20 @@ class _EditorPageState extends State<EditorPage> {
     final x1 = _selX0! < _selX1! ? _selX1! : _selX0!;
     final y0 = _selY0! < _selY1! ? _selY0! : _selY1!;
     final y1 = _selY0! < _selY1! ? _selY1! : _selY0!;
-    return Rect.fromLTRB(x0.toDouble(), y0.toDouble(), (x1 + 1).toDouble(), (y1 + 1).toDouble());
+    return Rect.fromLTRB(
+      x0.toDouble(),
+      y0.toDouble(),
+      (x1 + 1).toDouble(),
+      (y1 + 1).toDouble(),
+    );
   }
 
   void _clearSelection() => setState(() {
-        _selX0 = null;
-        _selY0 = null;
-        _selX1 = null;
-        _selY1 = null;
-      });
+    _selX0 = null;
+    _selY0 = null;
+    _selX1 = null;
+    _selY1 = null;
+  });
 
   /// 选区另存为新的图案
   void _saveSelectionAsNew() {
@@ -273,7 +310,12 @@ class _EditorPageState extends State<EditorPage> {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => EditorPage(
-          model: PatternModel(width: r.width, height: r.height, grid: r.grid, paletteIds: _model.paletteIds),
+          model: PatternModel(
+            width: r.width,
+            height: r.height,
+            grid: r.grid,
+            paletteIds: _model.paletteIds,
+          ),
           palette: widget.palette,
         ),
       ),
@@ -301,7 +343,12 @@ class _EditorPageState extends State<EditorPage> {
   /// 用 GridResult 替换当前图案（变换/改尺寸后）
   void _replaceModel(GridResult r) {
     setState(() {
-      _model = PatternModel(width: r.width, height: r.height, grid: r.grid, paletteIds: _model.paletteIds);
+      _model = PatternModel(
+        width: r.width,
+        height: r.height,
+        grid: r.grid,
+        paletteIds: _model.paletteIds,
+      );
       _clearSelection();
       _revision.value++;
     });
@@ -329,7 +376,9 @@ class _EditorPageState extends State<EditorPage> {
       height: _model.height,
       onApply: (w, h) {
         _pushUndo();
-        _replaceModel(resizeGrid(_model.grid, _model.width, _model.height, w, h));
+        _replaceModel(
+          resizeGrid(_model.grid, _model.width, _model.height, w, h),
+        );
       },
     );
   }
@@ -339,7 +388,9 @@ class _EditorPageState extends State<EditorPage> {
       context,
       onApply: (passes) {
         _pushUndo();
-        _replaceGrid(denoiseMajority(_model.grid, _model.width, _model.height, passes));
+        _replaceGrid(
+          denoiseMajority(_model.grid, _model.width, _model.height, passes),
+        );
       },
     );
   }
@@ -368,7 +419,8 @@ class _EditorPageState extends State<EditorPage> {
         _revision.value++;
         setState(() {});
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("已替换 $count 格")));
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text("已替换 $count 格")));
         }
       },
     );
@@ -378,31 +430,51 @@ class _EditorPageState extends State<EditorPage> {
 
   Future<void> _saveDraft() async {
     if (kIsWeb) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("网页版暂不支持本地草稿")));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text("网页版暂不支持本地草稿")));
       return;
     }
     // 从作品库打开的：覆写原文件（保留名字/分组），否则另存新作品
-    final file = await DraftStore.saveWork(_model, overwrite: widget.sourceFile);
+    final file = await DraftStore.saveWork(
+      _model,
+      overwrite: widget.sourceFile,
+    );
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(widget.sourceFile != null ? "作品已更新" : "已保存到作品库：${file.path.split(Platform.pathSeparator).last}")));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            widget.sourceFile != null
+                ? "作品已更新"
+                : "已保存到作品库：${file.path.split(Platform.pathSeparator).last}",
+          ),
+        ),
+      );
     }
   }
 
   Future<void> _exportPng() async {
     final bytes = _model.exportPng(cellPixels: 24, palette: widget.palette);
     if (kIsWeb) {
-      await downloadBytes(bytes, "pattern_${DateTime.now().millisecondsSinceEpoch}.png");
+      await downloadBytes(
+        bytes,
+        "pattern_${DateTime.now().millisecondsSinceEpoch}.png",
+      );
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("已触发浏览器下载")));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text("已触发浏览器下载")));
       }
       return;
     }
     final root = await getApplicationDocumentsDirectory();
-    final dir = Directory("${root.path}${Platform.pathSeparator}bead_exports")..createSync(recursive: true);
-    final file = File("${dir.path}${Platform.pathSeparator}pattern_${DateTime.now().millisecondsSinceEpoch}.png");
+    final dir = Directory("${root.path}${Platform.pathSeparator}bead_exports")
+      ..createSync(recursive: true);
+    final file = File(
+      "${dir.path}${Platform.pathSeparator}pattern_${DateTime.now().millisecondsSinceEpoch}.png",
+    );
     await file.writeAsBytes(bytes);
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("已导出：${file.path}")));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text("已导出：${file.path}")));
     }
   }
 
@@ -415,16 +487,34 @@ class _EditorPageState extends State<EditorPage> {
       appBar: AppBar(
         title: Text("编辑 ${_model.width}×${_model.height} · $usedColors 色"),
         actions: [
-          IconButton(onPressed: _undoStack.isEmpty ? null : _undo, icon: const Icon(Icons.undo), tooltip: "撤销"),
-          IconButton(onPressed: _redoStack.isEmpty ? null : _redo, icon: const Icon(Icons.redo), tooltip: "重做"),
-          IconButton(onPressed: _saveDraft, icon: const Icon(Icons.save_outlined), tooltip: "保存草稿"),
-          IconButton(onPressed: _exportPng, icon: const Icon(Icons.download), tooltip: "导出PNG"),
+          IconButton(
+            onPressed: _undoStack.isEmpty ? null : _undo,
+            icon: const Icon(Icons.undo),
+            tooltip: "撤销",
+          ),
+          IconButton(
+            onPressed: _redoStack.isEmpty ? null : _redo,
+            icon: const Icon(Icons.redo),
+            tooltip: "重做",
+          ),
+          IconButton(
+            onPressed: _saveDraft,
+            icon: const Icon(Icons.save_outlined),
+            tooltip: "保存草稿",
+          ),
+          IconButton(
+            onPressed: _exportPng,
+            icon: const Icon(Icons.download),
+            tooltip: "导出PNG",
+          ),
           IconButton(
             onPressed: () => setState(() {
               _assembleMode = !_assembleMode;
               _highlightIndex = null;
             }),
-            icon: Icon(_assembleMode ? Icons.visibility : Icons.visibility_outlined),
+            icon: Icon(
+              _assembleMode ? Icons.visibility : Icons.visibility_outlined,
+            ),
             tooltip: _assembleMode ? "退出拼装模式" : "拼装模式",
           ),
           IconButton(
@@ -434,19 +524,27 @@ class _EditorPageState extends State<EditorPage> {
                 _boardIndex = _boardIndex.clamp(0, _boardCount - 1);
               }
             }),
-            icon: Icon(_boardMode ? Icons.view_module : Icons.view_module_outlined),
+            icon: Icon(
+              _boardMode ? Icons.view_module : Icons.view_module_outlined,
+            ),
             tooltip: _boardMode ? "退出分板模式" : "分板拼装",
           ),
           IconButton(
             onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => PreviewPage(model: _model, palette: widget.palette)),
+              MaterialPageRoute(
+                builder: (_) =>
+                    PreviewPage(model: _model, palette: widget.palette),
+              ),
             ),
             icon: const Icon(Icons.view_in_ar_outlined),
             tooltip: "预览",
           ),
           IconButton(
             onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => StatsPage(model: _model, palette: widget.palette)),
+              MaterialPageRoute(
+                builder: (_) =>
+                    StatsPage(model: _model, palette: widget.palette),
+              ),
             ),
             icon: const Icon(Icons.list_alt),
             tooltip: "用料统计",
@@ -470,7 +568,11 @@ class _EditorPageState extends State<EditorPage> {
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ),
-          _buildColorBar(_boardMode ? _boardCounts(_boardRectOf(_boardIndex)) : _model.countByColor()),
+          _buildColorBar(
+            _boardMode
+                ? _boardCounts(_boardRectOf(_boardIndex))
+                : _model.countByColor(),
+          ),
         ],
       ),
     );
@@ -487,11 +589,31 @@ class _EditorPageState extends State<EditorPage> {
               scrollDirection: Axis.horizontal,
               child: SegmentedButton<_Tool>(
                 segments: const [
-                  ButtonSegment(value: _Tool.brush, icon: Icon(Icons.brush), label: Text("画笔")),
-                  ButtonSegment(value: _Tool.eraser, icon: Icon(Icons.delete_outline), label: Text("橡皮")),
-                  ButtonSegment(value: _Tool.bucket, icon: Icon(Icons.format_color_fill), label: Text("油漆桶")),
-                  ButtonSegment(value: _Tool.eyedropper, icon: Icon(Icons.colorize), label: Text("吸管")),
-                  ButtonSegment(value: _Tool.select, icon: Icon(Icons.crop_free), label: Text("选区")),
+                  ButtonSegment(
+                    value: _Tool.brush,
+                    icon: Icon(Icons.brush),
+                    label: Text("画笔"),
+                  ),
+                  ButtonSegment(
+                    value: _Tool.eraser,
+                    icon: Icon(Icons.delete_outline),
+                    label: Text("橡皮"),
+                  ),
+                  ButtonSegment(
+                    value: _Tool.bucket,
+                    icon: Icon(Icons.format_color_fill),
+                    label: Text("油漆桶"),
+                  ),
+                  ButtonSegment(
+                    value: _Tool.eyedropper,
+                    icon: Icon(Icons.colorize),
+                    label: Text("吸管"),
+                  ),
+                  ButtonSegment(
+                    value: _Tool.select,
+                    icon: Icon(Icons.crop_free),
+                    label: Text("选区"),
+                  ),
                 ],
                 selected: {_tool},
                 onSelectionChanged: (sel) => setState(() {
@@ -509,10 +631,12 @@ class _EditorPageState extends State<EditorPage> {
               showSelectedIcon: false,
               style: const ButtonStyle(visualDensity: VisualDensity.compact),
               segments: [
-                for (final s in _brushSizes) ButtonSegment(value: s, label: Text("$s")),
+                for (final s in _brushSizes)
+                  ButtonSegment(value: s, label: Text("$s")),
               ],
               selected: {_brushSize},
-              onSelectionChanged: (sel) => setState(() => _brushSize = sel.first),
+              onSelectionChanged: (sel) =>
+                  setState(() => _brushSize = sel.first),
             ),
           ],
         ],
@@ -530,7 +654,10 @@ class _EditorPageState extends State<EditorPage> {
         children: [
           Text("选区 $w×$h", style: Theme.of(context).textTheme.labelMedium),
           const SizedBox(width: 4),
-          TextButton(onPressed: _saveSelectionAsNew, child: const Text("另存为图案")),
+          TextButton(
+            onPressed: _saveSelectionAsNew,
+            child: const Text("另存为图案"),
+          ),
           TextButton(onPressed: _fillSelection, child: const Text("填充当前色")),
           TextButton(onPressed: _clearSelection, child: const Text("取消")),
         ],
@@ -574,7 +701,12 @@ class _EditorPageState extends State<EditorPage> {
     }
     final cellW = canvasSize.width / _model.width;
     final cellH = canvasSize.height / _model.height;
-    return Rect.fromLTRB(sel.left * cellW, sel.top * cellH, sel.right * cellW, sel.bottom * cellH);
+    return Rect.fromLTRB(
+      sel.left * cellW,
+      sel.top * cellH,
+      sel.right * cellW,
+      sel.bottom * cellH,
+    );
   }
 
   /// 整图操作行
@@ -585,13 +717,47 @@ class _EditorPageState extends State<EditorPage> {
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         children: [
-          ActionChip(avatar: const Icon(Icons.flip_outlined, size: 18), label: const Text("左右翻转"), onPressed: () => _transform(() => flipHorizontal(_model.grid, _model.width, _model.height))),
-          ActionChip(avatar: const Icon(Icons.flip), label: const Text("上下翻转"), onPressed: () => _transform(() => flipVertical(_model.grid, _model.width, _model.height))),
-          ActionChip(avatar: const Icon(Icons.rotate_right_outlined), label: const Text("旋转90°"), onPressed: () => _transform(() => rotate90(_model.grid, _model.width, _model.height))),
-          ActionChip(avatar: const Icon(Icons.photo_size_select_large), label: const Text("改尺寸"), onPressed: _openResizeSheet),
-          ActionChip(avatar: const Icon(Icons.auto_fix_high), label: const Text("降噪"), onPressed: _openDenoiseSheet),
-          ActionChip(avatar: const Icon(Icons.palette_outlined), label: const Text("限制色数"), onPressed: _openLimitColorsSheet),
-          ActionChip(avatar: const Icon(Icons.swap_horiz), label: const Text("全局换色"), onPressed: _openReplaceColorSheet),
+          ActionChip(
+            avatar: const Icon(Icons.flip_outlined, size: 18),
+            label: const Text("左右翻转"),
+            onPressed: () => _transform(
+              () => flipHorizontal(_model.grid, _model.width, _model.height),
+            ),
+          ),
+          ActionChip(
+            avatar: const Icon(Icons.flip),
+            label: const Text("上下翻转"),
+            onPressed: () => _transform(
+              () => flipVertical(_model.grid, _model.width, _model.height),
+            ),
+          ),
+          ActionChip(
+            avatar: const Icon(Icons.rotate_right_outlined),
+            label: const Text("旋转90°"),
+            onPressed: () => _transform(
+              () => rotate90(_model.grid, _model.width, _model.height),
+            ),
+          ),
+          ActionChip(
+            avatar: const Icon(Icons.photo_size_select_large),
+            label: const Text("改尺寸"),
+            onPressed: _openResizeSheet,
+          ),
+          ActionChip(
+            avatar: const Icon(Icons.auto_fix_high),
+            label: const Text("降噪"),
+            onPressed: _openDenoiseSheet,
+          ),
+          ActionChip(
+            avatar: const Icon(Icons.palette_outlined),
+            label: const Text("限制色数"),
+            onPressed: _openLimitColorsSheet,
+          ),
+          ActionChip(
+            avatar: const Icon(Icons.swap_horiz),
+            label: const Text("全局换色"),
+            onPressed: _openReplaceColorSheet,
+          ),
         ],
       ),
     );
@@ -611,14 +777,28 @@ class _EditorPageState extends State<EditorPage> {
           SegmentedButton<int>(
             showSelectedIcon: false,
             style: const ButtonStyle(visualDensity: VisualDensity.compact),
-            segments: [for (final s in _boardSizes) ButtonSegment(value: s, label: Text("$s"))],
+            segments: [
+              for (final s in _boardSizes)
+                ButtonSegment(value: s, label: Text("$s")),
+            ],
             selected: {_boardSize},
             onSelectionChanged: (sel) => _setBoardSize(sel.first),
           ),
           const SizedBox(width: 8),
-          IconButton(onPressed: _boardIndex > 0 ? () => _stepBoard(-1) : null, icon: const Icon(Icons.chevron_left)),
-          Text("${_boardIndex + 1}/$_boardCount", style: Theme.of(context).textTheme.labelMedium),
-          IconButton(onPressed: _boardIndex < _boardCount - 1 ? () => _stepBoard(1) : null, icon: const Icon(Icons.chevron_right)),
+          IconButton(
+            onPressed: _boardIndex > 0 ? () => _stepBoard(-1) : null,
+            icon: const Icon(Icons.chevron_left),
+          ),
+          Text(
+            "${_boardIndex + 1}/$_boardCount",
+            style: Theme.of(context).textTheme.labelMedium,
+          ),
+          IconButton(
+            onPressed: _boardIndex < _boardCount - 1
+                ? () => _stepBoard(1)
+                : null,
+            icon: const Icon(Icons.chevron_right),
+          ),
           const SizedBox(width: 4),
           Expanded(
             child: Text(
@@ -643,7 +823,9 @@ class _EditorPageState extends State<EditorPage> {
         itemBuilder: (context, i) {
           final c = widget.palette.colors[i];
           final count = counts[i] ?? 0;
-          final selected = _assembleMode ? i == _highlightIndex : i == _currentColor;
+          final selected = _assembleMode
+              ? i == _highlightIndex
+              : i == _currentColor;
           return GestureDetector(
             onTap: () => setState(() {
               if (_assembleMode) {
@@ -676,14 +858,18 @@ class _EditorPageState extends State<EditorPage> {
                           c.id.replaceFirst("P", ""),
                           style: TextStyle(
                             fontSize: 11,
-                            color: _isLightColor(c) ? Colors.black54 : Colors.white70,
+                            color: _isLightColor(c)
+                                ? Colors.black54
+                                : Colors.white70,
                           ),
                         ),
                         Text(
                           "×$count",
                           style: TextStyle(
                             fontSize: 9,
-                            color: _isLightColor(c) ? Colors.black45 : Colors.white60,
+                            color: _isLightColor(c)
+                                ? Colors.black45
+                                : Colors.white60,
                           ),
                         ),
                       ],
@@ -693,7 +879,9 @@ class _EditorPageState extends State<EditorPage> {
                         c.id.replaceFirst("P", ""),
                         style: TextStyle(
                           fontSize: 11,
-                          color: _isLightColor(c) ? Colors.black54 : Colors.white70,
+                          color: _isLightColor(c)
+                              ? Colors.black54
+                              : Colors.white70,
                         ),
                       ),
                     ),
@@ -705,5 +893,6 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   /// 粗略判断浅色（决定色块上文字颜色）
-  bool _isLightColor(BeadColor c) => (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) > 150;
+  bool _isLightColor(BeadColor c) =>
+      (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) > 150;
 }

@@ -40,7 +40,13 @@ class PixelEngine {
 
     // 1. 裁剪（未指定则取中心最大正方形）
     final rect = sourceRect ?? _centerSquare(decoded);
-    final cropped = img.copyCrop(decoded, x: rect.x, y: rect.y, width: rect.width, height: rect.height);
+    final cropped = img.copyCrop(
+      decoded,
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+    );
 
     // 2. 最近邻缩放到板尺寸（避免双线性糊边）
     final resized = img.copyResize(
@@ -75,7 +81,12 @@ class PixelEngine {
       kernel: kernel,
     );
 
-    return PatternModel(width: boardSize, height: boardSize, grid: grid, paletteIds: [for (final c in palette.colors) c.id]);
+    return PatternModel(
+      width: boardSize,
+      height: boardSize,
+      grid: grid,
+      paletteIds: [for (final c in palette.colors) c.id],
+    );
   }
 
   /// 取中心最大正方形

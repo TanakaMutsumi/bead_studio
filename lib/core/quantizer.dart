@@ -19,7 +19,9 @@ List<double> _rgbToLab(int r, int g, int b) {
   // sRGB -> 线性化
   double f(num c) {
     final v = c / 255.0;
-    return v <= 0.04045 ? v / 12.92 : math.pow((v + 0.055) / 1.055, 2.4).toDouble();
+    return v <= 0.04045
+        ? v / 12.92
+        : math.pow((v + 0.055) / 1.055, 2.4).toDouble();
   }
 
   final lr = f(r), lg = f(g), lb = f(b);
@@ -33,7 +35,9 @@ List<double> _rgbToLab(int r, int g, int b) {
   x /= 0.95047;
   z /= 1.08883;
 
-  double pivot(double t) => t > 0.008856 ? math.pow(t, 1.0 / 3.0).toDouble() : 7.787 * t + 16.0 / 116.0;
+  double pivot(double t) => t > 0.008856
+      ? math.pow(t, 1.0 / 3.0).toDouble()
+      : 7.787 * t + 16.0 / 116.0;
 
   final fx = pivot(x), fy = pivot(y), fz = pivot(z);
 
@@ -58,7 +62,8 @@ class Quantizer {
   Quantizer(this.palette);
 
   /// 单个 RGB 找最近调色板索引（Lab 距离）
-  int nearestIndex(int r, int g, int b) => _nearest(_rgbToLab(r, g, b), null).$1;
+  int nearestIndex(int r, int g, int b) =>
+      _nearest(_rgbToLab(r, g, b), null).$1;
 
   /// 在候选索引子集内找最近色，返回 (索引, Lab 距离平方)（图纸还原限色识别用）
   ///
@@ -206,10 +211,11 @@ class Quantizer {
     }
 
     // 2) 保留 top-n（并列时索引小者优先，结果稳定）
-    final sorted = freq.keys.toList()..sort((a, b) {
-      final d = freq[b]! - freq[a]!;
-      return d != 0 ? d : a - b;
-    });
+    final sorted = freq.keys.toList()
+      ..sort((a, b) {
+        final d = freq[b]! - freq[a]!;
+        return d != 0 ? d : a - b;
+      });
     final keep = sorted.take(n).toSet();
 
     // 3) 其余色映射到保留色最近者（同色统一映射，缓存避免重复计算）
@@ -219,6 +225,8 @@ class Quantizer {
       mapping[v] = _nearest(_rgbToLab(c.r, c.g, c.b), keep).$1;
     }
 
-    return [for (final v in grid) v < 0 ? v : (keep.contains(v) ? v : mapping[v]!)];
+    return [
+      for (final v in grid) v < 0 ? v : (keep.contains(v) ? v : mapping[v]!),
+    ];
   }
 }

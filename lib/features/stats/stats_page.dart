@@ -24,14 +24,17 @@ class StatsPage extends StatefulWidget {
 }
 
 class _StatsPageState extends State<StatsPage> {
-  Map<String, int>? _inventory; ///< null = 未进入校验模式；加载中为空表
+  Map<String, int>? _inventory;
+
+  ///< null = 未进入校验模式；加载中为空表
 
   bool get _checkMode => _inventory != null;
 
   /// 读取库存进入校验模式（web 不可用）
   Future<void> _toggleCheck() async {
     if (kIsWeb) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("网页版暂不支持本地库存")));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text("网页版暂不支持本地库存")));
       return;
     }
     if (_checkMode) {
@@ -47,47 +50,63 @@ class _StatsPageState extends State<StatsPage> {
 
   /// 导出缺料采购单 CSV（仅校验模式下有缺口时可用）
   Future<void> _exportShoppingList(List<_StatRow> rows) async {
-    final shortages = rows.where((r) => r.color != null && r.shortage > 0).toList();
+    final shortages = rows
+        .where((r) => r.color != null && r.shortage > 0)
+        .toList();
     if (shortages.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("库存充足，无需采购")));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text("库存充足，无需采购")));
       return;
     }
     final buf = StringBuffer("色号,名称,需要,库存,缺口\n");
     for (final r in shortages) {
-      buf.writeln("${r.color!.id},${r.color!.name},${r.needed},${r.stocked},${r.shortage}");
+      buf.writeln(
+        "${r.color!.id},${r.color!.name},${r.needed},${r.stocked},${r.shortage}",
+      );
     }
     final bytes = utf8.encode("﻿${buf.toString()}"); // BOM：Excel 中文不乱码
-    final name = "bead_shopping_list_${DateTime.now().millisecondsSinceEpoch}.csv";
+    final name =
+        "bead_shopping_list_${DateTime.now().millisecondsSinceEpoch}.csv";
 
     if (kIsWeb) {
       await downloadBytes(bytes, name);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("已导出采购单")));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text("已导出采购单")));
       }
       return;
     }
     final root = await getApplicationDocumentsDirectory();
-    final dir = Directory("${root.path}${Platform.pathSeparator}bead_exports")..createSync(recursive: true);
+    final dir = Directory("${root.path}${Platform.pathSeparator}bead_exports")
+      ..createSync(recursive: true);
     final file = File("${dir.path}${Platform.pathSeparator}$name");
     await file.writeAsBytes(bytes);
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("采购单已导出：${file.path}")));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text("采购单已导出：${file.path}")));
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final counts = widget.model.countByColor();
-    final entries = counts.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+    final entries = counts.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
     final totalBeads = counts.values.fold(0, (a, b) => a + b);
     final inv = _inventory;
     final rows = [
       for (final e in entries)
         _StatRow(
-          color: e.key < widget.palette.colors.length ? widget.palette.colors[e.key] : null,
+          color: e.key < widget.palette.colors.length
+              ? widget.palette.colors[e.key]
+              : null,
           index: e.key,
           needed: e.value,
-          stocked: inv?[ (e.key < widget.palette.colors.length ? widget.palette.colors[e.key].id : "") ] ?? 0,
+          stocked:
+              inv?[(e.key < widget.palette.colors.length
+                  ? widget.palette.colors[e.key].id
+                  : "")] ??
+              0,
         ),
     ];
     final totalShortage = rows.fold(0, (a, r) => a + r.shortage);
@@ -96,10 +115,18 @@ class _StatsPageState extends State<StatsPage> {
       appBar: AppBar(
         title: const Text("用料统计"),
         actions: [
-          IconButton(onPressed: _toggleCheck, icon: Icon(_checkMode ? Icons.checkroom : Icons.inventory_2_outlined), tooltip: _checkMode ? "退出库存校验" : "库存校验"),
+          IconButton(
+            onPressed: _toggleCheck,
+            icon: Icon(
+              _checkMode ? Icons.checkroom : Icons.inventory_2_outlined,
+            ),
+            tooltip: _checkMode ? "退出库存校验" : "库存校验",
+          ),
           IconButton(
             onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => InventoryPage(palette: widget.palette)),
+              MaterialPageRoute(
+                builder: (_) => InventoryPage(palette: widget.palette),
+              ),
             ),
             icon: const Icon(Icons.warehouse_outlined),
             tooltip: "库存管理",
@@ -117,7 +144,10 @@ class _StatsPageState extends State<StatsPage> {
                 children: [
                   _SummaryCell(label: "总豆数", value: "$totalBeads"),
                   _SummaryCell(label: "用色数", value: "${entries.length}"),
-                  _SummaryCell(label: "网格", value: "${widget.model.width}×${widget.model.height}"),
+                  _SummaryCell(
+                    label: "网格",
+                    value: "${widget.model.width}×${widget.model.height}",
+                  ),
                   if (_checkMode)
                     _SummaryCell(
                       label: "缺料",
@@ -172,28 +202,34 @@ class _StatsPageState extends State<StatsPage> {
       title: Text(c != null ? "${c.id} ${c.name}" : "#${r.index}"),
       trailing: _checkMode
           ? (invLoaded
-              ? Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(
-                      "需 ${r.needed} / 存 ${r.stocked}",
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: r.shortage > 0 ? Colors.red : Colors.black87,
-                        fontWeight: r.shortage > 0 ? FontWeight.bold : FontWeight.normal,
+                ? Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        "需 ${r.needed} / 存 ${r.stocked}",
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: r.shortage > 0 ? Colors.red : Colors.black87,
+                          fontWeight: r.shortage > 0
+                              ? FontWeight.bold
+                              : FontWeight.normal,
+                        ),
                       ),
-                    ),
-                    Text(
-                      r.shortage > 0 ? "缺 ${r.shortage} 颗" : "充足",
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: r.shortage > 0 ? Colors.red : Colors.green,
+                      Text(
+                        r.shortage > 0 ? "缺 ${r.shortage} 颗" : "充足",
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: r.shortage > 0 ? Colors.red : Colors.green,
+                        ),
                       ),
-                    ),
-                  ],
-                )
-              : const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)))
+                    ],
+                  )
+                : const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ))
           : Text(
               "${r.needed} 颗",
               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
@@ -205,21 +241,34 @@ class _StatsPageState extends State<StatsPage> {
 /// 单行统计（校验模式含库存/缺口）
 class _StatRow {
   final BeadColor? color;
-  final int index; ///< 调色板索引（color 为 null 时兜底显示）
+  final int index;
+
+  ///< 调色板索引（color 为 null 时兜底显示）
   final int needed;
   final int stocked;
 
   int get shortage => needed > stocked ? needed - stocked : 0;
 
-  const _StatRow({required this.color, required this.index, required this.needed, required this.stocked});
+  const _StatRow({
+    required this.color,
+    required this.index,
+    required this.needed,
+    required this.stocked,
+  });
 }
 
 class _SummaryCell extends StatelessWidget {
   final String label;
   final String value;
-  final bool highlight; ///< 缺料等警示标红
+  final bool highlight;
 
-  const _SummaryCell({required this.label, required this.value, this.highlight = false});
+  ///< 缺料等警示标红
+
+  const _SummaryCell({
+    required this.label,
+    required this.value,
+    this.highlight = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -229,9 +278,9 @@ class _SummaryCell extends StatelessWidget {
         Text(
           value,
           style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                color: highlight ? Colors.red : null,
-                fontWeight: highlight ? FontWeight.bold : null,
-              ),
+            color: highlight ? Colors.red : null,
+            fontWeight: highlight ? FontWeight.bold : null,
+          ),
         ),
         Text(label, style: Theme.of(context).textTheme.bodySmall),
       ],

@@ -68,21 +68,33 @@ Future<void> showResizeSheet(
                   child: TextField(
                     controller: ctrlW,
                     keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: "宽（列数）", border: OutlineInputBorder()),
+                    decoration: const InputDecoration(
+                      labelText: "宽（列数）",
+                      border: OutlineInputBorder(),
+                    ),
                   ),
                 ),
-                const Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Text("×")),
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 8),
+                  child: Text("×"),
+                ),
                 Expanded(
                   child: TextField(
                     controller: ctrlH,
                     keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: "高（行数）", border: OutlineInputBorder()),
+                    decoration: const InputDecoration(
+                      labelText: "高（行数）",
+                      border: OutlineInputBorder(),
+                    ),
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 8),
-            Text("当前 $width×$height，缩放后细节会有损失", style: Theme.of(context).textTheme.bodySmall),
+            Text(
+              "当前 $width×$height，缩放后细节会有损失",
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
             const SizedBox(height: 16),
             SizedBox(
               width: double.infinity,
@@ -132,7 +144,10 @@ Future<void> showDenoiseSheet(
               label: "${passes.round()} 次",
               onChanged: (v) => setSheetState(() => passes = v),
             ),
-            Text("强度 ${passes.round()}：孤立噪点会被周围颜色同化，次数越多越平滑", style: Theme.of(context).textTheme.bodySmall),
+            Text(
+              "强度 ${passes.round()}：孤立噪点会被周围颜色同化，次数越多越平滑",
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
             const SizedBox(height: 16),
             SizedBox(
               width: double.infinity,
@@ -235,9 +250,14 @@ class _PaletteRow extends StatelessWidget {
                   width: 44,
                   height: 44,
                   decoration: BoxDecoration(
-                    color: c != null ? Color.fromARGB(255, c.r, c.g, c.b) : Colors.white,
+                    color: c != null
+                        ? Color.fromARGB(255, c.r, c.g, c.b)
+                        : Colors.white,
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: sel ? Colors.blue : Colors.black26, width: sel ? 3 : 1),
+                    border: Border.all(
+                      color: sel ? Colors.blue : Colors.black26,
+                      width: sel ? 3 : 1,
+                    ),
                   ),
                   child: isBlank
                       ? const Icon(Icons.block, size: 20, color: Colors.black38)
@@ -246,7 +266,11 @@ class _PaletteRow extends StatelessWidget {
                             c!.id.replaceFirst("P", ""),
                             style: TextStyle(
                               fontSize: 10,
-                              color: (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) > 150 ? Colors.black54 : Colors.white70,
+                              color:
+                                  (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) >
+                                      150
+                                  ? Colors.black54
+                                  : Colors.white70,
                             ),
                           ),
                         ),
@@ -274,7 +298,9 @@ Future<void> showReplaceColorSheet(
     context: context,
     isScrollControlled: true,
     builder: (sheetContext) => Padding(
-      padding: EdgeInsets.only(bottom: MediaQuery.of(sheetContext).viewInsets.bottom),
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(sheetContext).viewInsets.bottom,
+      ),
       child: _sheet(
         sheetContext,
         "全局换色（整幅图案替换）",

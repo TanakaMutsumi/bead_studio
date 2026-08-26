@@ -13,7 +13,13 @@ class GridResult {
 }
 
 /// 最近邻重采样网格到新尺寸（放大/缩小）
-GridResult resizeGrid(List<int> grid, int width, int height, int newWidth, int newHeight) {
+GridResult resizeGrid(
+  List<int> grid,
+  int width,
+  int height,
+  int newWidth,
+  int newHeight,
+) {
   final out = List<int>.filled(newWidth * newHeight, -1);
   for (var y = 0; y < newHeight; y++) {
     // 目标格中心反算源坐标
@@ -112,7 +118,14 @@ int replaceColor(List<int> grid, int from, int to) {
 }
 
 /// 提取矩形选区为新网格（行优先拷贝）
-GridResult extractSubGrid(List<int> grid, int width, int x, int y, int w, int h) {
+GridResult extractSubGrid(
+  List<int> grid,
+  int width,
+  int x,
+  int y,
+  int w,
+  int h,
+) {
   final out = List<int>.filled(w * h, -1);
   for (var row = 0; row < h; row++) {
     for (var col = 0; col < w; col++) {

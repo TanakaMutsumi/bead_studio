@@ -35,6 +35,11 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+            // 关闭 R8 混淆：Dart 已 AOT 编译，R8 只压 Java 插件层收益小；
+            // 且 google_mlkit_text_recognition 引用的可选语种识别器
+            // （chinese/japanese/korean/devanagari）不在 classpath，R8 缺类报错
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }

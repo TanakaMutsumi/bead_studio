@@ -10,12 +10,24 @@ library;
 
 /// 网格检测结果
 class GridDetectResult {
-  final double pitchX; ///< 水平格距（像素）
-  final double pitchY; ///< 垂直格距（像素）
-  final double offsetX; ///< 首列网格中心 x（像素）
-  final double offsetY; ///< 首行网格中心 y（像素）
-  final int cols; ///< 列数
-  final int rows; ///< 行数
+  final double pitchX;
+
+  ///< 水平格距（像素）
+  final double pitchY;
+
+  ///< 垂直格距（像素）
+  final double offsetX;
+
+  ///< 首列网格中心 x（像素）
+  final double offsetY;
+
+  ///< 首行网格中心 y（像素）
+  final int cols;
+
+  ///< 列数
+  final int rows;
+
+  ///< 行数
 
   const GridDetectResult({
     required this.pitchX,
@@ -50,14 +62,26 @@ GridDetectResult? detectGrid(List<int> gray, int w, int h) {
   if (cols < 4 || rows < 4 || cols > 400 || rows > 400) {
     return null;
   }
-  return GridDetectResult(pitchX: pitchX, pitchY: pitchY, offsetX: offX, offsetY: offY, cols: cols, rows: rows);
+  return GridDetectResult(
+    pitchX: pitchX,
+    pitchY: pitchY,
+    offsetX: offX,
+    offsetY: offY,
+    cols: cols,
+    rows: rows,
+  );
 }
 
 /// 边缘强度投影 + 峰检测
 ///
 /// [horizontal] 为 true 时统计垂直边缘（x 方向的差分）沿 x 的分布，
 /// 得到竖直网格线的 x 坐标序列；false 时同理得到水平线的 y 坐标
-List<double>? _edgePeaks(List<int> gray, int w, int h, {required bool horizontal}) {
+List<double>? _edgePeaks(
+  List<int> gray,
+  int w,
+  int h, {
+  required bool horizontal,
+}) {
   final n = horizontal ? w : h;
   final other = horizontal ? h : w;
   if (n < 16 || other < 16) {
@@ -93,7 +117,10 @@ List<double>? _edgePeaks(List<int> gray, int w, int h, {required bool horizontal
   final peaks = <double>[];
   var lastPeak = -minGap;
   for (var i = 1; i < n - 1; i++) {
-    if (smooth[i] > threshold && smooth[i] >= smooth[i - 1] && smooth[i] > smooth[i + 1] && i - lastPeak >= minGap) {
+    if (smooth[i] > threshold &&
+        smooth[i] >= smooth[i - 1] &&
+        smooth[i] > smooth[i + 1] &&
+        i - lastPeak >= minGap) {
       peaks.add(i.toDouble());
       lastPeak = i.toDouble();
     }

@@ -8,10 +8,18 @@ import 'package:image/image.dart' as img;
 import 'palette.dart';
 
 class PatternModel {
-  final int width; ///< 网格列数
-  final int height; ///< 网格行数
-  final List<int> grid; ///< 扁平网格（行优先），值 = 调色板索引，-1 = 空格
-  final List<String> paletteIds; ///< 生成时的调色板 id 顺序（草稿兼容）
+  final int width;
+
+  ///< 网格列数
+  final int height;
+
+  ///< 网格行数
+  final List<int> grid;
+
+  ///< 扁平网格（行优先），值 = 调色板索引，-1 = 空格
+  final List<String> paletteIds;
+
+  ///< 生成时的调色板 id 顺序（草稿兼容）
 
   PatternModel({
     required this.width,
@@ -85,12 +93,12 @@ class PatternModel {
   List<int> copyGrid() => List<int>.of(grid);
 
   Map<String, dynamic> toJson() => {
-        "version": 1,
-        "width": width,
-        "height": height,
-        "grid": grid,
-        "paletteIds": paletteIds,
-      };
+    "version": 1,
+    "width": width,
+    "height": height,
+    "grid": grid,
+    "paletteIds": paletteIds,
+  };
 
   factory PatternModel.fromJson(Map<String, dynamic> json) {
     return PatternModel(
@@ -105,8 +113,18 @@ class PatternModel {
   ///
   /// [cellPixels] 每格像素边长；[palette] 当前调色板
   Uint8List exportPng({int cellPixels = 16, BeadPalette? palette}) {
-    final out = img.Image(width: width * cellPixels, height: height * cellPixels);
-    img.fillRect(out, x1: 0, y1: 0, x2: out.width - 1, y2: out.height - 1, color: img.ColorRgb8(255, 255, 255));
+    final out = img.Image(
+      width: width * cellPixels,
+      height: height * cellPixels,
+    );
+    img.fillRect(
+      out,
+      x1: 0,
+      y1: 0,
+      x2: out.width - 1,
+      y2: out.height - 1,
+      color: img.ColorRgb8(255, 255, 255),
+    );
 
     for (var y = 0; y < height; y++) {
       for (var x = 0; x < width; x++) {
@@ -114,8 +132,12 @@ class PatternModel {
         if (v < 0) {
           continue;
         }
-        final c = palette != null && v < palette.colors.length ? palette.colors[v] : null;
-        final color = c != null ? img.ColorRgb8(c.r, c.g, c.b) : img.ColorRgb8(220, 220, 220);
+        final c = palette != null && v < palette.colors.length
+            ? palette.colors[v]
+            : null;
+        final color = c != null
+            ? img.ColorRgb8(c.r, c.g, c.b)
+            : img.ColorRgb8(220, 220, 220);
         img.fillRect(
           out,
           x1: x * cellPixels,
@@ -136,7 +158,9 @@ class PatternModel {
         y1: 0,
         x2: x * cellPixels,
         y2: out.height - 1,
-        color: major ? img.ColorRgb8(120, 120, 120) : img.ColorRgb8(200, 200, 200),
+        color: major
+            ? img.ColorRgb8(120, 120, 120)
+            : img.ColorRgb8(200, 200, 200),
       );
     }
     for (var y = 0; y <= height; y++) {
@@ -147,7 +171,9 @@ class PatternModel {
         y1: y * cellPixels,
         x2: out.width - 1,
         y2: y * cellPixels,
-        color: major ? img.ColorRgb8(120, 120, 120) : img.ColorRgb8(200, 200, 200),
+        color: major
+            ? img.ColorRgb8(120, 120, 120)
+            : img.ColorRgb8(200, 200, 200),
       );
     }
 

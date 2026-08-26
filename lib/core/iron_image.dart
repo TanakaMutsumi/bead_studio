@@ -15,31 +15,62 @@ class IronSimulator {
   /// 熨烫后的成片图（豆色已融合，间隙被熔料填充）
   ///
   /// [cellPixels] 每格像素边长（8-16 即可，太大合成变慢）
-  static img.Image render(PatternModel model, BeadPalette palette, {int cellPixels = 12}) {
+  static img.Image render(
+    PatternModel model,
+    BeadPalette palette, {
+    int cellPixels = 12,
+  }) {
     final w = model.width * cellPixels;
     final h = model.height * cellPixels;
     var canvas = img.Image(width: w, height: h);
-    img.fillRect(canvas, x1: 0, y1: 0, x2: w - 1, y2: h - 1, color: img.ColorRgb8(244, 243, 240));
+    img.fillRect(
+      canvas,
+      x1: 0,
+      y1: 0,
+      x2: w - 1,
+      y2: h - 1,
+      color: img.ColorRgb8(244, 243, 240),
+    );
 
     // 1. 铺豆色圆点（模拟豆子受热前的形状）
     final beadRadius = (cellPixels * 0.48).round();
     _stampBeads(canvas, model, palette, beadRadius, cellPixels);
 
     // 2. 高斯模糊 = 热熔扩散（颜色向间隙流淌）
-    canvas = img.gaussianBlur(canvas, radius: (cellPixels * 0.38).round().clamp(1, 8));
+    canvas = img.gaussianBlur(
+      canvas,
+      radius: (cellPixels * 0.38).round().clamp(1, 8),
+    );
 
     // 3. 中心二次叠色（熔融后豆心颜色仍最浓，恢复主体浓度）
-    _stampBeads(canvas, model, palette, (beadRadius * 0.92).round(), cellPixels);
+    _stampBeads(
+      canvas,
+      model,
+      palette,
+      (beadRadius * 0.92).round(),
+      cellPixels,
+    );
 
     return canvas;
   }
 
   /// 未熨烫的成品片（圆豆阵列 + 板底 + 钉点，可导出的展示图）
-  static img.Image renderFlat(PatternModel model, BeadPalette palette, {int cellPixels = 12}) {
+  static img.Image renderFlat(
+    PatternModel model,
+    BeadPalette palette, {
+    int cellPixels = 12,
+  }) {
     final w = model.width * cellPixels;
     final h = model.height * cellPixels;
     final canvas = img.Image(width: w, height: h);
-    img.fillRect(canvas, x1: 0, y1: 0, x2: w - 1, y2: h - 1, color: img.ColorRgb8(238, 238, 235));
+    img.fillRect(
+      canvas,
+      x1: 0,
+      y1: 0,
+      x2: w - 1,
+      y2: h - 1,
+      color: img.ColorRgb8(238, 238, 235),
+    );
 
     final beadRadius = (cellPixels * 0.45).round();
     final dotRadius = (cellPixels * 0.09).ceil().clamp(1, 3);
@@ -49,7 +80,9 @@ class IronSimulator {
         final cx = x * cellPixels + cellPixels ~/ 2;
         final cy = y * cellPixels + cellPixels ~/ 2;
         final v = model.cell(x, y);
-        final c = v >= 0 && v < palette.colors.length ? palette.colors[v] : null;
+        final c = v >= 0 && v < palette.colors.length
+            ? palette.colors[v]
+            : null;
         if (c == null) {
           // 空格：画板面钉点
           _fillCircle(canvas, cx, cy, dotRadius, 210, 210, 208);
@@ -83,7 +116,13 @@ class IronSimulator {
   }
 
   /// 铺一层豆色圆点
-  static void _stampBeads(img.Image canvas, PatternModel model, BeadPalette palette, int radius, int cellPixels) {
+  static void _stampBeads(
+    img.Image canvas,
+    PatternModel model,
+    BeadPalette palette,
+    int radius,
+    int cellPixels,
+  ) {
     if (radius <= 0) {
       return;
     }
@@ -94,13 +133,29 @@ class IronSimulator {
           continue;
         }
         final c = palette.colors[v];
-        _fillCircle(canvas, x * cellPixels + cellPixels ~/ 2, y * cellPixels + cellPixels ~/ 2, radius, c.r, c.g, c.b);
+        _fillCircle(
+          canvas,
+          x * cellPixels + cellPixels ~/ 2,
+          y * cellPixels + cellPixels ~/ 2,
+          radius,
+          c.r,
+          c.g,
+          c.b,
+        );
       }
     }
   }
 
   /// 实心圆（无抗锯齿，速度优先；模糊步骤会柔化边缘）
-  static void _fillCircle(img.Image image, int cx, int cy, int r, int red, int green, int blue) {
+  static void _fillCircle(
+    img.Image image,
+    int cx,
+    int cy,
+    int r,
+    int red,
+    int green,
+    int blue,
+  ) {
     final r2 = r * r;
     for (var dy = -r; dy <= r; dy++) {
       for (var dx = -r; dx <= r; dx++) {
@@ -112,7 +167,16 @@ class IronSimulator {
   }
 
   /// 半透明圆（alpha 混合，画高光用）
-  static void _blendCircle(img.Image image, int cx, int cy, int r, int red, int green, int blue, int alpha) {
+  static void _blendCircle(
+    img.Image image,
+    int cx,
+    int cy,
+    int r,
+    int red,
+    int green,
+    int blue,
+    int alpha,
+  ) {
     final r2 = r * r;
     for (var dy = -r; dy <= r; dy++) {
       for (var dx = -r; dx <= r; dx++) {

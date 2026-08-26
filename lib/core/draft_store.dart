@@ -15,7 +15,9 @@ import 'pattern_model.dart';
 class WorkEntry {
   final File file;
   final String name;
-  final String folder; ///< 分组名，空串 = 未分组
+  final String folder;
+
+  ///< 分组名，空串 = 未分组
   final DateTime updatedAt;
   final PatternModel model;
 
@@ -93,7 +95,8 @@ class DraftStore {
       model = PatternModel.fromJson(json["pattern"] as Map<String, dynamic>);
       name = meta["name"] as String? ?? "";
       folder = meta["folder"] as String? ?? "";
-      updatedAt = DateTime.tryParse(meta["updatedAt"] as String? ?? "") ?? updatedAt;
+      updatedAt =
+          DateTime.tryParse(meta["updatedAt"] as String? ?? "") ?? updatedAt;
     } else {
       model = PatternModel.fromJson(json);
     }
@@ -116,34 +119,41 @@ class DraftStore {
     final dir = await _draftDir();
     if (overwrite != null && overwrite.existsSync()) {
       final old = await readEntry(overwrite);
-      return overwrite.writeAsString(const JsonEncoder().convert({
-        "meta": {
-          "name": name ?? old.name,
-          "folder": folder ?? old.folder,
-          "updatedAt": DateTime.now().toIso8601String(),
-        },
-        "pattern": model.toJson(),
-      }));
+      return overwrite.writeAsString(
+        const JsonEncoder().convert({
+          "meta": {
+            "name": name ?? old.name,
+            "folder": folder ?? old.folder,
+            "updatedAt": DateTime.now().toIso8601String(),
+          },
+          "pattern": model.toJson(),
+        }),
+      );
     }
 
     final now = DateTime.now();
-    final stamp = "${now.year}${_two(now.month)}${_two(now.day)}_${_two(now.hour)}${_two(now.minute)}${_two(now.second)}";
+    final stamp =
+        "${now.year}${_two(now.month)}${_two(now.day)}_${_two(now.hour)}${_two(now.minute)}${_two(now.second)}";
     final file = File("${dir.path}${Platform.pathSeparator}draft_$stamp.json");
-    return file.writeAsString(const JsonEncoder().convert({
-      "meta": {
-        "name": (name == null || name.isEmpty) ? _defaultName(now) : name,
-        "folder": folder ?? "",
-        "updatedAt": now.toIso8601String(),
-      },
-      "pattern": model.toJson(),
-    }));
+    return file.writeAsString(
+      const JsonEncoder().convert({
+        "meta": {
+          "name": (name == null || name.isEmpty) ? _defaultName(now) : name,
+          "folder": folder ?? "",
+          "updatedAt": now.toIso8601String(),
+        },
+        "pattern": model.toJson(),
+      }),
+    );
   }
 
   /// 重命名（顺带升级旧格式）
-  static Future<void> renameWork(File file, String name) => _rewriteMeta(file, name: name);
+  static Future<void> renameWork(File file, String name) =>
+      _rewriteMeta(file, name: name);
 
   /// 移动到分组
-  static Future<void> moveWork(File file, String folder) => _rewriteMeta(file, folder: folder);
+  static Future<void> moveWork(File file, String folder) =>
+      _rewriteMeta(file, folder: folder);
 
   /// 复制一份（名字加「副本」）
   static Future<File> copyWork(File file) async {
@@ -159,19 +169,26 @@ class DraftStore {
   }
 
   /// 改名/移动共用的元数据重写（保留网格内容）
-  static Future<void> _rewriteMeta(File file, {String? name, String? folder}) async {
+  static Future<void> _rewriteMeta(
+    File file, {
+    String? name,
+    String? folder,
+  }) async {
     final e = await readEntry(file);
-    await file.writeAsString(const JsonEncoder().convert({
-      "meta": {
-        "name": name ?? e.name,
-        "folder": folder ?? e.folder,
-        "updatedAt": DateTime.now().toIso8601String(),
-      },
-      "pattern": e.model.toJson(),
-    }));
+    await file.writeAsString(
+      const JsonEncoder().convert({
+        "meta": {
+          "name": name ?? e.name,
+          "folder": folder ?? e.folder,
+          "updatedAt": DateTime.now().toIso8601String(),
+        },
+        "pattern": e.model.toJson(),
+      }),
+    );
   }
 
-  static String _defaultName(DateTime t) => "图案 ${t.month}${_two(t.day)}日 ${_two(t.hour)}:${_two(t.minute)}";
+  static String _defaultName(DateTime t) =>
+      "图案 ${t.month}${_two(t.day)}日 ${_two(t.hour)}:${_two(t.minute)}";
 
   static String _two(int v) => v.toString().padLeft(2, "0");
 }

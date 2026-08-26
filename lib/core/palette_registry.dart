@@ -17,8 +17,12 @@ import 'pattern_model.dart';
 
 /// 一个可选色卡
 class PaletteInfo {
-  final String id; ///< 注册表键（"demo" / "mard"）
-  final String label; ///< UI 显示名
+  final String id;
+
+  ///< 注册表键（"demo" / "mard"）
+  final String label;
+
+  ///< UI 显示名
   final BeadPalette palette;
 
   const PaletteInfo(this.id, this.label, this.palette);
@@ -38,11 +42,13 @@ class PaletteRegistry {
     ];
     try {
       final raw = await rootBundle.loadString("assets/palettes/mard.json");
-      list.add(PaletteInfo(
-        "mard",
-        "MARD 色卡 220 色",
-        BeadPalette.fromJson(jsonDecode(raw) as List<dynamic>),
-      ));
+      list.add(
+        PaletteInfo(
+          "mard",
+          "MARD 色卡 220 色",
+          BeadPalette.fromJson(jsonDecode(raw) as List<dynamic>),
+        ),
+      );
     } catch (_) {
       // 资产缺失（打包遗漏等）：仅剩演示色卡，不崩
     }
@@ -60,7 +66,10 @@ class PaletteRegistry {
     try {
       final f = await _settingsFile();
       if (f.existsSync()) {
-        final id = (jsonDecode(f.readAsStringSync()) as Map<String, dynamic>)["palette"] as String?;
+        final id =
+            (jsonDecode(f.readAsStringSync())
+                    as Map<String, dynamic>)["palette"]
+                as String?;
         if (id != null) {
           return id;
         }
@@ -104,7 +113,10 @@ class PaletteRegistry {
 
   /// 为作品解析渲染用调色板：paletteIds 与某内置色卡完全一致则直接用；
   /// 否则按 id 跨色卡逐色查回组装专属调色板（查不到的索引给灰色占位，网格不错位）
-  static Future<BeadPalette> resolveForModel(PatternModel model, BeadPalette fallback) async {
+  static Future<BeadPalette> resolveForModel(
+    PatternModel model,
+    BeadPalette fallback,
+  ) async {
     final all = await load();
     for (final info in all) {
       if (_sameIds(info.palette, model.paletteIds)) {
@@ -122,7 +134,8 @@ class PaletteRegistry {
       }
     }
     return BeadPalette([
-      for (final id in model.paletteIds) merged[id] ?? BeadColor(id, "缺失色", 0xFF808080),
+      for (final id in model.paletteIds)
+        merged[id] ?? BeadColor(id, "缺失色", 0xFF808080),
     ]);
   }
 

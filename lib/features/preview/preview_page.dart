@@ -28,7 +28,8 @@ class PreviewPage extends StatefulWidget {
   State<PreviewPage> createState() => _PreviewPageState();
 }
 
-class _PreviewPageState extends State<PreviewPage> with SingleTickerProviderStateMixin {
+class _PreviewPageState extends State<PreviewPage>
+    with SingleTickerProviderStateMixin {
   var _mode = _PreviewMode.flat;
   var _brightness = 1.0;
 
@@ -39,7 +40,9 @@ class _PreviewPageState extends State<PreviewPage> with SingleTickerProviderStat
   var _ironed3d = false;
   var _autoRotate = false;
   AnimationController? _rotator;
-  var _scaleStartZoom = 1.0; ///< 双指缩放起始值（onScaleStart 记录）
+  var _scaleStartZoom = 1.0;
+
+  ///< 双指缩放起始值（onScaleStart 记录）
 
   // 熨烫图（合成一次缓存）
   Uint8List? _ironedPng;
@@ -50,8 +53,10 @@ class _PreviewPageState extends State<PreviewPage> with SingleTickerProviderStat
   @override
   void initState() {
     super.initState();
-    _rotator = AnimationController(vsync: this, duration: const Duration(seconds: 20))
-      ..addListener(() => setState(() => _yaw += 0.35 * 1 / 60));
+    _rotator = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 20),
+    )..addListener(() => setState(() => _yaw += 0.35 * 1 / 60));
   }
 
   @override
@@ -98,34 +103,42 @@ class _PreviewPageState extends State<PreviewPage> with SingleTickerProviderStat
 
   /// 亮度色矩阵（对任意模式实时生效，无需重建图像）
   ColorFilter get _brightnessFilter => ColorFilter.matrix([
-        _brightness, 0, 0, 0, 0, //
-        0, _brightness, 0, 0, 0,
-        0, 0, _brightness, 0, 0,
-        0, 0, 0, 1, 0,
-      ]);
+    _brightness, 0, 0, 0, 0, //
+    0, _brightness, 0, 0, 0,
+    0, 0, _brightness, 0, 0,
+    0, 0, 0, 1, 0,
+  ]);
 
   /// 导出当前预览（RepaintBoundary 截图，所见即所得）
   Future<void> _exportCurrent() async {
-    final boundary = _boundaryKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+    final boundary =
+        _boundaryKey.currentContext?.findRenderObject()
+            as RenderRepaintBoundary?;
     if (boundary == null) {
       return;
     }
     final image = await boundary.toImage(pixelRatio: 2);
-    final bytes = (await image.toByteData(format: ui.ImageByteFormat.png))!.buffer.asUint8List();
-    final name = "preview_${_mode.name}_${DateTime.now().millisecondsSinceEpoch}.png";
+    final bytes = (await image.toByteData(format: ui.ImageByteFormat.png))!
+        .buffer
+        .asUint8List();
+    final name =
+        "preview_${_mode.name}_${DateTime.now().millisecondsSinceEpoch}.png";
     if (kIsWeb) {
       await downloadBytes(bytes, name);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("已触发浏览器下载")));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text("已触发浏览器下载")));
       }
       return;
     }
     final root = await getApplicationDocumentsDirectory();
-    final dir = Directory("${root.path}${Platform.pathSeparator}bead_exports")..createSync(recursive: true);
+    final dir = Directory("${root.path}${Platform.pathSeparator}bead_exports")
+      ..createSync(recursive: true);
     final file = File("${dir.path}${Platform.pathSeparator}$name");
     await file.writeAsBytes(bytes);
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("已导出：${file.path}")));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text("已导出：${file.path}")));
     }
   }
 
@@ -146,10 +159,18 @@ class _PreviewPageState extends State<PreviewPage> with SingleTickerProviderStat
               onPressed: () => setState(() {
                 _ironed3d = !_ironed3d;
               }),
-              icon: Icon(_ironed3d ? Icons.local_fire_department : Icons.radio_button_checked),
+              icon: Icon(
+                _ironed3d
+                    ? Icons.local_fire_department
+                    : Icons.radio_button_checked,
+              ),
               tooltip: _ironed3d ? "圆豆形态" : "熨烫形态",
             ),
-          IconButton(onPressed: _exportCurrent, icon: const Icon(Icons.download), tooltip: "导出当前预览"),
+          IconButton(
+            onPressed: _exportCurrent,
+            icon: const Icon(Icons.download),
+            tooltip: "导出当前预览",
+          ),
         ],
       ),
       body: Column(
@@ -158,9 +179,21 @@ class _PreviewPageState extends State<PreviewPage> with SingleTickerProviderStat
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
             child: SegmentedButton<_PreviewMode>(
               segments: const [
-                ButtonSegment(value: _PreviewMode.flat, label: Text("成品片"), icon: Icon(Icons.grid_on)),
-                ButtonSegment(value: _PreviewMode.ironed, label: Text("熨烫效果"), icon: Icon(Icons.local_fire_department_outlined)),
-                ButtonSegment(value: _PreviewMode.scene, label: Text("3D 预览"), icon: Icon(Icons.view_in_ar_outlined)),
+                ButtonSegment(
+                  value: _PreviewMode.flat,
+                  label: Text("成品片"),
+                  icon: Icon(Icons.grid_on),
+                ),
+                ButtonSegment(
+                  value: _PreviewMode.ironed,
+                  label: Text("熨烫效果"),
+                  icon: Icon(Icons.local_fire_department_outlined),
+                ),
+                ButtonSegment(
+                  value: _PreviewMode.scene,
+                  label: Text("3D 预览"),
+                  icon: Icon(Icons.view_in_ar_outlined),
+                ),
               ],
               selected: {_mode},
               onSelectionChanged: (sel) => _switchMode(sel.first),
@@ -196,9 +229,12 @@ class _PreviewPageState extends State<PreviewPage> with SingleTickerProviderStat
         colorFilter: _brightnessFilter,
         child: switch (_mode) {
           _PreviewMode.flat => CustomPaint(
-              painter: BeadFlatPainter(model: widget.model, palette: widget.palette),
-              size: Size.infinite,
+            painter: BeadFlatPainter(
+              model: widget.model,
+              palette: widget.palette,
             ),
+            size: Size.infinite,
+          ),
           _PreviewMode.ironed => _buildIroned(),
           _PreviewMode.scene => _buildScene(),
         },
@@ -209,11 +245,16 @@ class _PreviewPageState extends State<PreviewPage> with SingleTickerProviderStat
   /// 熨烫效果：合成中显示进度，完成后显示成片
   Widget _buildIroned() {
     if (_ironBuilding) {
-      return const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-        CircularProgressIndicator(),
-        SizedBox(height: 12),
-        Text("正在合成熨烫效果…"),
-      ]));
+      return const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 12),
+            Text("正在合成熨烫效果…"),
+          ],
+        ),
+      );
     }
     final png = _ironedPng;
     if (png == null) {
@@ -237,7 +278,10 @@ class _PreviewPageState extends State<PreviewPage> with SingleTickerProviderStat
             _zoom = (_scaleStartZoom * details.scale).clamp(0.45, 3.5);
           } else {
             _yaw += details.focalPointDelta.dx * 0.008;
-            _pitch = (_pitch + details.focalPointDelta.dy * 0.007).clamp(-1.35, 1.35);
+            _pitch = (_pitch + details.focalPointDelta.dy * 0.007).clamp(
+              -1.35,
+              1.35,
+            );
           }
         });
       },
@@ -266,6 +310,10 @@ class _IronJobArg {
 }
 
 Uint8List _ironJob(_IronJobArg arg) {
-  final image = IronSimulator.render(arg.model, arg.palette, cellPixels: arg.cellPixels);
+  final image = IronSimulator.render(
+    arg.model,
+    arg.palette,
+    cellPixels: arg.cellPixels,
+  );
   return IronSimulator.encode(image);
 }

@@ -25,9 +25,15 @@ class _ImportPageState extends State<ImportPage> {
   static const _boardSizes = [26, 29, 52, 78];
 
   XFile? _pickedFile;
-  Uint8List? _pickedBytes; ///< 跨平台图片字节（web 上 XFile.path 是 blob URL 不能走 dart:io）
-  Uint8List? _displayBytes; ///< 预览用重编码 PNG（Impeller 对部分 JPEG 首帧挂起的兜底，转换仍用原始字节）
-  var _decoding = false; ///< 解码/重编码中（预览区转圈，避免"白屏不知发生什么"）
+  Uint8List? _pickedBytes;
+
+  ///< 跨平台图片字节（web 上 XFile.path 是 blob URL 不能走 dart:io）
+  Uint8List? _displayBytes;
+
+  ///< 预览用重编码 JPEG（decodeForDisplay 产物，转换仍用原始字节）
+  var _decoding = false;
+
+  ///< 解码/重编码中（预览区转圈，避免"白屏不知发生什么"）
   var _boardSize = 52;
   var _kernel = DitherKernel.none;
   var _converting = false;
@@ -41,6 +47,11 @@ class _ImportPageState extends State<ImportPage> {
   void initState() {
     super.initState();
     _initPalette();
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
   }
 
   /// 加载选中色卡 + 全部可选色卡
@@ -78,8 +89,7 @@ class _ImportPageState extends State<ImportPage> {
       final bytes = await picked.readAsBytes();
       setState(() => _decoding = true);
       try {
-        // 预览必须走重编码：Impeller 引擎对部分 JPEG 字节流（微信变体）首帧
-        // 解码挂起，Image.memory 直接喂原始字节会永远空白（2026-08-25 实锤）
+        // 预览统一走重编码 JPEG + 长边限幅（decodeForDisplay），转换仍用原始字节
         final (_, display) = await decodeForDisplay(bytes);
         if (!mounted) {
           return;
@@ -91,7 +101,8 @@ class _ImportPageState extends State<ImportPage> {
         });
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("无法解码图片: $e")));
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text("无法解码图片: $e")));
         }
       } finally {
         if (mounted) {
@@ -110,20 +121,20 @@ class _ImportPageState extends State<ImportPage> {
     });
     try {
       final bytes = _pickedBytes!;
-      final model = await PixelEngine(_palette).convert(
-        bytes: bytes,
-        boardSize: _boardSize,
-        kernel: _kernel,
-      );
+      final model = await PixelEngine(_palette)
+          .convert(bytes: bytes, boardSize: _boardSize, kernel: _kernel);
       if (!mounted) {
         return;
       }
       await Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => EditorPage(model: model, palette: _palette)),
+        MaterialPageRoute(
+          builder: (_) => EditorPage(model: model, palette: _palette),
+        ),
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("转换失败: $e")));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text("转换失败: $e")));
       }
     } finally {
       if (mounted) {
@@ -136,27 +147,32 @@ class _ImportPageState extends State<ImportPage> {
 
   Future<void> _openDrafts() async {
     if (kIsWeb) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("网页版暂不支持本地作品库")));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text("网页版暂不支持本地作品库")));
       return;
     }
-    await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => WorksPage(palette: _palette)),
-    );
+    await Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => WorksPage(palette: _palette)));
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("拼豆图案工作室"), actions: [
-        IconButton(
-          onPressed: () => Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => const RestorePage()),
+      appBar: AppBar(
+        actions: [
+          IconButton(
+            onPressed: () => Navigator.of(context)
+                .push(MaterialPageRoute(builder: (_) => const RestorePage())),
+            icon: const Icon(Icons.document_scanner),
+            tooltip: "图纸还原",
           ),
-          icon: const Icon(Icons.document_scanner),
-          tooltip: "图纸还原",
-        ),
-        IconButton(onPressed: _openDrafts, icon: const Icon(Icons.folder_open), tooltip: "打开草稿"),
-      ]),
+          IconButton(
+            onPressed: _openDrafts,
+            icon: const Icon(Icons.folder_open),
+            tooltip: "打开草稿",
+          ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -171,7 +187,7 @@ class _ImportPageState extends State<ImportPage> {
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Center(
-                      // 【临时调试】解码遮罩：与空白占位同框，白屏排障不再靠猜，正式版只留占位文字
+                      // 解码转圈遮罩：与空白占位同框，避免"白屏不知发生什么"
                       child: _decoding
                           ? const Column(
                               mainAxisAlignment: MainAxisAlignment.center,
@@ -186,48 +202,46 @@ class _ImportPageState extends State<ImportPage> {
                   )
                 : ClipRRect(
                     borderRadius: BorderRadius.circular(12),
-                    // 喂重编码 PNG 而非原始字节：Impeller 对部分 JPEG 首帧挂起
+                    // 喂重编码 JPEG（decodeForDisplay 产物），转换仍用原始字节
                     child: Image.memory(
                       _displayBytes!,
                       fit: BoxFit.cover,
-                      // 【临时调试】暴露引擎解码状态：黄底=首帧未到（解码挂起）、
-                      // 红底=解码抛异常，正式版移除
-                      frameBuilder: (ctx, child, frame, wasSync) {
-                        if (frame == null && !wasSync) {
-                          return const ColoredBox(
-                            color: Colors.amber,
-                            child: Center(child: Text("显示解码中…", style: TextStyle(color: Colors.black87))),
-                          );
-                        }
-                        return child;
-                      },
+                      // 解码失败必须可见（红底提示），不能静默白屏让用户"不知发生了什么"
                       errorBuilder: (ctx, error, stack) {
                         return ColoredBox(
                           color: Colors.redAccent,
-                          child: Center(child: Text("显示解码失败: $error", textAlign: TextAlign.center, style: const TextStyle(color: Colors.white))),
+                          child: Center(
+                            child: Text(
+                              "显示解码失败: $error",
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Colors.white),
+                            ),
+                          ),
                         );
                       },
                     ),
                   ),
           ),
           const SizedBox(height: 12),
-          Row(children: [
-            Expanded(
-              child: FilledButton.tonalIcon(
-                onPressed: () => _pickImage(ImageSource.gallery),
-                icon: const Icon(Icons.photo_library),
-                label: const Text("相册"),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.tonalIcon(
+                  onPressed: () => _pickImage(ImageSource.gallery),
+                  icon: const Icon(Icons.photo_library),
+                  label: const Text("相册"),
+                ),
               ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: FilledButton.tonalIcon(
-                onPressed: () => _pickImage(ImageSource.camera),
-                icon: const Icon(Icons.photo_camera),
-                label: const Text("拍照"),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton.tonalIcon(
+                  onPressed: () => _pickImage(ImageSource.camera),
+                  icon: const Icon(Icons.photo_camera),
+                  label: const Text("拍照"),
+                ),
               ),
-            ),
-          ]),
+            ],
+          ),
           const SizedBox(height: 20),
 
           // 色卡选择
@@ -235,7 +249,10 @@ class _ImportPageState extends State<ImportPage> {
             const Text("色卡", style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             SegmentedButton<String>(
-              segments: [for (final p in _palettes) ButtonSegment(value: p.id, label: Text(p.label))],
+              segments: [
+                for (final p in _palettes)
+                  ButtonSegment(value: p.id, label: Text(p.label)),
+              ],
               selected: {_paletteId},
               onSelectionChanged: (sel) => _switchPalette(sel.first),
             ),
@@ -252,13 +269,17 @@ class _ImportPageState extends State<ImportPage> {
           const SizedBox(height: 8),
           SegmentedButton<int>(
             segments: [
-              for (final s in _boardSizes) ButtonSegment(value: s, label: Text("$s×$s")),
+              for (final s in _boardSizes)
+                ButtonSegment(value: s, label: Text("$s×$s")),
             ],
             selected: {_boardSize},
             onSelectionChanged: (sel) => setState(() => _boardSize = sel.first),
           ),
           const SizedBox(height: 8),
-          Text("$_boardSize×$_boardSize = ${_boardSize * _boardSize} 颗", style: Theme.of(context).textTheme.bodySmall),
+          Text(
+            "$_boardSize×$_boardSize = ${_boardSize * _boardSize} 颗",
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
           const SizedBox(height: 12),
 
           // 抖动核选择
@@ -269,8 +290,14 @@ class _ImportPageState extends State<ImportPage> {
             child: SegmentedButton<DitherKernel>(
               segments: const [
                 ButtonSegment(value: DitherKernel.none, label: Text("无")),
-                ButtonSegment(value: DitherKernel.floydSteinberg, label: Text("FS")),
-                ButtonSegment(value: DitherKernel.atkinson, label: Text("Atkinson")),
+                ButtonSegment(
+                  value: DitherKernel.floydSteinberg,
+                  label: Text("FS"),
+                ),
+                ButtonSegment(
+                  value: DitherKernel.atkinson,
+                  label: Text("Atkinson"),
+                ),
                 ButtonSegment(value: DitherKernel.ordered, label: Text("有序")),
               ],
               selected: {_kernel},
@@ -278,21 +305,22 @@ class _ImportPageState extends State<ImportPage> {
             ),
           ),
           const SizedBox(height: 4),
-          Text(
-            switch (_kernel) {
-              DitherKernel.none => "色块干净，渐变断层明显",
-              DitherKernel.floydSteinberg => "误差扩散，渐变过渡自然",
-              DitherKernel.atkinson => "扩散更强，整体更亮更均匀",
-              DitherKernel.ordered => "网点风格，无误差累积",
-            },
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
+          Text(switch (_kernel) {
+            DitherKernel.none => "色块干净，渐变断层明显",
+            DitherKernel.floydSteinberg => "误差扩散，渐变过渡自然",
+            DitherKernel.atkinson => "扩散更强，整体更亮更均匀",
+            DitherKernel.ordered => "网点风格，无误差累积",
+          }, style: Theme.of(context).textTheme.bodySmall),
           const SizedBox(height: 20),
 
           FilledButton.icon(
             onPressed: _pickedFile == null || _converting ? null : _convert,
             icon: _converting
-                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
                 : const Icon(Icons.auto_awesome),
             label: Text(_converting ? "转换中…" : "开始转换"),
           ),

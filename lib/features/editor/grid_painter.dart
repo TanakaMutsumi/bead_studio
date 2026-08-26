@@ -9,10 +9,18 @@ import '../../core/pattern_model.dart';
 class GridPainter extends CustomPainter {
   final PatternModel model;
   final BeadPalette palette;
-  final int selectedColorIndex; ///< 当前选中色（画布上描高亮框提示）
-  final Rect? selectionRect; ///< 矩形选区（画布坐标，null = 无）
-  final int? highlightIndex; ///< 拼装模式高亮色索引（null = 关闭；其余色降饱和显示）
-  final Rect? boardRect; ///< 分板模式当前底板的格子范围（null = 关闭；板外格子大幅降透明）
+  final int selectedColorIndex;
+
+  ///< 当前选中色（画布上描高亮框提示）
+  final Rect? selectionRect;
+
+  ///< 矩形选区（画布坐标，null = 无）
+  final int? highlightIndex;
+
+  ///< 拼装模式高亮色索引（null = 关闭；其余色降饱和显示）
+  final Rect? boardRect;
+
+  ///< 分板模式当前底板的格子范围（null = 关闭；板外格子大幅降透明）
 
   GridPainter({
     required this.model,
@@ -50,27 +58,44 @@ class GridPainter extends CustomPainter {
         var color = Color.fromARGB(255, c.r, c.g, c.b);
         // 拼装模式：非高亮色混入深灰降饱和，让目标色一眼可见
         if (highlightIndex != null && v != highlightIndex) {
-          color = Color.lerp(color, const Color.fromARGB(255, 0x30, 0x30, 0x30), 0.65)!;
+          color = Color.lerp(
+            color,
+            const Color.fromARGB(255, 0x30, 0x30, 0x30),
+            0.65,
+          )!;
         }
         // 分板模式：当前底板外的格子大幅降透明
         final br = boardRect;
-        final outsideBoard = br != null && (x < br.left || x >= br.right || y < br.top || y >= br.bottom);
+        final outsideBoard =
+            br != null &&
+            (x < br.left || x >= br.right || y < br.top || y >= br.bottom);
         if (outsideBoard) {
           color = color.withValues(alpha: 0.18);
         }
         gridPaint.color = color;
-        canvas.drawRect(Rect.fromLTWH(x * cell, y * cell, cell, cell), gridPaint);
+        canvas.drawRect(
+          Rect.fromLTWH(x * cell, y * cell, cell, cell),
+          gridPaint,
+        );
       }
     }
 
     // 网格线（每 10 格加粗，拼豆板数行习惯）
     for (var x = 0; x <= model.width; x++) {
       final p = (x * cell);
-      canvas.drawLine(Offset(p, 0), Offset(p, size.height), x % 10 == 0 ? majorLinePaint : linePaint);
+      canvas.drawLine(
+        Offset(p, 0),
+        Offset(p, size.height),
+        x % 10 == 0 ? majorLinePaint : linePaint,
+      );
     }
     for (var y = 0; y <= model.height; y++) {
       final p = (y * cell);
-      canvas.drawLine(Offset(0, p), Offset(size.width, p), y % 10 == 0 ? majorLinePaint : linePaint);
+      canvas.drawLine(
+        Offset(0, p),
+        Offset(size.width, p),
+        y % 10 == 0 ? majorLinePaint : linePaint,
+      );
     }
 
     // 矩形选区高亮

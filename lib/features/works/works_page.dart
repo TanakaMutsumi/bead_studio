@@ -18,7 +18,9 @@ class _WorkVM {
 
 /// 作品库页：缩略图网格 + 分组筛选 + 重命名/移动/复制/删除 + 多选批量操作
 class WorksPage extends StatefulWidget {
-  final BeadPalette palette; ///< 兜底调色板（作品色号解析失败时用）
+  final BeadPalette palette;
+
+  ///< 兜底调色板（作品色号解析失败时用）
 
   const WorksPage({super.key, required this.palette});
 
@@ -29,7 +31,9 @@ class WorksPage extends StatefulWidget {
 class _WorksPageState extends State<WorksPage> {
   List<_WorkVM> _works = [];
   var _loading = true;
-  String? _folderFilter; ///< null = 全部
+  String? _folderFilter;
+
+  ///< null = 全部
   var _multiSelect = false;
   final Set<File> _selected = {};
 
@@ -43,7 +47,12 @@ class _WorksPageState extends State<WorksPage> {
     final works = await DraftStore.listWorks();
     final vms = <_WorkVM>[];
     for (final w in works) {
-      vms.add(_WorkVM(w, await PaletteRegistry.resolveForModel(w.model, widget.palette)));
+      vms.add(
+        _WorkVM(
+          w,
+          await PaletteRegistry.resolveForModel(w.model, widget.palette),
+        ),
+      );
     }
     if (!mounted) {
       return;
@@ -58,7 +67,13 @@ class _WorksPageState extends State<WorksPage> {
     });
   }
 
-  List<String> get _folders => _works.map((w) => w.entry.folder).where((f) => f.isNotEmpty).toSet().toList()..sort();
+  List<String> get _folders =>
+      _works
+          .map((w) => w.entry.folder)
+          .where((f) => f.isNotEmpty)
+          .toSet()
+          .toList()
+        ..sort();
 
   List<_WorkVM> get _filtered => _folderFilter == null
       ? _works
@@ -69,7 +84,11 @@ class _WorksPageState extends State<WorksPage> {
   void _open(_WorkVM w) {
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
-        builder: (_) => EditorPage(model: w.entry.model, palette: w.palette, sourceFile: w.entry.file),
+        builder: (_) => EditorPage(
+          model: w.entry.model,
+          palette: w.palette,
+          sourceFile: w.entry.file,
+        ),
       ),
     );
   }
@@ -94,7 +113,10 @@ class _WorksPageState extends State<WorksPage> {
           children: [
             Padding(
               padding: const EdgeInsets.all(16),
-              child: Text("移动到分组", style: Theme.of(sheetContext).textTheme.titleMedium),
+              child: Text(
+                "移动到分组",
+                style: Theme.of(sheetContext).textTheme.titleMedium,
+              ),
             ),
             for (final f in folders)
               ListTile(
@@ -112,11 +134,16 @@ class _WorksPageState extends State<WorksPage> {
               leading: const Icon(Icons.create_new_folder_outlined),
               title: const Text("新建分组"),
               onTap: () async {
-                final name = await _inputDialog("新建分组", "分组名", TextEditingController());
+                final name = await _inputDialog(
+                  "新建分组",
+                  "分组名",
+                  TextEditingController(),
+                );
                 if (!sheetContext.mounted) {
                   return;
                 }
-                Navigator.of(sheetContext).pop(name?.trim().isEmpty == true ? null : name?.trim());
+                Navigator.of(sheetContext)
+                    .pop(name?.trim().isEmpty == true ? null : name?.trim());
               },
             ),
           ],
@@ -144,8 +171,14 @@ class _WorksPageState extends State<WorksPage> {
         title: Text(files.length == 1 ? "删除作品？" : "删除 ${files.length} 个作品？"),
         content: const Text("删除后无法恢复"),
         actions: [
-          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text("取消")),
-          FilledButton(onPressed: () => Navigator.of(dialogContext).pop(true), child: const Text("删除")),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text("取消"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text("删除"),
+          ),
         ],
       ),
     );
@@ -159,7 +192,11 @@ class _WorksPageState extends State<WorksPage> {
   }
 
   /// 单行输入对话框，取消返回 null
-  Future<String?> _inputDialog(String title, String hint, TextEditingController ctrl) {
+  Future<String?> _inputDialog(
+    String title,
+    String hint,
+    TextEditingController ctrl,
+  ) {
     return showDialog<String>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -167,26 +204,35 @@ class _WorksPageState extends State<WorksPage> {
         content: TextField(
           controller: ctrl,
           autofocus: true,
-          decoration: InputDecoration(hintText: hint, border: const OutlineInputBorder()),
+          decoration: InputDecoration(
+            hintText: hint,
+            border: const OutlineInputBorder(),
+          ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text("取消")),
-          FilledButton(onPressed: () => Navigator.of(dialogContext).pop(ctrl.text), child: const Text("确定")),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text("取消"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(ctrl.text),
+            child: const Text("确定"),
+          ),
         ],
       ),
     );
   }
 
   void _toggleSelect(File f) => setState(() {
-        if (_selected.contains(f)) {
-          _selected.remove(f);
-        } else {
-          _selected.add(f);
-        }
-        if (_selected.isEmpty) {
-          _multiSelect = false;
-        }
-      });
+    if (_selected.contains(f)) {
+      _selected.remove(f);
+    } else {
+      _selected.add(f);
+    }
+    if (_selected.isEmpty) {
+      _multiSelect = false;
+    }
+  });
 
   // ==================== UI ====================
 
@@ -194,7 +240,9 @@ class _WorksPageState extends State<WorksPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: _multiSelect ? Text("已选 ${_selected.length} 项") : const Text("我的作品"),
+        title: _multiSelect
+            ? Text("已选 ${_selected.length} 项")
+            : const Text("我的作品"),
         actions: [
           if (_multiSelect)
             IconButton(
@@ -208,7 +256,11 @@ class _WorksPageState extends State<WorksPage> {
           else
             IconButton(
               onPressed: () async {
-                final name = await _inputDialog("新建分组", "分组名", TextEditingController());
+                final name = await _inputDialog(
+                  "新建分组",
+                  "分组名",
+                  TextEditingController(),
+                );
                 if (name == null || name.trim().isEmpty) {
                   return;
                 }
@@ -224,7 +276,9 @@ class _WorksPageState extends State<WorksPage> {
           : Column(
               children: [
                 _buildFolderBar(),
-                Expanded(child: _filtered.isEmpty ? _buildEmpty() : _buildGrid()),
+                Expanded(
+                  child: _filtered.isEmpty ? _buildEmpty() : _buildGrid(),
+                ),
                 if (_multiSelect) _buildBatchBar(),
               ],
             ),
@@ -278,7 +332,11 @@ class _WorksPageState extends State<WorksPage> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.collections_outlined, size: 72, color: Colors.black26),
+          const Icon(
+            Icons.collections_outlined,
+            size: 72,
+            color: Colors.black26,
+          ),
           const SizedBox(height: 16),
           Text(_folderFilter == null ? "还没有作品，去导入图片生成一个吧" : "该分组下暂无作品"),
         ],
@@ -327,7 +385,11 @@ class _WorksPageState extends State<WorksPage> {
                         padding: const EdgeInsets.all(4),
                         child: CustomPaint(
                           size: Size.infinite,
-                          painter: GridPainter(model: w.entry.model, palette: w.palette, selectedColorIndex: -1),
+                          painter: GridPainter(
+                            model: w.entry.model,
+                            palette: w.palette,
+                            selectedColorIndex: -1,
+                          ),
                         ),
                       ),
                     ),
@@ -335,7 +397,11 @@ class _WorksPageState extends State<WorksPage> {
                       Positioned.fill(
                         child: Container(
                           color: Colors.blue.withValues(alpha: 0.25),
-                          child: const Icon(Icons.check_circle, color: Colors.blue, size: 32),
+                          child: const Icon(
+                            Icons.check_circle,
+                            color: Colors.blue,
+                            size: 32,
+                          ),
                         ),
                       ),
                     if (!_multiSelect)
@@ -364,8 +430,14 @@ class _WorksPageState extends State<WorksPage> {
                             },
                             itemBuilder: (menuContext) => const [
                               PopupMenuItem(value: "open", child: Text("打开")),
-                              PopupMenuItem(value: "rename", child: Text("重命名")),
-                              PopupMenuItem(value: "move", child: Text("移动到分组")),
+                              PopupMenuItem(
+                                value: "rename",
+                                child: Text("重命名"),
+                              ),
+                              PopupMenuItem(
+                                value: "move",
+                                child: Text("移动到分组"),
+                              ),
                               PopupMenuItem(value: "copy", child: Text("复制")),
                               PopupMenuItem(value: "delete", child: Text("删除")),
                             ],
@@ -387,7 +459,8 @@ class _WorksPageState extends State<WorksPage> {
                       ),
                       Text(
                         "${w.entry.model.width}×${w.entry.model.height} · ${_fmtTime(w.entry.updatedAt)}",
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.black45, fontSize: 10),
+                        style: Theme.of(context).textTheme.bodySmall
+                            ?.copyWith(color: Colors.black45, fontSize: 10),
                       ),
                     ],
                   ),
@@ -408,19 +481,27 @@ class _WorksPageState extends State<WorksPage> {
           mainAxisAlignment: MainAxisAlignment.spaceAround,
           children: [
             TextButton.icon(
-              onPressed: _selected.isEmpty ? null : () => _move(_selected.toList()),
+              onPressed: _selected.isEmpty
+                  ? null
+                  : () => _move(_selected.toList()),
               icon: const Icon(Icons.drive_file_move_outlined),
               label: const Text("移动"),
             ),
             TextButton.icon(
-              onPressed: _selected.isEmpty ? null : () => _delete(_selected.toList()),
+              onPressed: _selected.isEmpty
+                  ? null
+                  : () => _delete(_selected.toList()),
               icon: const Icon(Icons.delete_outline),
               label: const Text("删除"),
             ),
             TextButton(
-              onPressed: _filtered.isEmpty || _selected.length == _filtered.length
+              onPressed:
+                  _filtered.isEmpty || _selected.length == _filtered.length
                   ? null
-                  : () => setState(() => _selected.addAll(_filtered.map((w) => w.entry.file))),
+                  : () => setState(
+                      () =>
+                          _selected.addAll(_filtered.map((w) => w.entry.file)),
+                    ),
               child: const Text("全选"),
             ),
           ],
@@ -429,5 +510,6 @@ class _WorksPageState extends State<WorksPage> {
     );
   }
 
-  String _fmtTime(DateTime t) => "${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')} ${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}";
+  String _fmtTime(DateTime t) =>
+      "${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')} ${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}";
 }

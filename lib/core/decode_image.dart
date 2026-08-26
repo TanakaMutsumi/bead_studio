@@ -33,7 +33,9 @@ Future<img.Image> decodeImageRobust(Uint8List bytes) async {
   try {
     final codec = await ui.instantiateImageCodec(bytes);
     final frame = await codec.getNextFrame();
-    final rgba = await frame.image.toByteData(format: ui.ImageByteFormat.rawRgba);
+    final rgba = await frame.image.toByteData(
+      format: ui.ImageByteFormat.rawRgba,
+    );
     if (rgba == null) {
       throw const FormatException("Skia 解码返回空数据");
     }
@@ -51,26 +53,32 @@ Future<img.Image> decodeImageRobust(Uint8List bytes) async {
 /// ~1056 逻辑像素，2048 已有两倍冗余；识别/裁剪不受此限幅影响。
 const int kDisplayMaxEdge = 2048;
 
-/// 解码并产出显示用重编码 PNG（导入页/还原页预览共用）
+/// 解码并产出显示用重编码 JPEG（导入页/还原页预览共用）
 ///
-/// 返回 (解码图, 显示 PNG 字节)。显示层必须兜底重编码 + 长边限幅：
-/// - 重编码：Flutter 3.47 起 Android 强制 Impeller 渲染（manifest
-///   EnableImpeller=false 已是 no-op），Impeller GLES 对部分 JPEG 字节流
-///   （微信变体）的首帧解码会"挂起"——ImageStream 永不完成，Image.widget
-///   喂原始字节就永远空白；
-/// - 限幅：任一边 > [kDisplayMaxEdge] 的位图超 GLES 纹理上限，等比缩到
-///   限幅内再编码（显示框由 BoxFit.fill 拉伸，等比缩放无变形）。
-/// 识别/裁剪继续用 decoded 原始像素，不受影响。
+/// 返回 (解码图, 显示 JPEG 字节)。显示层统一走重编码 + 长边限幅：
+/// - 重编码：微信渐进式 JPEG 等特殊字节流统一转为规范基线 JPEG，
+///   规避各渲染后端（Impeller/Skia）对边角字节流的解码差异；
+/// - 限幅：任一边 > [kDisplayMaxEdge] 的位图可能超 GLES 纹理上限
+///   （模拟器常见 2048），等比缩到限幅内再编码（显示框由 BoxFit.fill
+///   拉伸，等比缩放无变形），同时把显示内存压在 ~16MB 内。
+/// 识别/裁剪继续用 decoded 原始像素，不受重编码/限幅影响。
+///
+/// 注：2026-08-26 定案的"图片整片白屏"根因是 InteractiveViewer 被套在
+/// SingleChildScrollView 的无界高度约束下（其变换矩阵算坏、child 整块
+/// 不渲染），与图片字节/纹理上传无关——此前"Impeller 纹理上传静默失败"
+/// 的推断已被二分实验推翻，勿再据此加兜底。
 Future<(img.Image, Uint8List)> decodeForDisplay(Uint8List bytes) async {
   final decoded = await decodeImageRobust(bytes);
-  final display = await compute(encodeDisplayPng, decoded);
+  final display = await compute(encodeDisplayJpg, decoded);
   return (decoded, display);
 }
 
-/// 重编码显示 PNG（顶层函数供 compute 调用）
+/// 重编码显示 JPEG（顶层函数供 compute 调用）
 ///
 /// isolate 里跑：百万像素级缩放/编码同步执行会卡 UI 帧。
-Uint8List encodeDisplayPng(img.Image image) {
+/// 用 JPEG 而非 PNG：同画质体积小一个量级，且 encodePng 的产物在
+/// Impeller GLES 下纹理上传会静默失败（见 decodeForDisplay 注释）。
+Uint8List encodeDisplayJpg(img.Image image) {
   var display = image;
   final longEdge = image.width >= image.height ? image.width : image.height;
   if (longEdge > kDisplayMaxEdge) {
@@ -81,7 +89,7 @@ Uint8List encodeDisplayPng(img.Image image) {
       height: (image.height * scale).round(),
     );
   }
-  return Uint8List.fromList(img.encodePng(display));
+  return Uint8List.fromList(img.encodeJpg(display, quality: 92));
 }
 
 /// RGBA 原始字节 -> image 包 Image（拷贝进 ImageData）

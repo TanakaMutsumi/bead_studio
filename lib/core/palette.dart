@@ -3,9 +3,15 @@ library;
 
 /// 单颗珠子颜色定义
 class BeadColor {
-  final String id; ///< 颜色编号（如 "P01"）
-  final String name; ///< 显示名（如 "奶白"）
-  final int rgb; ///< 0xRRGGBB
+  final String id;
+
+  ///< 颜色编号（如 "P01"）
+  final String name;
+
+  ///< 显示名（如 "奶白"）
+  final int rgb;
+
+  ///< 0xRRGGBB
 
   const BeadColor(this.id, this.name, this.rgb);
 
@@ -43,6 +49,6 @@ class BeadPalette {
   }
 
   List<Map<String, dynamic>> toJson() => [
-        for (final c in colors) {"id": c.id, "name": c.name, "rgb": c.rgb},
-      ];
+    for (final c in colors) {"id": c.id, "name": c.name, "rgb": c.rgb},
+  ];
 }
