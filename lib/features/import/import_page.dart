@@ -8,7 +8,6 @@ import '../../core/palette.dart';
 import '../../core/palette_registry.dart';
 import '../../core/pixel_engine.dart';
 import '../../core/quantizer.dart';
-import '../../data/demo_palette.dart';
 import '../editor/editor_page.dart';
 import '../restore/restore_page.dart';
 import '../works/works_page.dart';
@@ -38,8 +37,8 @@ class _ImportPageState extends State<ImportPage> {
   var _kernel = DitherKernel.none;
   var _converting = false;
 
-  // 色卡（默认演示色卡，initState 异步换为用户选中的色卡）
-  BeadPalette _palette = demoPalette;
+  // 色卡（初始空占位，initState 异步换为用户选中的色卡）
+  BeadPalette _palette = const BeadPalette([]);
   List<PaletteInfo> _palettes = const [];
   String _paletteId = "";
 

@@ -1,6 +1,6 @@
 /// 调色板注册表：内置色卡加载 + 选中持久化 + 草稿调色板解析
 ///
-/// 内置色卡：演示色卡（40 色硬编码）+ MARD 色卡（assets/palettes/mard.json，220 色）
+/// 内置色卡：MARD 色卡（assets/palettes/mard.json，291 色）
 /// 草稿兼容：作品存有生成时的 paletteIds，打开时与本色卡不一致则按 id 逐色查回
 library;
 
@@ -11,7 +11,6 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:path_provider/path_provider.dart';
 
-import '../data/demo_palette.dart';
 import 'palette.dart';
 import 'pattern_model.dart';
 
@@ -19,7 +18,7 @@ import 'pattern_model.dart';
 class PaletteInfo {
   final String id;
 
-  ///< 注册表键（"demo" / "mard"）
+  ///< 注册表键（"mard"）
   final String label;
 
   ///< UI 显示名
@@ -31,26 +30,25 @@ class PaletteInfo {
 class PaletteRegistry {
   static List<PaletteInfo>? _cache;
 
-  /// 加载全部内置色卡（结果缓存；mard 资产缺失时静默降级为仅演示色卡）
+  /// 加载全部内置色卡（结果缓存；mard 资产缺失时给空色卡占位不崩）
   static Future<List<PaletteInfo>> load() async {
     final cached = _cache;
     if (cached != null) {
       return cached;
     }
-    final list = <PaletteInfo>[
-      const PaletteInfo("demo", "演示色卡 40 色", demoPalette),
-    ];
+    final list = <PaletteInfo>[];
     try {
       final raw = await rootBundle.loadString("assets/palettes/mard.json");
       list.add(
         PaletteInfo(
           "mard",
-          "MARD 色卡 220 色",
+          "MARD 色卡 291 色",
           BeadPalette.fromJson(jsonDecode(raw) as List<dynamic>),
         ),
       );
     } catch (_) {
-      // 资产缺失（打包遗漏等）：仅剩演示色卡，不崩
+      // 资产缺失（打包遗漏等）：空色卡占位（清单为空），页面不崩
+      list.add(const PaletteInfo("mard", "MARD 色卡", BeadPalette([])));
     }
     _cache = list;
     return list;
@@ -126,7 +124,7 @@ class PaletteRegistry {
     if (_sameIds(fallback, model.paletteIds)) {
       return fallback;
     }
-    // 跨色卡/老草稿：id -> 色合并表（先注册的优先，demo 在前不影响 mard 唯一性）
+    // 跨色卡/老草稿：id -> 色合并表（当前仅 mard 一张内置卡）
     final merged = <String, BeadColor>{};
     for (final info in all) {
       for (final c in info.palette.colors) {

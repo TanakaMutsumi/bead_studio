@@ -15,7 +15,6 @@ import '../../core/palette.dart';
 import '../../core/palette_registry.dart';
 import '../../core/pattern_model.dart';
 import '../../core/quantizer.dart';
-import '../../data/demo_palette.dart';
 import '../editor/editor_page.dart';
 import '../editor/grid_painter.dart';
 
@@ -236,9 +235,9 @@ class _RestorePageState extends State<RestorePage> {
   ///< 解码后的原图
 
   // ========== 色卡 ==========
-  BeadPalette _palette = demoPalette;
+  BeadPalette _palette = const BeadPalette([]);
 
-  ///< 当前色卡（initState 异步换为选中色卡）
+  ///< 当前色卡（初始空占位，initState 异步换为选中色卡）
   List<PaletteInfo> _palettes = const [];
 
   ///< 可选色卡列表
@@ -624,8 +623,11 @@ class _RestorePageState extends State<RestorePage> {
                 " ",
                 "",
               );
-              // 色号最多 4 字符（A1/H12 型），长文本是正文/杂项不做色号
-              if (text.length <= 4) {
+              // 色号最多 4 字符（A1/H12 型），长文本是正文/杂项不做色号。
+              // 纯数字文本即使命中混淆变体（8↔B 使 "81"→B1）也先按颗数
+              // 收集——它更常是左侧色号的真颗数（"H7 81" 行的 81），
+              // 配对后仍未消费的裸数字才兜底回落为色号
+              if (text.length <= 4 && RegExp(r'^[A-Z]').hasMatch(text)) {
                 final code = codeMap[text];
                 if (code != null) {
                   final e = _OcrElem(seq++, element.boundingBox, code, null);
@@ -717,7 +719,26 @@ class _RestorePageState extends State<RestorePage> {
           "${e.rect.width.toInt()}x${e.rect.height.toInt()})",
         );
       }
-      final paired = _pairLegendOcr(elems);
+      final paired = _pairLegendOcr(elems).toList();
+      // 配对后兜底：仍未消费的裸数字若命中混淆变体（掉字母色号 "81"→B1
+      // 型），回落为色号条目（颗数 0，进未配色号提示让用户手填）。先配对
+      // 后兜底的顺序保证 "H7 81" 型同行的 81 优先成为左侧色号的颗数，
+      // 而不是被 B1 变体抢走导致 H7 悬空
+      for (final e in [...elems]) {
+        if (e.code != null || e.used || e.dbgText.contains("(")) {
+          continue;
+        }
+        final t = e.dbgText.trim().toUpperCase().replaceAll(" ", "");
+        final hit = t.length <= 4 ? codeMap[t] : null;
+        if (hit == null) {
+          continue;
+        }
+        final fixed = _OcrElem(e.seq, e.rect, hit, null);
+        fixed.dbgText = "${e.dbgText}→${_palette.colors[hit].id}(变体兜底)";
+        elems.remove(e);
+        elems.add(fixed);
+        paired.add((hit, 0));
+      }
       final unpaired = elems
           .where((e) => e.code != null && e.pairedCount == null)
           .map((e) => "${_palette.colors[e.code!].id}(${e.dbgText})")
@@ -892,8 +913,8 @@ class _RestorePageState extends State<RestorePage> {
           continue;
         }
       }
-      // 色号样式但色卡没有（如 MARD 卡外的 H7）：提示用户用"添加颜色"补
-      if (RegExp(r'^[A-Z]\d{1,2}$').hasMatch(text)) {
+      // 色号样式但色卡没有：提示用户用"添加颜色"补
+      if (RegExp(r'^[A-Z]{1,2}\d{1,2}$').hasMatch(text)) {
         orphanNotes.add(text);
       }
     }
@@ -911,7 +932,7 @@ class _RestorePageState extends State<RestorePage> {
       p.g = 255 - p.g;
       p.b = 255 - p.b;
     }
-    final codeLike = RegExp(r'^[A-Z]\d{1,2}$');
+    final codeLike = RegExp(r'^[A-Z]{1,2}\d{1,2}$');
     final numLike = RegExp(r'^\d{1,3}$');
     final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
     try {
@@ -1114,7 +1135,7 @@ class _RestorePageState extends State<RestorePage> {
               for (var i = 0; i < _palette.colors.length; i++)
                 InkWell(
                   onTap: () => Navigator.pop(ctx, i),
-                  // FittedBox 防格子竖向溢出：220 色卡行高较矮 + 系统字体
+                  // FittedBox 防格子竖向溢出：大色卡(291 色)行高较矮 + 系统字体
                   // 缩放时 Column(色块+文字) 放不下会渲染 "BOTTOM OVERFLOWED"
                   // 溢出条（用户看到的 "BOTTOM OV" 就是它），scaleDown 整体缩放兜底
                   child: FittedBox(
