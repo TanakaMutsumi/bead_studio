@@ -92,6 +92,47 @@ const Map<String, List<String>> _ocrConfusions = {
   return (sr ~/ n, sg ~/ n, sb ~/ n);
 }
 
+/// 掉字母色号按「数字后缀候选 + 条目色块颜色最近匹配」补全。
+/// 返回补全的调色板索引；候选为空/色块不可采样/颜色差过远（色卡切换
+/// 不对或本就不是色号）时返回 null 保守放弃
+int? _fixCodeBySwatch(
+  BeadPalette palette,
+  int bareNum,
+  Rect codeRect,
+  img.Image scaled,
+) {
+  final suffix = bareNum.toString();
+  final cands = <int>[
+    for (var i = 0; i < palette.colors.length; i++)
+      if (palette.colors[i].id.length == suffix.length + 1 &&
+          palette.colors[i].id.endsWith(suffix))
+        i,
+  ];
+  if (cands.isEmpty) {
+    return null;
+  }
+  final swatch = _sampleSwatch(scaled, codeRect);
+  if (swatch == null) {
+    return null;
+  }
+  var best = -1;
+  var bestDist = 1 << 30;
+  for (final i in cands) {
+    final c = palette.colors[i];
+    final d = (c.r - swatch.$1) * (c.r - swatch.$1) +
+        (c.g - swatch.$2) * (c.g - swatch.$2) +
+        (c.b - swatch.$3) * (c.b - swatch.$3);
+    if (d < bestDist) {
+      bestDist = d;
+      best = i;
+    }
+  }
+  if (best < 0 || bestDist > 120 * 120 * 3) {
+    return null;
+  }
+  return best;
+}
+
 /// 图例 OCR 识别元素（色号或颗数，带几何框供跨行配对）
 class _OcrElem {
   final int seq;
@@ -624,34 +665,8 @@ class _RestorePageState extends State<RestorePage> {
             .where((e) => e.code == null && !e.dbgText.contains("("))
             .toList();
         for (final e in bare) {
-          final suffix = e.count.toString();
-          final cands = <int>[
-            for (var i = 0; i < _palette.colors.length; i++)
-              if (_palette.colors[i].id.length == suffix.length + 1 &&
-                  _palette.colors[i].id.endsWith(suffix))
-                i,
-          ];
-          if (cands.isEmpty) {
-            continue;
-          }
-          final swatch = _sampleSwatch(scaled, e.rect);
-          if (swatch == null) {
-            continue;
-          }
-          var best = -1;
-          var bestDist = 1 << 30;
-          for (final i in cands) {
-            final c = _palette.colors[i];
-            final d = (c.r - swatch.$1) * (c.r - swatch.$1) +
-                (c.g - swatch.$2) * (c.g - swatch.$2) +
-                (c.b - swatch.$3) * (c.b - swatch.$3);
-            if (d < bestDist) {
-              bestDist = d;
-              best = i;
-            }
-          }
-          // 色块与最近候选差太远（色卡切换不对/不是色号）时保守放弃
-          if (best < 0 || bestDist > 120 * 120 * 3) {
+          final best = _fixCodeBySwatch(_palette, e.count!, e.rect, scaled);
+          if (best == null) {
             continue;
           }
           final fixed = _OcrElem(e.seq, e.rect, best, null);
@@ -661,6 +676,19 @@ class _RestorePageState extends State<RestorePage> {
           fixedCount++;
         }
       }
+      // 孤儿颗数二次 OCR：带括号颗数的左侧同行/正上方近旁都没有色号元素，
+      // 说明该条目的色号整条被 ML Kit 吞掉（深底白字识别不稳定；H7 案例：
+      // (343) 正常读出而 H7 消失）。裁「左邻元素右缘 -> 颗数左缘」的空隙
+      // 小区放大后单独再识别（原图 + 反色两轮），读出的色号补回元素表参与
+      // 最终配对
+      final orphanNotes = <String>[];
+      final gapFixed = await _fixOrphanCountCodes(
+        elems,
+        scaled,
+        codeMap,
+        tmp,
+        orphanNotes,
+      );
       // 【临时调试】保存本次 OCR 快照（放大图 + 元素 + 配对前状态 + 框选区），正式版移除
       _ocrDebug = _OcrDebugInfo(
         source,
@@ -676,7 +704,8 @@ class _RestorePageState extends State<RestorePage> {
       // 【临时调试】元素明细同时打 logcat 与写文件（个别环境 logcat 收不到
       // flutter tag，文件可 adb pull，像素判读调试面板太费劲），正式版移除
       final dbgLines = <String>[
-        "框选($source) $rx,$ry ${rw}x$rh elems=${elems.length}(色块补全$fixedCount, 括号颗数$parenCount/裸数字$bareCount) img=${scaled.width}x${scaled.height}",
+        "框选($source) $rx,$ry ${rw}x$rh elems=${elems.length}(色块补全$fixedCount, 空隙OCR$gapFixed, 括号颗数$parenCount/裸数字$bareCount) img=${scaled.width}x${scaled.height}"
+        "${orphanNotes.isEmpty ? "" : " 色卡外色号=[${orphanNotes.toSet().join(" ")}]"}",
       ];
       for (final e in elems) {
         final kind = e.code != null
@@ -702,6 +731,17 @@ class _RestorePageState extends State<RestorePage> {
       File("${tmp.parent.path}/legend_ocr_log.txt").writeAsStringSync(
         dbgLines.join("\n"),
       );
+      // 色卡外色号（如 MARD 卡没有的 H7）：无法入清单，明确提示用户手工补
+      if (orphanNotes.isNotEmpty && mounted) {
+        final names = orphanNotes.toSet().join("、");
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              "识别到色卡外色号：$names（不在当前色卡，未入清单；如有需要请用\"添加颜色\"手工补）",
+            ),
+          ),
+        );
+      }
       return paired;
     } catch (_) {
       // 【临时调试】识别抛异常也记快照（source 标"异常"）：调试视图能看到放大图 + 0 个
@@ -721,6 +761,195 @@ class _RestorePageState extends State<RestorePage> {
       }
       return null;
     }
+  }
+
+  /// 孤儿颗数修复：带括号颗数的左侧同行/正上方近旁都没有色号元素，说明该
+  /// 条目的色号整条被 ML Kit 吞掉（H7 案例：(343) 读出而 H7 消失）。裁
+  /// 「左邻元素右缘 -> 颗数左缘」的空隙小区放大后单独再识别，读出的色号
+  /// 按空隙几何位置补回 [elems] 参与最终配对。
+  /// 返回补全数；识别到但当前色卡没有的色号（如 MARD 卡外的 H7）收集到
+  /// [orphanNotes] 供上层提示用户手工补。[tmpBase] 只取目录，临时文件名固定
+  Future<int> _fixOrphanCountCodes(
+    List<_OcrElem> elems,
+    img.Image scaled,
+    Map<String, int> codeMap,
+    File tmpBase,
+    List<String> orphanNotes,
+  ) async {
+    if (elems.isEmpty) {
+      return 0;
+    }
+    var heightSum = 0.0;
+    for (final e in elems) {
+      heightSum += e.rect.height;
+    }
+    final avgH = heightSum > 0 ? heightSum / elems.length : 40.0;
+    final codes = elems.where((e) => e.code != null).toList();
+
+    // 色号近旁判定窗口与 _pairLegendOcr 两轮配对一致，配得上的不是孤儿
+    bool hasCodeNearby(_OcrElem c) {
+      for (final s in codes) {
+        final dy = (s.rect.center.dy - c.rect.center.dy).abs();
+        // 同行左侧窗口（配对轮 1 同款）
+        if (dy <= avgH * 0.7 &&
+            s.rect.right < c.rect.left + avgH * 0.5 &&
+            c.rect.left - s.rect.right <= avgH * 4) {
+          return true;
+        }
+        // 正上方窗口（配对轮 2 同款）
+        if (s.rect.bottom <= c.rect.center.dy &&
+            c.rect.center.dy - s.rect.top <= avgH * 2.5 &&
+            (s.rect.center.dx - c.rect.center.dx).abs() <= avgH * 3) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    final orphans = elems
+        .where(
+          (e) => e.code == null && e.dbgText.contains("(") && !hasCodeNearby(e),
+        )
+        .toList();
+    if (orphans.isEmpty) {
+      return 0;
+    }
+    var nextSeq = 0;
+    for (final e in elems) {
+      if (e.seq >= nextSeq) {
+        nextSeq = e.seq + 1;
+      }
+    }
+    var fixed = 0;
+    for (final c in orphans) {
+      // 空隙左界：左邻元素（同行、在颗数左侧、不太远）的最大右缘
+      var gLeft = c.rect.left - avgH * 6;
+      for (final e in elems) {
+        if (identical(e, c)) {
+          continue;
+        }
+        final dy = (e.rect.center.dy - c.rect.center.dy).abs();
+        if (dy > avgH * 0.8 || e.rect.right >= c.rect.left) {
+          continue;
+        }
+        if (c.rect.left - e.rect.right > avgH * 8) {
+          continue;
+        }
+        if (e.rect.right > gLeft) {
+          gLeft = e.rect.right;
+        }
+      }
+      if (gLeft < 0) {
+        gLeft = 0;
+      }
+      final gapW = c.rect.left - gLeft;
+      // 空隙窄于一个字高：位置上放不下色号，跳过
+      if (gapW < avgH * 0.8) {
+        continue;
+      }
+      final gTop = (c.rect.top - avgH * 0.8).clamp(0.0, scaled.height - 1.0);
+      final gBottom = (c.rect.bottom + avgH * 0.8)
+          .clamp(gTop + 1.0, scaled.height.toDouble());
+      final gap = img.copyCrop(
+        scaled,
+        x: gLeft.toInt(),
+        y: gTop.toInt(),
+        width: gapW.toInt(),
+        height: (gBottom - gTop).toInt(),
+      );
+      final hit = await _ocrGapText(
+        img.copyResize(gap, width: gap.width * 2),
+        File("${tmpBase.parent.path}/legend_ocr_gap.png"),
+      );
+      if (hit == null) {
+        continue;
+      }
+      final (text, rel) = hit;
+      // 空隙小区坐标 -> 放大图坐标（gap 又放大了 2 倍）
+      final abs = Rect.fromLTWH(
+        gLeft + rel.left / 2,
+        gTop + rel.top / 2,
+        rel.width / 2,
+        rel.height / 2,
+      );
+      final code = codeMap[text];
+      if (code != null) {
+        final ne = _OcrElem(nextSeq++, abs, code, null);
+        ne.dbgText = "$text(空隙OCR)";
+        elems.add(ne);
+        fixed++;
+        continue;
+      }
+      // 掉字母裸数字：与全图轮同一套「后缀候选 + 色块颜色」补全
+      final n = _parseCountText(text);
+      if (n != null && n < 1000) {
+        final idx = _fixCodeBySwatch(_palette, n, abs, scaled);
+        if (idx != null) {
+          final ne = _OcrElem(nextSeq++, abs, idx, null);
+          ne.dbgText = "$text→${_palette.colors[idx].id}(空隙OCR+色块)";
+          elems.add(ne);
+          fixed++;
+          continue;
+        }
+      }
+      // 色号样式但色卡没有（如 MARD 卡外的 H7）：提示用户用"添加颜色"补
+      if (RegExp(r'^[A-Z]\d{1,2}$').hasMatch(text)) {
+        orphanNotes.add(text);
+      }
+    }
+    return fixed;
+  }
+
+  /// 空隙小区单独识别：原图 + 反色（深底白字对反色更稳定）两轮，返回第一
+  /// 个「像色号」的元素文本与其在 [gapBig] 中的框；每轮内色号样式优先于
+  /// 裸数字，未识别到返回 null
+  Future<(String, Rect)?> _ocrGapText(img.Image gapBig, File tmp) async {
+    await tmp.writeAsBytes(img.encodePng(gapBig));
+    final inverted = img.Image.from(gapBig);
+    for (final p in inverted) {
+      p.r = 255 - p.r;
+      p.g = 255 - p.g;
+      p.b = 255 - p.b;
+    }
+    final codeLike = RegExp(r'^[A-Z]\d{1,2}$');
+    final numLike = RegExp(r'^\d{1,3}$');
+    final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+    try {
+      for (var round = 0; round < 2; round++) {
+        if (round == 1) {
+          await tmp.writeAsBytes(img.encodePng(inverted));
+        }
+        final recognized = await recognizer.processImage(
+          InputImage.fromFilePath(tmp.path),
+        );
+        (String, Rect)? numHit;
+        for (final block in recognized.blocks) {
+          for (final line in block.lines) {
+            for (final element in line.elements) {
+              final text = element.text
+                  .trim()
+                  .toUpperCase()
+                  .replaceAll(" ", "");
+              if (text.length > 4) {
+                continue; // 长文本是杂项，不是色号
+              }
+              if (codeLike.hasMatch(text)) {
+                return (text, element.boundingBox);
+              }
+              if (numHit == null && numLike.hasMatch(text)) {
+                numHit = (text, element.boundingBox);
+              }
+            }
+          }
+        }
+        if (numHit != null) {
+          return numHit;
+        }
+      }
+    } finally {
+      await recognizer.close();
+    }
+    return null;
   }
 
   /// 色号与颗数配对（两轮，几何驱动）
