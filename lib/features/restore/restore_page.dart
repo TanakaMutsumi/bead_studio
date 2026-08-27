@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -195,17 +196,11 @@ class _LegendEntry {
   final int paletteIndex;
 
   ///< 调色板索引
-  final int legendCount;
-
-  ///< 图例区出现格数
-  bool checked;
-
-  ///< 是否纳入主体识别候选
   final TextEditingController countCtrl = TextEditingController();
 
   ///< 图例标注数量（手填，对账用）
 
-  _LegendEntry(this.paletteIndex, this.legendCount, {this.checked = true});
+  _LegendEntry(this.paletteIndex);
 
   /// 图例标注数量（空/非法返回 null = 不参与对账）
   int? get expectedCount => int.tryParse(countCtrl.text.trim());
@@ -256,9 +251,6 @@ class _RestorePageState extends State<RestorePage> {
   var _legendByOcr = false;
 
   ///< true=清单来自印刷色号（行列输入隐藏，网格层不画）
-  var _viewMode = false;
-
-  ///< true=查看模式（拖动滚动原图），false=框选模式（拖动改选区）
   var _panelExpanded = true;
 
   ///< 图例确认面板展开（收起后图片区变大，便于对照原图校对）
@@ -267,6 +259,12 @@ class _RestorePageState extends State<RestorePage> {
   int _selHandleDrag = -1;
 
   ///< 选区把手拖拽中（-1=画新框，0-7=把手索引）
+  Offset? _selMoveFrom;
+
+  ///< 整框拖动起点（null=非移框）
+  Rect? _selMoveBase;
+
+  ///< 整框拖动开始时的选区
   Uint8List? _displayBytes;
 
   ///< 显示用重编码 JPEG（decodeForDisplay 产物，识别/裁剪仍用 _image 原始像素）
@@ -487,7 +485,7 @@ class _RestorePageState extends State<RestorePage> {
       var entries = [
         for (final entry
             in freq.entries.toList()..sort((a, b) => b.value - a.value))
-          _LegendEntry(entry.key, entry.value),
+          _LegendEntry(entry.key),
       ];
       var ocrHit = 0;
       if (pairs != null && pairs.length >= 3) {
@@ -497,7 +495,7 @@ class _RestorePageState extends State<RestorePage> {
           if (!seen.add(idx)) {
             continue; // 同一色号多次出现（图例重复/误读），取首条
           }
-          final e = _LegendEntry(idx, freq[idx] ?? 1);
+          final e = _LegendEntry(idx);
           e.countCtrl.text = count.toString();
           byOcr.add(e);
         }
@@ -513,12 +511,9 @@ class _RestorePageState extends State<RestorePage> {
         _legendRowsCtrl.text = rows.toString();
         _legend = entries;
         _legendByOcr = ocrHit > 0;
-        // 识别完成自动切查看模式：拖动原图与清单对照校对（面板收起后可见整幅原图）
-        _viewMode = true;
         _panelExpanded = true;
       });
-      // 自动滚动定位已随滚动视口移除（InteractiveViewer 平移代替，识别后自动切
-      // 查看模式：单指拖动即平移到图例区）
+      // 自动滚动定位已随滚动视口移除（双指捏合缩放 + 双指拖动平移可达图例区）
       if (ocrHit > 0) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -1186,7 +1181,7 @@ class _RestorePageState extends State<RestorePage> {
       );
       return;
     }
-    setState(() => _legend.add(_LegendEntry(idx, 0)));
+    setState(() => _legend.add(_LegendEntry(idx)));
   }
 
   /// 从图例清单删除条目（先释放控制器再移除，防二次 dispose）
@@ -1211,11 +1206,7 @@ class _RestorePageState extends State<RestorePage> {
         dup.first.countCtrl.dispose();
         _legend.remove(dup.first);
       }
-      _legend[_legend.indexOf(entry)] = _LegendEntry(
-        idx,
-        entry.legendCount,
-        checked: entry.checked,
-      );
+      _legend[_legend.indexOf(entry)] = _LegendEntry(idx);
       entry.countCtrl.dispose();
     });
   }
@@ -1390,7 +1381,7 @@ class _RestorePageState extends State<RestorePage> {
       }
       final candidates = <int>{
         for (final e in _legend)
-          if (e.checked) e.paletteIndex,
+          e.paletteIndex,
       };
       final quantizer = Quantizer(_palette);
       final grid = List<int>.filled(cols * rows, 0);
@@ -1462,7 +1453,7 @@ class _RestorePageState extends State<RestorePage> {
   /// 图例标注数量（无勾选条目/未填返回 null = 不对账）
   int? _expectedOf(int paletteIndex) {
     for (final e in _legend) {
-      if (e.checked && e.paletteIndex == paletteIndex) {
+      if (e.paletteIndex == paletteIndex) {
         return e.expectedCount;
       }
     }
@@ -1519,12 +1510,9 @@ class _RestorePageState extends State<RestorePage> {
     });
   }
 
-  /// 进入「框选主体」阶段：回到框选模式（该阶段第一动作是重新框选）
+  /// 进入「框选主体」阶段（该阶段第一动作是重新框选）
   void _goAlign() {
-    setState(() {
-      _viewMode = false;
-      _stage = _Stage.align;
-    });
+    setState(() => _stage = _Stage.align);
   }
 
   // ==================== 布局 ====================
@@ -1654,8 +1642,11 @@ class _RestorePageState extends State<RestorePage> {
 
   /// 命中选区把手（返回 0-7 索引，未命中返回 -1）
   ///
-  /// 布局：0─1─2 / 3   4 / 5─6─7（四角 + 四边中点），命中半径按手指友好的 22px
+  /// 布局：0─1─2 / 3   4 / 5─6─7（四角 + 四边中点），命中半径按手指友好的
+  /// 22px；扁框（图例条带）按短边 1/3 收缩——否则半径 22 超过框高一半，
+  /// 框中心拖动会误命中上/下边中把手，整框平移永远触发不了
   int _hitSelHandle(Rect sel, Offset p) {
+    final radius = math.min(22.0, math.min(sel.width, sel.height) / 3);
     final pts = [
       sel.topLeft,
       Offset(sel.center.dx, sel.top),
@@ -1667,7 +1658,7 @@ class _RestorePageState extends State<RestorePage> {
       sel.bottomRight,
     ];
     for (var i = 0; i < pts.length; i++) {
-      if ((pts[i] - p).distance <= 22) {
+      if ((pts[i] - p).distance <= radius) {
         return i;
       }
     }
@@ -1709,12 +1700,11 @@ class _RestorePageState extends State<RestorePage> {
     return Rect.fromLTRB(l, t, r, b);
   }
 
-  /// 图片 + 框选/查看双模式手势 + 可选网格覆盖（图例/对齐阶段共用）
+  /// 图片 + 统一框选手势 + 可选网格覆盖（图例/对齐阶段共用）
   ///
-  /// 框选模式：空白处拖动 = 画新选区，拖选区四角/四边把手 = 微调大小（双指捏合可放大
-  /// 原图精确框选，滚动锁定）；查看模式：拖动 = 上下滚动原图（不碰选区）。
-  /// 顶部浮动胶囊即时切换——识别出清单后需对照原图校对，查看模式让原图下半部（图例区）
-  /// 可滚入视野，不被底部面板永久遮挡。
+  /// 单指：空白处拖动 = 画新选区；选区内部拖动 = 整框平移（框完想挪位置
+  /// 不必重画）；四角/四边把手 = 微调大小。双指：捏合缩放 + 拖动平移原图
+  /// （InteractiveViewer 承担，查看大图不需要独立的查看模式）。
   /// [cornerPts] 非空时四角把手接管手势（拖角微调，非角区拖动不画框防误触清角）。
   Widget _imageStage({
     required Rect? sel,
@@ -1735,12 +1725,12 @@ class _RestorePageState extends State<RestorePage> {
         InteractiveViewer(
           maxScale: 8,
           minScale: 1,
-          panEnabled: _viewMode,
+          // 单指手势留给框选（child GestureDetector 优先）；双指捏合缩放、
+          // 双指拖动平移由 scale 手势自带 translation 承担
+          panEnabled: false,
           constrained: false,
           child: GestureDetector(
-            onPanDown: _viewMode
-                ? null
-                : (d) {
+            onPanDown: (d) {
                     // 四角把手优先：命中则进入拖角，不走框选
                     if (cornerPts != null) {
                       _cornerDragIdx = -1;
@@ -1753,22 +1743,43 @@ class _RestorePageState extends State<RestorePage> {
                       }
                       return; // 非角区拖动不画框：防误触清掉四角
                     }
-                    // 落点在把手上 -> 拖把手微调选区；空白处 -> 重新画框
+                    // 落点在把手上 -> 拖把手微调选区；选区内部 -> 整框平移
+                    // （第一次框完想挪位置直接拖走，不必重画）；空白 -> 画新框
                     _selHandleDrag = (sel != null && sel.width > 2)
                         ? _hitSelHandle(sel, d.localPosition)
                         : -1;
                     if (_selHandleDrag < 0) {
-                      onSel(Rect.fromPoints(d.localPosition, d.localPosition));
+                      if (sel != null &&
+                          sel.width > 2 &&
+                          sel.contains(d.localPosition)) {
+                        _selMoveFrom = d.localPosition;
+                        _selMoveBase = sel;
+                      } else {
+                        onSel(Rect.fromPoints(d.localPosition, d.localPosition));
+                      }
                     }
                   },
-            onPanUpdate: _viewMode
-                ? null
-                : (d) {
+            onPanUpdate: (d) {
                     if (_cornerDragIdx >= 0) {
                       onCornerDrag?.call(_cornerDragIdx, d.localPosition);
                       return;
                     }
                     if (cornerPts != null || sel == null) {
+                      return;
+                    }
+                    if (_selMoveFrom != null && _selMoveBase != null) {
+                      // 整框平移：按起点位移移动选区，clamp 图内防拖丢
+                      final delta = d.localPosition - _selMoveFrom!;
+                      final base = _selMoveBase!;
+                      final left = (base.left + delta.dx).clamp(
+                        0.0,
+                        ds.width - base.width,
+                      );
+                      final top = (base.top + delta.dy).clamp(
+                        0.0,
+                        ds.height - base.height,
+                      );
+                      onSel(Rect.fromLTWH(left, top, base.width, base.height));
                       return;
                     }
                     if (_selHandleDrag >= 0) {
@@ -1779,12 +1790,12 @@ class _RestorePageState extends State<RestorePage> {
                       onSel(Rect.fromPoints(sel.topLeft, d.localPosition));
                     }
                   },
-            onPanEnd: _viewMode
-                ? null
-                : (_) {
-                    _cornerDragIdx = -1;
-                    _selHandleDrag = -1;
-                  },
+            onPanEnd: (_) {
+              _cornerDragIdx = -1;
+              _selHandleDrag = -1;
+              _selMoveFrom = null;
+              _selMoveBase = null;
+            },
             child: Stack(
               children: [
                 Image.memory(
@@ -1818,12 +1829,6 @@ class _RestorePageState extends State<RestorePage> {
             ),
           ),
         ),
-        Positioned(
-          top: 4,
-          left: 0,
-          right: 0,
-          child: Center(child: _modePill()),
-        ),
         if (_decoding)
           Positioned.fill(
             child: Container(
@@ -1840,38 +1845,6 @@ class _RestorePageState extends State<RestorePage> {
             ),
           ),
       ],
-    );
-  }
-
-  /// 模式切换胶囊（浮在图片顶部）
-  Widget _modePill() {
-    final viewing = _viewMode;
-    return Material(
-      elevation: 3,
-      borderRadius: BorderRadius.circular(16),
-      color: viewing ? const Color(0xFF1565C0) : const Color(0xFFE65100),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: () => setState(() => _viewMode = !_viewMode),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                viewing ? Icons.open_with : Icons.crop_free,
-                size: 14,
-                color: Colors.white,
-              ),
-              const SizedBox(width: 4),
-              Text(
-                viewing ? "查看模式 · 上下拖动原图，点此切回框选" : "框选模式 · 拖出选区，点此切为拖动查看",
-                style: const TextStyle(fontSize: 11, color: Colors.white),
-              ),
-            ],
-          ),
-        ),
-      ),
     );
   }
 
@@ -1999,8 +1972,8 @@ class _RestorePageState extends State<RestorePage> {
                               Expanded(
                                 child: Text(
                                   _panelExpanded
-                                      ? "图例 ${_legend.length} 色 · 已勾 ${_legend.where((e) => e.checked).length} 色（点此收起，露出原图核对）"
-                                      : "图例 ${_legend.length} 色 · 已勾 ${_legend.where((e) => e.checked).length} 色（点此展开核对清单）",
+                                      ? "图例 ${_legend.length} 色（点此收起，露出原图核对）"
+                                      : "图例 ${_legend.length} 色（点此展开核对清单）",
                                   style: const TextStyle(
                                     fontSize: 12,
                                     color: Colors.black54,
@@ -2098,7 +2071,10 @@ class _RestorePageState extends State<RestorePage> {
                         }
                         final e = _legend[i];
                         final c = _palette.colors[e.paletteIndex];
-                        return Row(
+                        // 行距 3：isDense 输入框行与行紧贴会上下遮挡
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 3),
+                          child: Row(
                           children: [
                             Tooltip(
                               message: "点击修改色号",
@@ -2140,13 +2116,6 @@ class _RestorePageState extends State<RestorePage> {
                             ),
                             const SizedBox(width: 8),
                             SizedBox(width: 52, child: Text(c.id)),
-                            Text(
-                              "图例占${e.legendCount}格",
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: Colors.black45,
-                              ),
-                            ),
                             const Spacer(),
                             SizedBox(
                               width: 72,
@@ -2154,17 +2123,15 @@ class _RestorePageState extends State<RestorePage> {
                                 controller: e.countCtrl,
                                 keyboardType: TextInputType.number,
                                 decoration: const InputDecoration(
-                                  labelText: "颗数",
-                                  hintText: "按原图填",
+                                  hintText: "颗数",
                                   border: OutlineInputBorder(),
                                   isDense: true,
+                                  contentPadding: EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 9,
+                                  ),
                                 ),
                               ),
-                            ),
-                            Checkbox(
-                              value: e.checked,
-                              onChanged: (v) =>
-                                  setState(() => e.checked = v ?? false),
                             ),
                             // 删除该色（识别错误且不需要的条目）
                             SizedBox(
@@ -2183,6 +2150,7 @@ class _RestorePageState extends State<RestorePage> {
                               ),
                             ),
                           ],
+                          ),
                         );
                       },
                     ),
@@ -2195,7 +2163,7 @@ class _RestorePageState extends State<RestorePage> {
                           onPressed: _goAlign,
                           icon: const Icon(Icons.arrow_forward),
                           label: Text(
-                            "下一步：框选主体（勾选${_legend.where((e) => e.checked).length}色）",
+                            "下一步：框选主体（${_legend.length}色）",
                           ),
                         ),
                       ),
@@ -2703,9 +2671,6 @@ class _RestorePageState extends State<RestorePage> {
     var mismatch = 0;
     var accounted = 0;
     for (final e in _legend) {
-      if (!e.checked) {
-        continue;
-      }
       final expected = e.expectedCount;
       if (expected != null) {
         accounted++;
