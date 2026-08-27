@@ -88,6 +88,7 @@ class _WorksPageState extends State<WorksPage> {
           model: w.entry.model,
           palette: w.palette,
           sourceFile: w.entry.file,
+          placed: w.entry.placed,
         ),
       ),
     );

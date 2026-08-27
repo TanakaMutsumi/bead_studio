@@ -11,7 +11,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'pattern_model.dart';
 
-/// 一个作品的完整条目（元数据 + 已解析的图案）
+/// 一个作品的完整条目（元数据 + 已解析的图案 + 拼装进度）
 class WorkEntry {
   final File file;
   final String name;
@@ -20,6 +20,9 @@ class WorkEntry {
   ///< 分组名，空串 = 未分组
   final DateTime updatedAt;
   final PatternModel model;
+  final Set<int> placed;
+
+  ///< 拼装已放格子（扁平索引；复刻原版 assemble/progress 的本地版）
 
   const WorkEntry({
     required this.file,
@@ -27,6 +30,7 @@ class WorkEntry {
     required this.folder,
     required this.updatedAt,
     required this.model,
+    this.placed = const <int>{},
   });
 }
 
@@ -89,6 +93,7 @@ class DraftStore {
     String name = "";
     String folder = "";
     DateTime updatedAt = file.lastModifiedSync();
+    Set<int> placed = const <int>{};
 
     final meta = json["meta"];
     if (meta is Map<String, dynamic>) {
@@ -97,6 +102,10 @@ class DraftStore {
       folder = meta["folder"] as String? ?? "";
       updatedAt =
           DateTime.tryParse(meta["updatedAt"] as String? ?? "") ?? updatedAt;
+      final rawPlaced = meta["placed"];
+      if (rawPlaced is List) {
+        placed = rawPlaced.whereType<int>().toSet();
+      }
     } else {
       model = PatternModel.fromJson(json);
     }
@@ -106,15 +115,18 @@ class DraftStore {
       folder: folder,
       updatedAt: updatedAt,
       model: model,
+      placed: placed,
     );
   }
 
-  /// 保存作品；[overwrite] 非空时覆写该文件（保留其 name/folder），否则新建
+  /// 保存作品；[overwrite] 非空时覆写该文件（保留其 name/folder），否则新建。
+  /// [placed] 拼装进度（null = 覆写时保留旧进度、新建时空）
   static Future<File> saveWork(
     PatternModel model, {
     String? name,
     String? folder,
     File? overwrite,
+    Set<int>? placed,
   }) async {
     final dir = await _draftDir();
     if (overwrite != null && overwrite.existsSync()) {
@@ -125,6 +137,7 @@ class DraftStore {
             "name": name ?? old.name,
             "folder": folder ?? old.folder,
             "updatedAt": DateTime.now().toIso8601String(),
+            "placed": (placed ?? old.placed).toList(),
           },
           "pattern": model.toJson(),
         }),
@@ -141,6 +154,7 @@ class DraftStore {
           "name": (name == null || name.isEmpty) ? _defaultName(now) : name,
           "folder": folder ?? "",
           "updatedAt": now.toIso8601String(),
+          "placed": (placed ?? const <int>[]).toList(),
         },
         "pattern": model.toJson(),
       }),
@@ -155,10 +169,15 @@ class DraftStore {
   static Future<void> moveWork(File file, String folder) =>
       _rewriteMeta(file, folder: folder);
 
-  /// 复制一份（名字加「副本」）
+  /// 复制一份（名字加「副本」，拼装进度一并复制）
   static Future<File> copyWork(File file) async {
     final e = await readEntry(file);
-    return saveWork(e.model, name: "${e.name} 副本", folder: e.folder);
+    return saveWork(
+      e.model,
+      name: "${e.name} 副本",
+      folder: e.folder,
+      placed: e.placed,
+    );
   }
 
   static Future<void> deleteWork(File file) {
@@ -168,7 +187,7 @@ class DraftStore {
     return Future.value();
   }
 
-  /// 改名/移动共用的元数据重写（保留网格内容）
+  /// 改名/移动共用的元数据重写（保留网格内容与拼装进度）
   static Future<void> _rewriteMeta(
     File file, {
     String? name,
@@ -181,6 +200,7 @@ class DraftStore {
           "name": name ?? e.name,
           "folder": folder ?? e.folder,
           "updatedAt": DateTime.now().toIso8601String(),
+          "placed": e.placed.toList(),
         },
         "pattern": e.model.toJson(),
       }),

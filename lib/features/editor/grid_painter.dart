@@ -21,6 +21,9 @@ class GridPainter extends CustomPainter {
   final Rect? boardRect;
 
   ///< 分板模式当前底板的格子范围（null = 关闭；板外格子大幅降透明）
+  final Set<int>? placedCells;
+
+  ///< 拼装已放格子（null = 关闭；半透明白罩 + 绿对勾）
 
   GridPainter({
     required this.model,
@@ -29,6 +32,7 @@ class GridPainter extends CustomPainter {
     this.selectionRect,
     this.highlightIndex,
     this.boardRect,
+    this.placedCells,
     super.repaint,
   });
 
@@ -98,6 +102,38 @@ class GridPainter extends CustomPainter {
       );
     }
 
+    // 拼装已放格：半透明白罩（拼过的格视觉"消掉"）+ 绿对勾
+    final placed = placedCells;
+    if (placed != null && placed.isNotEmpty) {
+      final veil = Paint()
+        ..color = Colors.white.withValues(alpha: 0.5)
+        ..style = PaintingStyle.fill;
+      final check = Paint()
+        ..color = const Color(0xFF2E7D32)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.8
+        ..strokeCap = StrokeCap.round;
+      for (final i in placed) {
+        if (i < 0 || i >= model.grid.length || model.grid[i] < 0) {
+          continue; // 编辑后失效的进度索引跳过
+        }
+        final x = i % model.width, y = i ~/ model.width;
+        final rect = Rect.fromLTWH(x * cell, y * cell, cell, cell);
+        canvas.drawRect(rect, veil);
+        final cx = rect.center.dx, cy = rect.center.dy;
+        canvas.drawLine(
+          Offset(cx - cell * 0.22, cy),
+          Offset(cx - cell * 0.05, cy + cell * 0.2),
+          check,
+        );
+        canvas.drawLine(
+          Offset(cx - cell * 0.05, cy + cell * 0.2),
+          Offset(cx + cell * 0.28, cy - cell * 0.2),
+          check,
+        );
+      }
+    }
+
     // 矩形选区高亮
     final sel = selectionRect;
     if (sel != null) {
@@ -120,6 +156,7 @@ class GridPainter extends CustomPainter {
         oldDelegate.palette != palette ||
         oldDelegate.selectionRect != selectionRect ||
         oldDelegate.highlightIndex != highlightIndex ||
-        oldDelegate.boardRect != boardRect;
+        oldDelegate.boardRect != boardRect ||
+        oldDelegate.placedCells != placedCells;
   }
 }

@@ -35,12 +35,16 @@ class EditorPage extends StatefulWidget {
   final File? sourceFile;
 
   ///< 来源作品文件（作品库打开时传入：保存=覆写而非另存）
+  final Set<int> placed;
+
+  ///< 拼装进度（作品库打开时恢复；新建为空）
 
   const EditorPage({
     super.key,
     required this.model,
     required this.palette,
     this.sourceFile,
+    this.placed = const <int>{},
   });
 
   @override
@@ -66,9 +70,11 @@ class _EditorPageState extends State<EditorPage> {
 
   ///< 默认选中红色（显眼）
 
-  // 拼装模式：点颜色条 = 高亮该色全部格子（其余色降饱和），辅助对照实物拼豆
+  // 拼装模式：点颜色条 = 高亮该色全部格子（其余色降饱和），辅助对照实物拼豆；
+  // 点画布格子 = 标记已放（半透明白罩+对勾，剩余颗数递减），进度随作品保存
   var _assembleMode = false;
   int? _highlightIndex;
+  late final Set<int> _placed = {...widget.placed};
 
   // 分板模式：按底板边长把图案切块导航，板外格子淡出，颜色条显示本板用量
   var _boardMode = false;
@@ -217,6 +223,15 @@ class _EditorPageState extends State<EditorPage> {
     final x = _cellX(local, canvasSide);
     final y = _cellY(local, canvasSide);
 
+    // 拼装模式画布只做标记：点格=放/取消一颗（拖动不连标，防误触），
+    // 绘制工具全部旁路——拼装中途不可能误改图案
+    if (_assembleMode) {
+      if (isStart) {
+        _togglePlaced(x, y);
+      }
+      return;
+    }
+
     switch (_tool) {
       case _Tool.brush:
       case _Tool.eraser:
@@ -271,6 +286,65 @@ class _EditorPageState extends State<EditorPage> {
         _model.setCell(x + dx, y + dy, value);
       }
     }
+  }
+
+  /// 拼装标记：只允许标记当前高亮色（先选色再放豆），再点取消
+  void _togglePlaced(int x, int y) {
+    final i = y * _model.width + x;
+    final hi = _highlightIndex;
+    if (hi == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("先点下方颜色选择要拼的色，再点格子标记已放")),
+      );
+      return;
+    }
+    if (_model.grid[i] != hi) {
+      return; // 非高亮色格子不响应（防串色误标）
+    }
+    setState(() {
+      _placed.contains(i) ? _placed.remove(i) : _placed.add(i);
+    });
+  }
+
+  /// 该色剩余颗数（总 - 已放）
+  int _remainOf(int colorIndex, Map<int, int> counts) {
+    final total = counts[colorIndex] ?? 0;
+    var placedCount = 0;
+    for (final i in _placed) {
+      if (i >= 0 && i < _model.grid.length && _model.grid[i] == colorIndex) {
+        placedCount++;
+      }
+    }
+    return total - placedCount;
+  }
+
+  /// 拼装进度（已放/总数；分板模式按本板统计）
+  (int, int) _assembleProgress() {
+    var total = 0;
+    var done = 0;
+    if (_boardMode) {
+      final r = _boardRectOf(_boardIndex);
+      for (var y = r.top.toInt(); y < r.bottom.toInt(); y++) {
+        for (var x = r.left.toInt(); x < r.right.toInt(); x++) {
+          if (_model.cell(x, y) >= 0) {
+            total++;
+            if (_placed.contains(y * _model.width + x)) {
+              done++;
+            }
+          }
+        }
+      }
+    } else {
+      for (var i = 0; i < _model.grid.length; i++) {
+        if (_model.grid[i] >= 0) {
+          total++;
+          if (_placed.contains(i)) {
+            done++;
+          }
+        }
+      }
+    }
+    return (done, total);
   }
 
   /// 归一化选区（格子坐标，x0<=x1 / y0<=y1），无选区返回 null
@@ -343,6 +417,9 @@ class _EditorPageState extends State<EditorPage> {
   /// 用 GridResult 替换当前图案（变换/改尺寸后）
   void _replaceModel(GridResult r) {
     setState(() {
+      if (r.width * r.height != _model.grid.length) {
+        _placed.clear(); // 网格长度变了，扁平索引全部失效
+      }
       _model = PatternModel(
         width: r.width,
         height: r.height,
@@ -434,10 +511,12 @@ class _EditorPageState extends State<EditorPage> {
           .showSnackBar(const SnackBar(content: Text("网页版暂不支持本地草稿")));
       return;
     }
-    // 从作品库打开的：覆写原文件（保留名字/分组），否则另存新作品
+    // 从作品库打开的：覆写原文件（保留名字/分组），否则另存新作品；
+    // 拼装进度一并保存（覆写时显式传当前进度，防止回退成旧进度）
     final file = await DraftStore.saveWork(
       _model,
       overwrite: widget.sourceFile,
+      placed: _placed,
     );
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -561,11 +640,42 @@ class _EditorPageState extends State<EditorPage> {
           if (_assembleMode)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-              child: Text(
-                _highlightIndex == null
-                    ? "拼装模式：点下方颜色高亮该色全部格子，再点一次取消"
-                    : "已高亮 ${widget.palette.colors[_highlightIndex!].id}（${_boardMode ? (_boardCounts(_boardRectOf(_boardIndex))[_highlightIndex!] ?? 0) : (_model.countByColor()[_highlightIndex!] ?? 0)} 颗）",
-                style: Theme.of(context).textTheme.bodySmall,
+              child: Builder(
+                builder: (ctx) {
+                  final (done, total) = _assembleProgress();
+                  final hi = _highlightIndex;
+                  final remainTxt = hi == null
+                      ? "先点下方颜色选择要拼的色"
+                      : () {
+                          final counts = _boardMode
+                              ? _boardCounts(_boardRectOf(_boardIndex))
+                              : _model.countByColor();
+                          final remain = _remainOf(hi, counts);
+                          return "${widget.palette.colors[hi].id} 剩 $remain/${counts[hi] ?? 0} 颗";
+                        }();
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              "拼装 $done/$total · 点格子标记已放，再点取消 · $remainTxt",
+                              style: Theme.of(ctx).textTheme.bodySmall,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 3),
+                      LinearProgressIndicator(
+                        value: total > 0 ? done / total : 0,
+                        minHeight: 4,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ],
+                  );
+                },
               ),
             ),
           _buildColorBar(
@@ -685,6 +795,7 @@ class _EditorPageState extends State<EditorPage> {
                 selectionRect: _selectionPixels(canvasSize),
                 highlightIndex: _assembleMode ? _highlightIndex : null,
                 boardRect: _boardMode ? _boardRectOf(_boardIndex) : null,
+                placedCells: _assembleMode ? _placed : null,
               ),
             ),
           );
@@ -823,9 +934,16 @@ class _EditorPageState extends State<EditorPage> {
         itemBuilder: (context, i) {
           final c = widget.palette.colors[i];
           final count = counts[i] ?? 0;
+          final remain = _assembleMode ? _remainOf(i, counts) : 0;
           final selected = _assembleMode
               ? i == _highlightIndex
               : i == _currentColor;
+          // 拼装模式：该色放完 = 绿框（一眼看出哪色收工）；选中蓝框优先
+          final borderColor = selected
+              ? Colors.blue
+              : (_assembleMode && count > 0 && remain == 0)
+              ? const Color(0xFF2E7D32)
+              : Colors.black26;
           return GestureDetector(
             onTap: () => setState(() {
               if (_assembleMode) {
@@ -846,7 +964,7 @@ class _EditorPageState extends State<EditorPage> {
                 color: Color.fromARGB(255, c.r, c.g, c.b),
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(
-                  color: selected ? Colors.blue : Colors.black26,
+                  color: borderColor,
                   width: selected ? 3 : 1,
                 ),
               ),
@@ -864,7 +982,7 @@ class _EditorPageState extends State<EditorPage> {
                           ),
                         ),
                         Text(
-                          "×$count",
+                          "$remain/$count",
                           style: TextStyle(
                             fontSize: 9,
                             color: _isLightColor(c)

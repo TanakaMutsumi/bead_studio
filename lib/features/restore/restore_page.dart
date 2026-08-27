@@ -25,6 +25,22 @@ enum _Stage { pick, legend, align, review }
 /// 空白判定阈值：格色与候选色的 Lab 距离平方超过此值视为空白格
 const double _blankDistSq = 900.0; // ΔE ≈ 30
 
+/// 四角双线性插值：单位网格坐标 (u,v)∈[0,1]² -> 平面坐标
+///
+/// q 为四角 [左上, 右上, 右下, 左下]（对应单位坐标 (0,0)(1,0)(1,1)(0,1)）。
+/// 四角对齐模式的核心几何：用户把 4 个角点拖到图案网格的四个角，
+/// 识别采样与网格覆盖层的全部交点都经此映射反求，两处坐标同源。
+Offset _bilinearQuad(List<Offset> q, double u, double v) {
+  final a = (1 - u) * (1 - v);
+  final b = u * (1 - v);
+  final c = u * v;
+  final d = (1 - u) * v;
+  return Offset(
+    a * q[0].dx + b * q[1].dx + c * q[2].dx + d * q[3].dx,
+    a * q[0].dy + b * q[1].dy + c * q[2].dy + d * q[3].dy,
+  );
+}
+
 /// OCR 常见字符混淆表（色号匹配用：印刷小字 0/O、1/I/L、2/Z、5/S、6/G、8/B、4/A 互混）
 const Map<String, List<String>> _ocrConfusions = {
   "0": ["O"],
@@ -203,6 +219,17 @@ class _RestorePageState extends State<RestorePage> {
   bool _blankEnable = true;
 
   ///< 偏色过大识别为空白格
+
+  // ========== 四角对齐（歪图透视矫正，均分网格救不了斜拍） ==========
+  var _useCornerAlign = false;
+
+  ///< true=四角映射网格（复刻原版 corner_grid_alignment），false=均分网格
+  List<Offset>? _cornerPts;
+
+  ///< 四角（显示坐标，顺序：左上/右上/右下/左下），双线性映射网格交点
+  int _cornerDragIdx = -1;
+
+  ///< 拖拽中的角索引（-1=无）
 
   // ========== 复核（步骤 5） ==========
   PatternModel? _model;
@@ -788,6 +815,12 @@ class _RestorePageState extends State<RestorePage> {
     if (image == null) {
       return;
     }
+    if (_useCornerAlign) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("自动检测只支持均分网格；歪图请拖四角对齐，或切回均分网格再检测")),
+      );
+      return;
+    }
     setState(() => _detecting = true);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final (rx, ry, rw, rh) = _selToImage(_selDisplay);
@@ -823,6 +856,12 @@ class _RestorePageState extends State<RestorePage> {
 
   /// 行列数手改 -> 按选区均分重算网格参数（放弃自动检测结果）
   void _recomputePitchFromField() {
+    if (_useCornerAlign) {
+      // 四角模式：pitch/off 不参与，但覆盖层 _CornerGridPainter 依赖
+      // cols/rows（经 controller 文本读取），必须 rebuild 才会重画
+      setState(() {});
+      return;
+    }
     final cols = int.tryParse(_colsCtrl.text) ?? 0;
     final rows = int.tryParse(_rowsCtrl.text) ?? 0;
     if (cols < 1 || rows < 1 || _image == null) {
@@ -863,6 +902,41 @@ class _RestorePageState extends State<RestorePage> {
     });
   }
 
+  // ==================== 四角对齐 ====================
+
+  /// 切换对齐模式；首次进四角模式用选区（或全图）四角初始化角点
+  void _switchAlignMode(bool corner) {
+    setState(() {
+      _useCornerAlign = corner;
+      _cornerDragIdx = -1;
+      if (corner && (_cornerPts == null || _cornerPts!.length != 4)) {
+        _cornerPts = _defaultCorners();
+      }
+    });
+  }
+
+  /// 默认四角：选区四角（无选区=全图四角）
+  List<Offset> _defaultCorners() {
+    final ds = _displaySize();
+    final sel = (_selDisplay != null && _selDisplay!.width > 8)
+        ? _selDisplay!
+        : Rect.fromLTWH(0, 0, ds.width, ds.height);
+    return [sel.topLeft, sel.topRight, sel.bottomRight, sel.bottomLeft];
+  }
+
+  /// 重置四角回默认位置
+  void _resetCorners() {
+    setState(() => _cornerPts = _defaultCorners());
+  }
+
+  /// 拖角更新（_imageStage 手势回调，p 为显示坐标）
+  void _onCornerDrag(int idx, Offset p) {
+    if (_cornerPts == null || idx < 0 || idx >= 4) {
+      return;
+    }
+    setState(() => _cornerPts![idx] = p);
+  }
+
   // ==================== 识别 + 复核 ====================
 
   /// 限色识别：图例勾选色为候选集，逐格中心采样 -> Lab 最近色；偏色过大判空白
@@ -878,12 +952,29 @@ class _RestorePageState extends State<RestorePage> {
           .showSnackBar(const SnackBar(content: Text("行列数须在 4-400 之间")));
       return;
     }
-    if (_pitchX <= 0 || _pitchY <= 0) {
+    final useCorner = _useCornerAlign &&
+        _cornerPts != null &&
+        _cornerPts!.length == 4;
+    if (!useCorner && (_pitchX <= 0 || _pitchY <= 0)) {
       _recomputePitchFromField();
     }
     setState(() => _recognizing = true);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final (rx, ry, _, _) = _selToImage(_selDisplay);
+      // 四角映射模式：角点（显示坐标）-> 图片坐标，采样中心/格宽高全部
+      // 经双线性映射反求（与覆盖层网格线同源，所见即所采）
+      var qImg = const <Offset>[];
+      if (useCorner) {
+        final ds = _displaySize();
+        final image = _image!;
+        qImg = [
+          for (final p in _cornerPts!)
+            Offset(
+              p.dx * image.width / ds.width,
+              p.dy * image.height / ds.height,
+            ),
+        ];
+      }
       final candidates = <int>{
         for (final e in _legend)
           if (e.checked) e.paletteIndex,
@@ -892,9 +983,28 @@ class _RestorePageState extends State<RestorePage> {
       final grid = List<int>.filled(cols * rows, 0);
       for (var r = 0; r < rows; r++) {
         for (var c = 0; c < cols; c++) {
-          final cx = rx + _offX + (c + 0.5) * _pitchX;
-          final cy = ry + _offY + (r + 0.5) * _pitchY;
-          final (sr, sg, sb) = _sampleCenter(cx, cy, _pitchX, _pitchY);
+          double cx, cy, cw, ch;
+          if (useCorner) {
+            final tl = _bilinearQuad(qImg, c / cols, r / rows);
+            final tr = _bilinearQuad(qImg, (c + 1) / cols, r / rows);
+            final bl = _bilinearQuad(qImg, c / cols, (r + 1) / rows);
+            final br = _bilinearQuad(qImg, (c + 1) / cols, (r + 1) / rows);
+            final center = _bilinearQuad(
+              qImg,
+              (c + 0.5) / cols,
+              (r + 0.5) / rows,
+            );
+            cx = center.dx;
+            cy = center.dy;
+            cw = ((tl - tr).distance + (bl - br).distance) / 2;
+            ch = ((tl - bl).distance + (tr - br).distance) / 2;
+          } else {
+            cx = rx + _offX + (c + 0.5) * _pitchX;
+            cy = ry + _offY + (r + 0.5) * _pitchY;
+            cw = _pitchX;
+            ch = _pitchY;
+          }
+          final (sr, sg, sb) = _sampleCenter(cx, cy, cw, ch);
           final (idx, distSq) = quantizer.nearestWithin(
             sr,
             sg,
@@ -1027,6 +1137,14 @@ class _RestorePageState extends State<RestorePage> {
           ],
         ),
         actions: [
+          // 复核发现问题多半是网格没对齐：一键回对齐阶段微调后重识别
+          // （网格参数/选区/图例都保留，直接可调）
+          if (_stage == _Stage.review)
+            TextButton.icon(
+              onPressed: _goAlign,
+              icon: const Icon(Icons.undo, size: 18),
+              label: const Text("回对齐"),
+            ),
           // 【临时调试】图例 OCR 调试入口：识别后即可查看放大图/元素/配对，正式版移除
           if (_stage == _Stage.legend && _ocrDebug != null)
             IconButton(
@@ -1184,10 +1302,13 @@ class _RestorePageState extends State<RestorePage> {
   /// 原图精确框选，滚动锁定）；查看模式：拖动 = 上下滚动原图（不碰选区）。
   /// 顶部浮动胶囊即时切换——识别出清单后需对照原图校对，查看模式让原图下半部（图例区）
   /// 可滚入视野，不被底部面板永久遮挡。
+  /// [cornerPts] 非空时四角把手接管手势（拖角微调，非角区拖动不画框防误触清角）。
   Widget _imageStage({
     required Rect? sel,
     required void Function(Rect) onSel,
-    _GridOverlayPainter? overlay,
+    CustomPainter? overlay,
+    List<Offset>? cornerPts,
+    void Function(int, Offset)? onCornerDrag,
   }) {
     final ds = _displaySize();
     return Stack(
@@ -1207,6 +1328,18 @@ class _RestorePageState extends State<RestorePage> {
             onPanDown: _viewMode
                 ? null
                 : (d) {
+                    // 四角把手优先：命中则进入拖角，不走框选
+                    if (cornerPts != null) {
+                      _cornerDragIdx = -1;
+                      for (var i = 0; i < cornerPts.length; i++) {
+                        if ((cornerPts[i] - d.localPosition).distance <= 30) {
+                          _cornerDragIdx = i;
+                          onCornerDrag?.call(i, d.localPosition);
+                          return;
+                        }
+                      }
+                      return; // 非角区拖动不画框：防误触清掉四角
+                    }
                     // 落点在把手上 -> 拖把手微调选区；空白处 -> 重新画框
                     _selHandleDrag = (sel != null && sel.width > 2)
                         ? _hitSelHandle(sel, d.localPosition)
@@ -1218,7 +1351,11 @@ class _RestorePageState extends State<RestorePage> {
             onPanUpdate: _viewMode
                 ? null
                 : (d) {
-                    if (sel == null) {
+                    if (_cornerDragIdx >= 0) {
+                      onCornerDrag?.call(_cornerDragIdx, d.localPosition);
+                      return;
+                    }
+                    if (cornerPts != null || sel == null) {
                       return;
                     }
                     if (_selHandleDrag >= 0) {
@@ -1228,6 +1365,12 @@ class _RestorePageState extends State<RestorePage> {
                     } else {
                       onSel(Rect.fromPoints(sel.topLeft, d.localPosition));
                     }
+                  },
+            onPanEnd: _viewMode
+                ? null
+                : (_) {
+                    _cornerDragIdx = -1;
+                    _selHandleDrag = -1;
                   },
             child: Stack(
               children: [
@@ -1320,10 +1463,20 @@ class _RestorePageState extends State<RestorePage> {
   }
 
   /// 当前网格覆盖层（无有效参数返回 null）
-  _GridOverlayPainter? _mainOverlay() {
+  CustomPainter? _mainOverlay() {
     final cols = int.tryParse(_colsCtrl.text) ?? 0;
     final rows = int.tryParse(_rowsCtrl.text) ?? 0;
-    if (_pitchX <= 0 || _pitchY <= 0 || cols < 1 || rows < 1) {
+    if (cols < 1 || rows < 1) {
+      return null;
+    }
+    if (_useCornerAlign) {
+      final pts = _cornerPts;
+      if (pts == null || pts.length != 4) {
+        return null;
+      }
+      return _CornerGridPainter(pts: pts, cols: cols, rows: rows);
+    }
+    if (_pitchX <= 0 || _pitchY <= 0) {
       return null;
     }
     final (rx, ry, _, _) = _selToImage(_selDisplay);
@@ -1701,7 +1854,7 @@ class _RestorePageState extends State<RestorePage> {
     );
   }
 
-  /// 阶段三：框选主体 + 网格对齐（自动检测 + 格子大小/微移）
+  /// 阶段三：框选主体 + 网格对齐（均分网格自动检测/微移 + 四角对齐透视矫正）
   Widget _buildAlign() {
     return Column(
       children: [
@@ -1709,9 +1862,12 @@ class _RestorePageState extends State<RestorePage> {
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: _imageStage(
-              sel: _selDisplay,
+              // 四角模式选区框不显示（四角即区域），手势也只认角把手
+              sel: _useCornerAlign ? null : _selDisplay,
               onSel: (r) => setState(() => _selDisplay = r),
               overlay: _mainOverlay(),
+              cornerPts: _useCornerAlign ? _cornerPts : null,
+              onCornerDrag: _onCornerDrag,
             ),
           ),
         ),
@@ -1720,8 +1876,31 @@ class _RestorePageState extends State<RestorePage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              SegmentedButton<bool>(
+                showSelectedIcon: false,
+                style: const ButtonStyle(visualDensity: VisualDensity.compact),
+                segments: const [
+                  ButtonSegment(
+                    value: false,
+                    icon: Icon(Icons.grid_4x4, size: 18),
+                    label: Text("均分网格"),
+                  ),
+                  ButtonSegment(
+                    value: true,
+                    icon: Icon(Icons.crop_free, size: 18),
+                    label: Text("四角对齐"),
+                  ),
+                ],
+                selected: {_useCornerAlign},
+                onSelectionChanged: (sel) => _switchAlignMode(sel.first),
+              ),
+              const SizedBox(height: 6),
               Text(
-                _pitchX > 0 ? "网格已覆盖（蓝线）· 不对齐就微调下方参数" : "② 框选主体图案区域，或直接自动检测",
+                _useCornerAlign
+                    ? "把 4 个圆点拖到图案网格的四个角（斜拍/歪图用此模式，网格随四角透视贴合）"
+                    : _pitchX > 0
+                          ? "网格已覆盖（蓝线）· 不对齐就微调下方参数"
+                          : "② 框选主体图案区域，或直接自动检测",
                 style: Theme.of(context).textTheme.bodySmall,
               ),
               const SizedBox(height: 8),
@@ -1757,7 +1936,9 @@ class _RestorePageState extends State<RestorePage> {
                   ),
                   const SizedBox(width: 12),
                   OutlinedButton.icon(
-                    onPressed: _detecting ? null : _autoDetect,
+                    onPressed: (_detecting || _useCornerAlign)
+                        ? null
+                        : _autoDetect,
                     icon: _detecting
                         ? const SizedBox(
                             width: 14,
@@ -1770,9 +1951,27 @@ class _RestorePageState extends State<RestorePage> {
                 ],
               ),
               const SizedBox(height: 8),
-              Row(
-                children: [
-                  const Text("格子大小"),
+              if (_useCornerAlign)
+                Row(
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: _resetCorners,
+                      icon: const Icon(Icons.restart_alt, size: 18),
+                      label: const Text("重置四角"),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        "填好行列数，拖四角压住格线后开始识别",
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
+                  ],
+                )
+              else
+                Row(
+                  children: [
+                    const Text("格子大小"),
                   IconButton(
                     onPressed: _pitchX > 0 ? () => _adjustPitch(-0.2) : null,
                     icon: const Icon(Icons.remove_circle_outline),
@@ -2227,6 +2426,80 @@ class _GridOverlayPainter extends CustomPainter {
       oldDelegate.originDy != originDy ||
       oldDelegate.pitchDx != pitchDx ||
       oldDelegate.pitchDy != pitchDy;
+}
+
+/// 四角对齐覆盖层：双线性网格线 + 四角大把手（显示坐标）
+///
+/// 网格交点全部经 [_bilinearQuad] 反求——与识别采样同源，
+/// 蓝线压住哪格，识别就采哪格（所见即所采）。
+class _CornerGridPainter extends CustomPainter {
+  final List<Offset> pts;
+
+  ///< 四角（显示坐标）：左上/右上/右下/左下
+  final int cols;
+  final int rows;
+
+  _CornerGridPainter({required this.pts, required this.cols, required this.rows});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.clipRect(Offset.zero & size);
+    final line = Paint()
+      ..color = Colors.lightBlueAccent.withValues(alpha: 0.8)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2;
+    // 竖线：每条经 rows+1 个交点折线连接（双线性下相邻交点连线即格线）
+    for (var i = 0; i <= cols; i++) {
+      final u = i / cols;
+      final start = _bilinearQuad(pts, u, 0);
+      final path = Path()..moveTo(start.dx, start.dy);
+      for (var j = 1; j <= rows; j++) {
+        final p = _bilinearQuad(pts, u, j / rows);
+        path.lineTo(p.dx, p.dy);
+      }
+      canvas.drawPath(path, line);
+    }
+    // 横线
+    for (var j = 0; j <= rows; j++) {
+      final v = j / rows;
+      final path = Path();
+      final start = _bilinearQuad(pts, 0, v);
+      path.moveTo(start.dx, start.dy);
+      for (var i = 1; i <= cols; i++) {
+        final p = _bilinearQuad(pts, i / cols, v);
+        path.lineTo(p.dx, p.dy);
+      }
+      canvas.drawPath(path, line);
+    }
+    // 四角大把手：白底橙圈（比选区把手大，透视拖拽目标）
+    final fill = Paint()..color = Colors.white;
+    final stroke = Paint()
+      ..color = const Color(0xFF7B1FA2)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3;
+    for (final p in pts) {
+      canvas.drawCircle(p, 10, fill);
+      canvas.drawCircle(p, 10, stroke);
+    }
+    // 四边形轮廓
+    final outline = Paint()
+      ..color = const Color(0xFF7B1FA2)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+    final quad = Path()
+      ..moveTo(pts[0].dx, pts[0].dy)
+      ..lineTo(pts[1].dx, pts[1].dy)
+      ..lineTo(pts[2].dx, pts[2].dy)
+      ..lineTo(pts[3].dx, pts[3].dy)
+      ..close();
+    canvas.drawPath(quad, outline);
+  }
+
+  @override
+  bool shouldRepaint(covariant _CornerGridPainter oldDelegate) =>
+      oldDelegate.pts != pts ||
+      oldDelegate.cols != cols ||
+      oldDelegate.rows != rows;
 }
 
 /// 空白复核：空白格铺淡红色
