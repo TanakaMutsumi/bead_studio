@@ -60,6 +60,38 @@ const Map<String, List<String>> _ocrConfusions = {
   "A": ["4"],
 };
 
+/// 掉字母色号的色块采样：图例条目整条是彩色豆底块（色号/颗数直接印在彩底上），
+/// 取色号框外扩窗口内高饱和像素的 RGB 均值——黑/白文字与白色底块饱和度低，
+/// 天然被排除，剩下的就是豆底颜色
+(int, int, int)? _sampleSwatch(img.Image image, Rect codeRect) {
+  final m = codeRect.height;
+  final left = (codeRect.left - m).round().clamp(0, image.width - 1);
+  final right = (codeRect.right + m).round().clamp(0, image.width - 1);
+  final top = (codeRect.top - m * 0.6).round().clamp(0, image.height - 1);
+  final bottom =
+      (codeRect.bottom + m * 0.6).round().clamp(0, image.height - 1);
+  var sr = 0, sg = 0, sb = 0, n = 0;
+  for (var y = top; y <= bottom; y++) {
+    for (var x = left; x <= right; x++) {
+      final p = image.getPixel(x, y);
+      final r = p.r.toInt(), g = p.g.toInt(), b = p.b.toInt();
+      final mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+      final mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+      if (mx - mn < 40) {
+        continue; // 黑/白文字与白底低饱和，排除
+      }
+      sr += r;
+      sg += g;
+      sb += b;
+      n++;
+    }
+  }
+  if (n < 20) {
+    return null; // 采样点太少（白底条目无彩底），不可信
+  }
+  return (sr ~/ n, sg ~/ n, sb ~/ n);
+}
+
 /// 图例 OCR 识别元素（色号或颗数，带几何框供跨行配对）
 class _OcrElem {
   final int seq;
@@ -500,9 +532,15 @@ class _RestorePageState extends State<RestorePage> {
         width: rw.toInt(),
         height: rh.toInt(),
       );
-      // 小字放大提高识别率：按高度放大到 ~480px（数字高 ~60px+）。
-      // 固定 ×3 在小选区（裁剪后图例条带小）下分辨率不足，数字 64 会误读成 61
-      final scale = (480 / rh).clamp(2, 6);
+      // 小字放大提高识别率：按高度放大到 ~960px（数字高 ~120px+）。
+      // 固定 ×2/×3 在小字图例（色号字高 ~20 原图像素）下分辨率不足，
+      // 实测 480 目标时第三行 5 条目只读出 3 个色号（2026-08-27 pic4），
+      // 提到 960 后字高 ~74px 识别稳定；同时按宽度 cap 防超 ML Kit 输入上限
+      var scale = (960 / rh).clamp(3.0, 8.0);
+      final widthCap = 3800 / rw;
+      if (scale > widthCap) {
+        scale = widthCap;
+      }
       final scaled = img.copyResize(crop, width: (crop.width * scale).round());
       final tmp = File(
         "${(await getTemporaryDirectory()).path}/legend_ocr.png",
@@ -533,30 +571,94 @@ class _RestorePageState extends State<RestorePage> {
         }
       }
 
-      // 收集全部色号/颗数元素（带几何框：颗数可能在色号下一行，纯行内序配不上）
-      final elems = <_OcrElem>[];
-      var seq = 0;
-      for (final block in recognized.blocks) {
-        for (final line in block.lines) {
-          for (final element in line.elements) {
-            final text = element.text.trim().toUpperCase().replaceAll(" ", "");
-            // 色号最多 4 字符（A1/H12 型），长文本是正文/杂项不做色号
-            if (text.length <= 4) {
-              final code = codeMap[text];
-              if (code != null) {
-                final e = _OcrElem(seq++, element.boundingBox, code, null);
+      // 收集全部色号/颗数元素（带几何框：颗数可能在色号下一行，纯行内序配不上）；
+      // 原图轮/反色轮共用同一收集逻辑
+      List<_OcrElem> collect(RecognizedText result, int seqStart) {
+        final out = <_OcrElem>[];
+        var seq = seqStart;
+        for (final block in result.blocks) {
+          for (final line in block.lines) {
+            for (final element in line.elements) {
+              final text = element.text.trim().toUpperCase().replaceAll(
+                " ",
+                "",
+              );
+              // 色号最多 4 字符（A1/H12 型），长文本是正文/杂项不做色号
+              if (text.length <= 4) {
+                final code = codeMap[text];
+                if (code != null) {
+                  final e = _OcrElem(seq++, element.boundingBox, code, null);
+                  e.dbgText = element.text; // 【临时调试】保留原始文本
+                  out.add(e);
+                  continue;
+                }
+              }
+              final n = _parseCountText(element.text);
+              if (n != null) {
+                final e = _OcrElem(seq++, element.boundingBox, null, n);
                 e.dbgText = element.text; // 【临时调试】保留原始文本
-                elems.add(e);
-                continue;
+                out.add(e);
               }
             }
-            final n = _parseCountText(element.text);
-            if (n != null) {
-              final e = _OcrElem(seq++, element.boundingBox, null, n);
-              e.dbgText = element.text; // 【临时调试】保留原始文本
-              elems.add(e);
+          }
+        }
+        return out;
+      }
+
+      final elems = collect(recognized, 0);
+      // 掉字母色号修复：深底反白/浅底浅字色号被 ML Kit 吞掉首字母，读成
+      // 无括号纯数字 count（真颗数全部带括号 (N)）。当图内带括号颗数占绝对
+      // 多数（≥6 且 ≥2×无括号数）时，无括号纯数字判定为掉字母色号：按数字
+      // 后缀取色卡候选，用条目色块颜色（色号左侧最饱和区）最近匹配补全。
+      // 后缀候选多（如 16 有 A16~H16），颜色是唯一决定性约束——图例色块
+      // 印的就是该色号的实物色。
+      var fixedCount = 0;
+      final parenCount = elems
+          .where((e) => e.code == null && e.dbgText.contains("("))
+          .length;
+      final bareCount = elems
+          .where((e) => e.code == null && !e.dbgText.contains("("))
+          .length;
+      if (parenCount >= 6 && bareCount > 0 && bareCount * 2 <= parenCount) {
+        final bare = elems
+            .where((e) => e.code == null && !e.dbgText.contains("("))
+            .toList();
+        for (final e in bare) {
+          final suffix = e.count.toString();
+          final cands = <int>[
+            for (var i = 0; i < _palette.colors.length; i++)
+              if (_palette.colors[i].id.length == suffix.length + 1 &&
+                  _palette.colors[i].id.endsWith(suffix))
+                i,
+          ];
+          if (cands.isEmpty) {
+            continue;
+          }
+          final swatch = _sampleSwatch(scaled, e.rect);
+          if (swatch == null) {
+            continue;
+          }
+          var best = -1;
+          var bestDist = 1 << 30;
+          for (final i in cands) {
+            final c = _palette.colors[i];
+            final d = (c.r - swatch.$1) * (c.r - swatch.$1) +
+                (c.g - swatch.$2) * (c.g - swatch.$2) +
+                (c.b - swatch.$3) * (c.b - swatch.$3);
+            if (d < bestDist) {
+              bestDist = d;
+              best = i;
             }
           }
+          // 色块与最近候选差太远（色卡切换不对/不是色号）时保守放弃
+          if (best < 0 || bestDist > 120 * 120 * 3) {
+            continue;
+          }
+          final fixed = _OcrElem(e.seq, e.rect, best, null);
+          fixed.dbgText = "${e.dbgText}→${_palette.colors[best].id}(色块补全)";
+          elems.remove(e);
+          elems.add(fixed);
+          fixedCount++;
         }
       }
       // 【临时调试】保存本次 OCR 快照（放大图 + 元素 + 配对前状态 + 框选区），正式版移除
@@ -571,7 +673,36 @@ class _RestorePageState extends State<RestorePage> {
         rw,
         rh,
       );
-      return _pairLegendOcr(elems);
+      // 【临时调试】元素明细同时打 logcat 与写文件（个别环境 logcat 收不到
+      // flutter tag，文件可 adb pull，像素判读调试面板太费劲），正式版移除
+      final dbgLines = <String>[
+        "框选($source) $rx,$ry ${rw}x$rh elems=${elems.length}(色块补全$fixedCount, 括号颗数$parenCount/裸数字$bareCount) img=${scaled.width}x${scaled.height}",
+      ];
+      for (final e in elems) {
+        final kind = e.code != null
+            ? "code:${_palette.colors[e.code!].id}"
+            : "count:${e.count}";
+        dbgLines.add(
+          "elem $kind raw=\"${e.dbgText}\" "
+          "rect=(${e.rect.left.toInt()},${e.rect.top.toInt()} "
+          "${e.rect.width.toInt()}x${e.rect.height.toInt()})",
+        );
+      }
+      final paired = _pairLegendOcr(elems);
+      final unpaired = elems
+          .where((e) => e.code != null && e.pairedCount == null)
+          .map((e) => "${_palette.colors[e.code!].id}(${e.dbgText})")
+          .join(" ");
+      dbgLines.add(
+        "result=${paired.length}对 未配色号=[${unpaired.isEmpty ? "无" : unpaired}] ${[for (final (idx, n) in paired) "${_palette.colors[idx].id}=$n"].join(" ")}",
+      );
+      for (final l in dbgLines) {
+        debugPrint("【临时调试】$l");
+      }
+      File("${tmp.parent.path}/legend_ocr_log.txt").writeAsStringSync(
+        dbgLines.join("\n"),
+      );
+      return paired;
     } catch (_) {
       // 【临时调试】识别抛异常也记快照（source 标"异常"）：调试视图能看到放大图 + 0 个
       // 元素——比入口直接消失更有排障价值；放大图都没产出（crop 就失败）则保持 null
@@ -624,6 +755,10 @@ class _RestorePageState extends State<RestorePage> {
         if ((n.rect.center.dy - c.rect.center.dy).abs() > avgH * 0.7) {
           continue; // 不同行
         }
+        if (n.rect.left - c.rect.right > avgH * 4) {
+          continue; // 颗数紧邻色号；远处数字属邻条目，不抢（否则 B1 颗数
+          // 漏读时会横跨抢走 H15 的颗数，H15 再抢 M3 的，链式错位尾部落空）
+        }
         if (best == null || n.rect.left < best.rect.left) {
           best = n;
         }
@@ -674,7 +809,9 @@ class _RestorePageState extends State<RestorePage> {
       }
     }
 
-    // 阅读顺序输出：先上后下，同行先左后右
+    // 阅读顺序输出：先上后下，同行先左后右。
+    // 未配上颗数的色号也保留（颗数 0）：条目本身是真的（OCR 漏读了它的颗数），
+    // 丢弃会让清单直接少一色（H15 曾因此消失）；颗数 0 用户在清单里手改即可
     final sorted = [...codes]
       ..sort((a, b) {
         final dy = a.rect.top - b.rect.top;
@@ -682,10 +819,7 @@ class _RestorePageState extends State<RestorePage> {
             ? (dy > 0 ? 1 : -1)
             : a.rect.left.compareTo(b.rect.left);
       });
-    return [
-      for (final c in sorted)
-        if (c.pairedCount != null) (c.code!, c.pairedCount!),
-    ];
+    return [for (final c in sorted) (c.code!, c.pairedCount ?? 0)];
   }
 
   /// 保底配对：按收集顺序「色号 -> 其后第一个数字」（几何框不可用时）
@@ -736,12 +870,12 @@ class _RestorePageState extends State<RestorePage> {
     return (v == null || v <= 0 || v > 100000) ? null : v;
   }
 
-  /// 弹全色卡选色器（修正图例色号用）
+  /// 弹全色卡选色器（修正图例色号 / 添加颜色两用）
   Future<int?> _pickColorIndex() {
     return showDialog<int>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text("选择正确色号"),
+        title: const Text("选择色号"),
         content: SizedBox(
           width: double.maxFinite,
           height: 420,
@@ -751,24 +885,30 @@ class _RestorePageState extends State<RestorePage> {
               for (var i = 0; i < _palette.colors.length; i++)
                 InkWell(
                   onTap: () => Navigator.pop(ctx, i),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Container(
-                        width: 34,
-                        height: 34,
-                        color: Color.fromARGB(
-                          255,
-                          _palette.colors[i].r,
-                          _palette.colors[i].g,
-                          _palette.colors[i].b,
+                  // FittedBox 防格子竖向溢出：220 色卡行高较矮 + 系统字体
+                  // 缩放时 Column(色块+文字) 放不下会渲染 "BOTTOM OVERFLOWED"
+                  // 溢出条（用户看到的 "BOTTOM OV" 就是它），scaleDown 整体缩放兜底
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Container(
+                          width: 34,
+                          height: 34,
+                          color: Color.fromARGB(
+                            255,
+                            _palette.colors[i].r,
+                            _palette.colors[i].g,
+                            _palette.colors[i].b,
+                          ),
                         ),
-                      ),
-                      Text(
-                        _palette.colors[i].id,
-                        style: const TextStyle(fontSize: 10),
-                      ),
-                    ],
+                        Text(
+                          _palette.colors[i].id,
+                          style: const TextStyle(fontSize: 10),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
             ],
@@ -782,6 +922,29 @@ class _RestorePageState extends State<RestorePage> {
         ],
       ),
     );
+  }
+
+  /// 添加颜色到图例清单（补 OCR 漏识别的色；已在清单则提示）
+  Future<void> _addLegendColor() async {
+    final idx = await _pickColorIndex();
+    if (idx == null || !mounted) {
+      return;
+    }
+    if (_legend.any((e) => e.paletteIndex == idx)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("${_palette.colors[idx].id} 已在清单中")),
+      );
+      return;
+    }
+    setState(() => _legend.add(_LegendEntry(idx, 0)));
+  }
+
+  /// 从图例清单删除条目（先释放控制器再移除，防二次 dispose）
+  void _removeLegendEntry(_LegendEntry entry) {
+    setState(() {
+      entry.countCtrl.dispose();
+      _legend.remove(entry);
+    });
   }
 
   /// 修正图例条目色号（若目标色已有条目则合并格数后删除本条）
@@ -1670,18 +1833,59 @@ class _RestorePageState extends State<RestorePage> {
                   SizedBox(
                     height: 168,
                     child: ListView.builder(
-                      itemCount: _legend.length,
+                      itemCount: _legend.length + 1,
                       itemBuilder: (_, i) {
+                        // 末尾常驻「添加颜色」行：补 OCR 漏识别的色
+                        if (i == _legend.length) {
+                          return Align(
+                            alignment: Alignment.centerLeft,
+                            child: TextButton.icon(
+                              onPressed: _addLegendColor,
+                              icon: const Icon(Icons.add, size: 18),
+                              label: const Text("添加颜色"),
+                            ),
+                          );
+                        }
                         final e = _legend[i];
                         final c = _palette.colors[e.paletteIndex];
                         return Row(
                           children: [
-                            InkWell(
-                              onTap: () => _changeLegendColor(e),
-                              child: Container(
-                                width: 28,
-                                height: 28,
-                                color: Color.fromARGB(255, c.r, c.g, c.b),
+                            Tooltip(
+                              message: "点击修改色号",
+                              child: InkWell(
+                                onTap: () => _changeLegendColor(e),
+                                child: SizedBox(
+                                  width: 28,
+                                  height: 28,
+                                  child: Stack(
+                                    children: [
+                                      Positioned.fill(
+                                        child: ColoredBox(
+                                          color: Color.fromARGB(
+                                            255,
+                                            c.r,
+                                            c.g,
+                                            c.b,
+                                          ),
+                                        ),
+                                      ),
+                                      // 右下角编辑角标：提示色块可点改色号
+                                      Positioned(
+                                        right: 0,
+                                        bottom: 0,
+                                        child: Container(
+                                          color: Colors.white70,
+                                          padding: const EdgeInsets.all(1),
+                                          child: const Icon(
+                                            Icons.edit,
+                                            size: 10,
+                                            color: Colors.black54,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
                               ),
                             ),
                             const SizedBox(width: 8),
@@ -1711,6 +1915,22 @@ class _RestorePageState extends State<RestorePage> {
                               value: e.checked,
                               onChanged: (v) =>
                                   setState(() => e.checked = v ?? false),
+                            ),
+                            // 删除该色（识别错误且不需要的条目）
+                            SizedBox(
+                              width: 30,
+                              height: 32,
+                              child: IconButton(
+                                visualDensity: VisualDensity.compact,
+                                padding: EdgeInsets.zero,
+                                iconSize: 16,
+                                tooltip: "删除该色",
+                                onPressed: () => _removeLegendEntry(e),
+                                icon: const Icon(
+                                  Icons.close,
+                                  color: Colors.black38,
+                                ),
+                              ),
                             ),
                           ],
                         );
