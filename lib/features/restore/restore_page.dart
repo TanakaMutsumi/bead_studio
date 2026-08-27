@@ -265,6 +265,10 @@ class _RestorePageState extends State<RestorePage> {
   Rect? _selMoveBase;
 
   ///< 整框拖动开始时的选区
+  Offset? _drawFrom;
+
+  ///< 画新框的按下起点（onPanDown 只记录不落框，首帧 onPanUpdate 才画——
+  ///双指缩放第一指按下时 pan 尚未裁决，立即画零点框会把选区破坏掉）
   Uint8List? _displayBytes;
 
   ///< 显示用重编码 JPEG（decodeForDisplay 产物，识别/裁剪仍用 _image 原始像素）
@@ -376,6 +380,12 @@ class _RestorePageState extends State<RestorePage> {
         _ocrDebug = null;
         _stage = _Stage.legend;
       });
+      // 载入即自动预框图例区（省一次手动框选）；识别不到就保持空选区，
+      // 用户手动框或点 AppBar「自动框选」重试
+      final auto = _autoDetectLegend();
+      if (auto != null) {
+        setState(() => _legendSel = auto);
+      }
     } catch (e) {
       // 解码失败必须弹提示（曾经异常被吞表现为"选图无反应"）
       if (mounted) {
@@ -393,6 +403,178 @@ class _RestorePageState extends State<RestorePage> {
     final ctx = context;
     final displayW = MediaQuery.sizeOf(ctx).width - 24;
     return Size(displayW, displayW * _image!.height / _image!.width);
+  }
+
+  // ==================== 图例区自动检测 ====================
+
+  /// 量化色是否白背景（r/g/b 量化后均 >= 15，即原值 >= 240）
+  static bool _qWhite(int q) =>
+      ((q >> 8) & 15) >= 15 && ((q >> 4) & 15) >= 15 && (q & 15) >= 15;
+
+  /// 自动检测图例条带：游程法（原型已用两张实测图验证）
+  ///
+  /// 原理：图例色块是 20px+ 的纯色矩形（长游程），豆图每颗豆之间被格线
+  /// 打断（游程 <= 豆宽），整行纯色背景/边框则只有 1 个超长游程——三者
+  /// 按「块数 >= 3 且最长 <= 35% 行宽 且（最长 >= 60 或 多色且带白隙）」
+  /// 区分出图例行；图例行聚簇成带，带高 <= 15% 图高，且带外必须是低信息
+  /// 行（白隙或纯色隔离带，豆图大块同色区上下仍是密集豆行，据此排除）。
+  /// 返回显示坐标选区；找不到返回 null（调用方静默或提示手动框选）。
+  Rect? _autoDetectLegend() {
+    final image = _image;
+    if (image == null) {
+      return null;
+    }
+    const step = 2, runMin = 20;
+    final w = image.width, h = image.height;
+    // 逐采样行：颜色量化(RGB>>4 打包)游程扫描
+    final feats = <int, _RowFeat>{};
+    for (var y = 0; y < h; y += step) {
+      var nonWhite = 0, nBlocks = 0, maxLen = 0;
+      var minX = 1 << 30, maxX = -(1 << 30);
+      final colors = <int>{};
+      var runCol = -1, runLen = 0, runStart = 0;
+      for (var x = 0; x < w; x++) {
+        final p = image.getPixel(x, y);
+        final q = ((p.r.toInt() >> 4) << 8) |
+            ((p.g.toInt() >> 4) << 4) |
+            (p.b.toInt() >> 4);
+        if (!_qWhite(q)) {
+          nonWhite++;
+        }
+        if (q == runCol) {
+          runLen++;
+        } else {
+          if (runLen >= runMin && !_qWhite(runCol)) {
+            nBlocks++;
+            maxLen = maxLen < runLen ? runLen : maxLen;
+            colors.add(runCol);
+            if (runStart < minX) {
+              minX = runStart;
+            }
+            if (runStart + runLen > maxX) {
+              maxX = runStart + runLen;
+            }
+          }
+          runCol = q;
+          runLen = 1;
+          runStart = x;
+        }
+      }
+      if (runLen >= runMin && !_qWhite(runCol)) {
+        nBlocks++;
+        maxLen = maxLen < runLen ? runLen : maxLen;
+        colors.add(runCol);
+        if (runStart < minX) {
+          minX = runStart;
+        }
+        if (runStart + runLen > maxX) {
+          maxX = runStart + runLen;
+        }
+      }
+      feats[y] = _RowFeat(
+          nBlocks, maxLen, nonWhite / w, colors, minX, maxX);
+    }
+    // 图例行判定
+    final legendRows = <int, _RowFeat>{};
+    feats.forEach((y, f) {
+      final ok = f.nBlocks >= 3 &&
+          f.maxLen <= w * 0.35 &&
+          (f.maxLen >= 60 || (f.colors.length >= 3 && f.nonWhite <= 0.75));
+      if (ok) {
+        legendRows[y] = f;
+      }
+    });
+    if (legendRows.isEmpty) {
+      return null;
+    }
+    // 聚簇成带（图例行间白隙 <= 60px 同带）
+    final ys = legendRows.keys.toList()..sort();
+    final bands = <List<int>>[[ys.first, ys.first]];
+    for (final y in ys.skip(1)) {
+      if (y - bands.last[1] <= 60) {
+        bands.last[1] = y;
+      } else {
+        bands.add([y, y]);
+      }
+    }
+    // 带外低信息检查（图例是独立区块，上下必有白隙/纯色隔离）
+    bool quietOutside(int edge, bool below) {
+      for (final d in [step, step * 2, step * 3]) {
+        final y = below ? edge + d : edge - d;
+        final f = feats[y];
+        if (f == null) {
+          return true; // 出图
+        }
+        if (f.nonWhite <= 0.10 || f.nBlocks <= 2) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // 打分取最优带：块数和 + 底部位置加分（图例惯例在图纸底部）
+    var bestScore = -1.0;
+    Rect? bestRect;
+    for (final b in bands) {
+      if (b[1] - b[0] > h * 0.15) {
+        continue;
+      }
+      if (!quietOutside(b[0], false) || !quietOutside(b[1], true)) {
+        continue;
+      }
+      var nSum = 0, minX = 1 << 30, maxX = -(1 << 30);
+      legendRows.forEach((y, f) {
+        if (y >= b[0] && y <= b[1]) {
+          nSum += f.nBlocks;
+          if (f.minX < minX) {
+            minX = f.minX;
+          }
+          if (f.maxX > maxX) {
+            maxX = f.maxX;
+          }
+        }
+      });
+      final score = nSum + (b[0] + b[1]) / 2 / h * 50;
+      if (score > bestScore) {
+        bestScore = score;
+        // 原图坐标 rect（上下 +10 余量；左右不加 pad——识别链按选区宽定
+        // 放大倍率（3800 宽 cap），框得越宽小字放大越小，pic4 的 F5 在
+        // pad 后 978 宽/scale3.88 下 ML Kit 漏读、948 宽/scale4.0 稳定）
+        bestRect = Rect.fromLTRB(
+          minX.clamp(0, w - 4).toDouble(),
+          (b[0] - 10).clamp(0, h - 4).toDouble(),
+          maxX.clamp(4, w).toDouble(),
+          (b[1] + 10 + step).clamp(4, h).toDouble(),
+        );
+      }
+    }
+    // 原图 -> 显示坐标
+    final rect = bestRect;
+    if (rect == null) {
+      return null;
+    }
+    final scale = _displaySize().width / w;
+    return Rect.fromLTWH(
+      rect.left * scale,
+      rect.top * scale,
+      rect.width * scale,
+      rect.height * scale,
+    );
+  }
+
+  /// 触发自动框选（按钮）：成功设选区并提示，失败提示手动框选
+  void _autoSelectLegend() {
+    final rect = _autoDetectLegend();
+    if (rect == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("未识别到图例区，请手动框选")),
+      );
+      return;
+    }
+    setState(() => _legendSel = rect);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text("已自动框选图例区，可拖动调整")),
+    );
   }
 
   /// 选区（显示坐标）-> 图片坐标矩形；空选区返回全图
@@ -1192,6 +1374,48 @@ class _RestorePageState extends State<RestorePage> {
     });
   }
 
+  /// 清单行占比条：该色颗数占全部颗数的比例（条色即豆色），
+  /// 未填颗数时返回空位保持行对齐
+  Widget _countBar(_LegendEntry e, BeadColor c) {
+    final cnt = e.expectedCount;
+    var total = 0;
+    for (final o in _legend) {
+      total += o.expectedCount ?? 0;
+    }
+    if (cnt == null || cnt <= 0 || total <= 0) {
+      return const SizedBox.shrink();
+    }
+    final ratio = (cnt / total).clamp(0.0, 1.0);
+    return Row(
+      children: [
+        Expanded(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: Container(
+              height: 6,
+              color: Colors.black.withValues(alpha: 0.06),
+              child: FractionallySizedBox(
+                alignment: Alignment.centerLeft,
+                widthFactor: ratio,
+                child: Container(
+                  color: Color.fromARGB(255, c.r, c.g, c.b),
+                ),
+              ),
+            ),
+          ),
+        ),
+        SizedBox(
+          width: 38,
+          child: Text(
+            "${(ratio * 100).toStringAsFixed(0)}%",
+            textAlign: TextAlign.end,
+            style: const TextStyle(fontSize: 11, color: Colors.black45),
+          ),
+        ),
+      ],
+    );
+  }
+
   /// 修正图例条目色号（若目标色已有条目则合并格数后删除本条）
   Future<void> _changeLegendColor(_LegendEntry entry) async {
     final idx = await _pickColorIndex();
@@ -1546,6 +1770,13 @@ class _RestorePageState extends State<RestorePage> {
               icon: const Icon(Icons.undo, size: 18),
               label: const Text("回对齐"),
             ),
+          // 自动框选图例区（载入时已自动尝试过，这里供失败重试/重新选）
+          if (_stage == _Stage.legend)
+            IconButton(
+              onPressed: _autoSelectLegend,
+              icon: const Icon(Icons.auto_awesome),
+              tooltip: "自动框选图例",
+            ),
           // 【临时调试】图例 OCR 调试入口：识别后即可查看放大图/元素/配对，正式版移除
           if (_stage == _Stage.legend && _ocrDebug != null)
             IconButton(
@@ -1731,6 +1962,8 @@ class _RestorePageState extends State<RestorePage> {
           constrained: false,
           child: GestureDetector(
             onPanDown: (d) {
+                    // 每次按下先清上一轮拖画残留（上轮被双指取消时不会走到 End）
+                    _drawFrom = null;
                     // 四角把手优先：命中则进入拖角，不走框选
                     if (cornerPts != null) {
                       _cornerDragIdx = -1;
@@ -1745,6 +1978,7 @@ class _RestorePageState extends State<RestorePage> {
                     }
                     // 落点在把手上 -> 拖把手微调选区；选区内部 -> 整框平移
                     // （第一次框完想挪位置直接拖走，不必重画）；空白 -> 画新框
+                    // （只记起点：双指缩放第一指落框外时不破坏现有选区）
                     _selHandleDrag = (sel != null && sel.width > 2)
                         ? _hitSelHandle(sel, d.localPosition)
                         : -1;
@@ -1755,7 +1989,7 @@ class _RestorePageState extends State<RestorePage> {
                         _selMoveFrom = d.localPosition;
                         _selMoveBase = sel;
                       } else {
-                        onSel(Rect.fromPoints(d.localPosition, d.localPosition));
+                        _drawFrom = d.localPosition;
                       }
                     }
                   },
@@ -1764,7 +1998,7 @@ class _RestorePageState extends State<RestorePage> {
                       onCornerDrag?.call(_cornerDragIdx, d.localPosition);
                       return;
                     }
-                    if (cornerPts != null || sel == null) {
+                    if (cornerPts != null) {
                       return;
                     }
                     if (_selMoveFrom != null && _selMoveBase != null) {
@@ -1782,15 +2016,32 @@ class _RestorePageState extends State<RestorePage> {
                       onSel(Rect.fromLTWH(left, top, base.width, base.height));
                       return;
                     }
-                    if (_selHandleDrag >= 0) {
+                    if (_selHandleDrag >= 0 && sel != null) {
                       onSel(
                         _applySelHandle(sel, _selHandleDrag, d.localPosition),
                       );
-                    } else {
-                      onSel(Rect.fromPoints(sel.topLeft, d.localPosition));
+                      return;
+                    }
+                    if (_drawFrom != null) {
+                      onSel(Rect.fromPoints(_drawFrom!, d.localPosition));
                     }
                   },
             onPanEnd: (_) {
+              // 拖画出的框太小（轻点+微动）视为误触：清掉选区而非留个点框
+              if (_drawFrom != null &&
+                  sel != null &&
+                  (sel.width < 4 || sel.height < 4)) {
+                onSel(Rect.zero);
+              }
+              _drawFrom = null;
+              _cornerDragIdx = -1;
+              _selHandleDrag = -1;
+              _selMoveFrom = null;
+              _selMoveBase = null;
+            },
+            // 双指缩放时 pan 手势在竞技场输给 scale：清状态防残留
+            onPanCancel: () {
+              _drawFrom = null;
               _cornerDragIdx = -1;
               _selHandleDrag = -1;
               _selMoveFrom = null;
@@ -2116,7 +2367,7 @@ class _RestorePageState extends State<RestorePage> {
                             ),
                             const SizedBox(width: 8),
                             SizedBox(width: 52, child: Text(c.id)),
-                            const Spacer(),
+                            const SizedBox(width: 10),
                             SizedBox(
                               width: 72,
                               child: TextField(
@@ -2133,6 +2384,13 @@ class _RestorePageState extends State<RestorePage> {
                                 ),
                               ),
                             ),
+                            // 占比条：填了颗数后按各色占比填充（颜色即豆色），
+                            // 填满中间空白让行更紧凑有信息量
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: _countBar(e, c),
+                            ),
+                            const SizedBox(width: 8),
                             // 删除该色（识别错误且不需要的条目）
                             SizedBox(
                               width: 30,
@@ -2726,6 +2984,18 @@ class _RestorePageState extends State<RestorePage> {
 }
 
 /// 选区绘制：外部半透明遮罩 + 蓝色边框
+/// 一行的游程特征（长游程 = 图例色块；豆子/文字游程短），图例自动检测用
+class _RowFeat {
+  final int nBlocks; ///< 长游程块数
+  final int maxLen; ///< 最长游程
+  final double nonWhite; ///< 非白像素占比
+  final Set<int> colors; ///< 块颜色集合
+  final int minX; ///< 块起点最小 x
+  final int maxX; ///< 块终点最大 x
+  const _RowFeat(this.nBlocks, this.maxLen, this.nonWhite, this.colors,
+      this.minX, this.maxX);
+}
+
 class _SelPainter extends CustomPainter {
   final Rect rect;
 
@@ -2741,9 +3011,16 @@ class _SelPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2;
 
-    final path = Path()..addRect(Rect.fromLTWH(0, 0, size.width, size.height));
-    path.addPath(Path()..addRect(rect), Offset.zero);
-    canvas.drawPath(Path.combine(PathOperation.difference, path, Path()), mask);
+    // 框外略暗遮罩：整图挖掉选区（difference 两个独立 path，不能用
+    // addPath 叠进同一个 path——nonzero 填充规则下重叠区 winding=2 仍
+    // 被填充，遮罩会盖住选区内部，框内外无明暗区分）
+    final outer = Path()
+      ..addRect(Rect.fromLTWH(0, 0, size.width, size.height));
+    final inner = Path()..addRect(rect);
+    canvas.drawPath(
+      Path.combine(PathOperation.difference, outer, inner),
+      mask,
+    );
     canvas.drawRect(rect, border);
     // 8 个编辑把手（四角+四边中点）：白底橙圈，可拖动扩大缩小选区
     final handlePts = [
