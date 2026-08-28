@@ -2082,10 +2082,15 @@ class _RestorePageState extends State<RestorePage> {
                   _selMoveFrom = null;
                   _selMoveBase = null;
                 },
-                // 双指缩放时 pan 手势在竞技场输给 scale：清状态防残留。
-                // 不做点击回溯——第二指落下时第一指可能已画了一半的框，
-                // 回溯恢复快照会把进行中的框丢掉（保留 cancel 前的进度）
+                // 手势异常中止（双指缩放时 pan 在竞技场输给 scale、系统夺走
+                // 指针等）：无条件恢复按下前快照。cancel 意味着本次手势作废
+                // ——第一指被取消前画了一半的框是中间态残留（双指缩放意图
+                // 是缩放不是画框），恢复快照才正确，不保留"进度"
                 onPanCancel: () {
+                  final startSel = _gestureStartSel;
+                  if (startSel != null) {
+                    onSel(startSel);
+                  }
                   _drawFrom = null;
                   _gestureStartSel = null;
                   _panStartPos = null;
