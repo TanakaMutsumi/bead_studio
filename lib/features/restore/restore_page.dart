@@ -3,6 +3,8 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart'
+    show PointerScrollEvent, PointerSignalEvent;
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image/image.dart' as img;
@@ -68,8 +70,7 @@ const Map<String, List<String>> _ocrConfusions = {
   final left = (codeRect.left - m).round().clamp(0, image.width - 1);
   final right = (codeRect.right + m).round().clamp(0, image.width - 1);
   final top = (codeRect.top - m * 0.6).round().clamp(0, image.height - 1);
-  final bottom =
-      (codeRect.bottom + m * 0.6).round().clamp(0, image.height - 1);
+  final bottom = (codeRect.bottom + m * 0.6).round().clamp(0, image.height - 1);
   var sr = 0, sg = 0, sb = 0, n = 0;
   for (var y = top; y <= bottom; y++) {
     for (var x = left; x <= right; x++) {
@@ -269,6 +270,12 @@ class _RestorePageState extends State<RestorePage> {
 
   ///< 画新框的按下起点（onPanDown 只记录不落框，首帧 onPanUpdate 才画——
   ///双指缩放第一指按下时 pan 尚未裁决，立即画零点框会把选区破坏掉）
+  bool _drawActive = false;
+
+  ///< 画框累计位移已超过启动阈值（<10px 的轻点微动不落新框，防覆盖现有选区）
+  final TransformationController _viewerCtrl = TransformationController();
+
+  ///< 图区变换（滚轮纵向平移浏览；双指捏合缩放仍由 InteractiveViewer 手势承担）
   Uint8List? _displayBytes;
 
   ///< 显示用重编码 JPEG（decodeForDisplay 产物，识别/裁剪仍用 _image 原始像素）
@@ -343,6 +350,7 @@ class _RestorePageState extends State<RestorePage> {
     for (final e in _legend) {
       e.countCtrl.dispose();
     }
+    _viewerCtrl.dispose();
     super.dispose();
   }
 
@@ -375,6 +383,8 @@ class _RestorePageState extends State<RestorePage> {
         _pitchX = 0;
         _model = null;
         _decoding = false;
+        // 换图重置图区变换（上一张图的缩放/平移不带到新图）
+        _viewerCtrl.value = Matrix4.identity();
         // 换图即清空调试快照：新图识别前 AppBar 不显示旧图的调试入口，
         // 否则点开看到的是上一张图的放大图/元素，误导排障
         _ocrDebug = null;
@@ -471,8 +481,7 @@ class _RestorePageState extends State<RestorePage> {
           maxX = runStart + runLen;
         }
       }
-      feats[y] = _RowFeat(
-          nBlocks, maxLen, nonWhite / w, colors, minX, maxX);
+      feats[y] = _RowFeat(nBlocks, maxLen, nonWhite / w, colors, minX, maxX);
     }
     // 图例行判定
     final legendRows = <int, _RowFeat>{};
@@ -489,7 +498,9 @@ class _RestorePageState extends State<RestorePage> {
     }
     // 聚簇成带（图例行间白隙 <= 60px 同带）
     final ys = legendRows.keys.toList()..sort();
-    final bands = <List<int>>[[ys.first, ys.first]];
+    final bands = <List<int>>[
+      [ys.first, ys.first]
+    ];
     for (final y in ys.skip(1)) {
       if (y - bands.last[1] <= 60) {
         bands.last[1] = y;
@@ -797,9 +808,9 @@ class _RestorePageState extends State<RestorePage> {
           for (final line in block.lines) {
             for (final element in line.elements) {
               final text = element.text.trim().toUpperCase().replaceAll(
-                " ",
-                "",
-              );
+                    " ",
+                    "",
+                  );
               // 色号最多 4 字符（A1/H12 型），长文本是正文/杂项不做色号。
               // 纯数字文本即使命中混淆变体（8↔B 使 "81"→B1）也先按颗数
               // 收集——它更常是左侧色号的真颗数（"H7 81" 行的 81），
@@ -833,12 +844,10 @@ class _RestorePageState extends State<RestorePage> {
       // 后缀候选多（如 16 有 A16~H16），颜色是唯一决定性约束——图例色块
       // 印的就是该色号的实物色。
       var fixedCount = 0;
-      final parenCount = elems
-          .where((e) => e.code == null && e.dbgText.contains("("))
-          .length;
-      final bareCount = elems
-          .where((e) => e.code == null && !e.dbgText.contains("("))
-          .length;
+      final parenCount =
+          elems.where((e) => e.code == null && e.dbgText.contains("(")).length;
+      final bareCount =
+          elems.where((e) => e.code == null && !e.dbgText.contains("(")).length;
       if (parenCount >= 6 && bareCount > 0 && bareCount * 2 <= parenCount) {
         final bare = elems
             .where((e) => e.code == null && !e.dbgText.contains("("))
@@ -884,7 +893,7 @@ class _RestorePageState extends State<RestorePage> {
       // flutter tag，文件可 adb pull，像素判读调试面板太费劲），正式版移除
       final dbgLines = <String>[
         "框选($source) $rx,$ry ${rw}x$rh elems=${elems.length}(色块补全$fixedCount, 空隙OCR$gapFixed, 括号颗数$parenCount/裸数字$bareCount) img=${scaled.width}x${scaled.height}"
-        "${orphanNotes.isEmpty ? "" : " 色卡外色号=[${orphanNotes.toSet().join(" ")}]"}",
+            "${orphanNotes.isEmpty ? "" : " 色卡外色号=[${orphanNotes.toSet().join(" ")}]"}",
       ];
       for (final e in elems) {
         final kind = e.code != null
@@ -921,7 +930,9 @@ class _RestorePageState extends State<RestorePage> {
           .map((e) => "${_palette.colors[e.code!].id}(${e.dbgText})")
           .join(" ");
       dbgLines.add(
-        "result=${paired.length}对 未配色号=[${unpaired.isEmpty ? "无" : unpaired}] ${[for (final (idx, n) in paired) "${_palette.colors[idx].id}=$n"].join(" ")}",
+        "result=${paired.length}对 未配色号=[${unpaired.isEmpty ? "无" : unpaired}] ${[
+          for (final (idx, n) in paired) "${_palette.colors[idx].id}=$n"
+        ].join(" ")}",
       );
       for (final l in dbgLines) {
         debugPrint("【临时调试】$l");
@@ -1124,10 +1135,8 @@ class _RestorePageState extends State<RestorePage> {
         for (final block in recognized.blocks) {
           for (final line in block.lines) {
             for (final element in line.elements) {
-              final text = element.text
-                  .trim()
-                  .toUpperCase()
-                  .replaceAll(" ", "");
+              final text =
+                  element.text.trim().toUpperCase().replaceAll(" ", "");
               if (text.length > 4) {
                 continue; // 长文本是杂项，不是色号
               }
@@ -1239,8 +1248,7 @@ class _RestorePageState extends State<RestorePage> {
     // 阅读顺序输出：先上后下，同行先左后右。
     // 未配上颗数的色号也保留（颗数 0）：条目本身是真的（OCR 漏读了它的颗数），
     // 丢弃会让清单直接少一色（H15 曾因此消失）；颗数 0 用户在清单里手改即可
-    final sorted = [...codes]
-      ..sort((a, b) {
+    final sorted = [...codes]..sort((a, b) {
         final dy = a.rect.top - b.rect.top;
         return dy.abs() > avgH * 0.7
             ? (dy > 0 ? 1 : -1)
@@ -1423,9 +1431,8 @@ class _RestorePageState extends State<RestorePage> {
       return;
     }
     setState(() {
-      final dup = _legend
-          .where((e) => e != entry && e.paletteIndex == idx)
-          .toList();
+      final dup =
+          _legend.where((e) => e != entry && e.paletteIndex == idx).toList();
       if (dup.isNotEmpty) {
         dup.first.countCtrl.dispose();
         _legend.remove(dup.first);
@@ -1580,9 +1587,8 @@ class _RestorePageState extends State<RestorePage> {
           .showSnackBar(const SnackBar(content: Text("行列数须在 4-400 之间")));
       return;
     }
-    final useCorner = _useCornerAlign &&
-        _cornerPts != null &&
-        _cornerPts!.length == 4;
+    final useCorner =
+        _useCornerAlign && _cornerPts != null && _cornerPts!.length == 4;
     if (!useCorner && (_pitchX <= 0 || _pitchY <= 0)) {
       _recomputePitchFromField();
     }
@@ -1604,8 +1610,7 @@ class _RestorePageState extends State<RestorePage> {
         ];
       }
       final candidates = <int>{
-        for (final e in _legend)
-          e.paletteIndex,
+        for (final e in _legend) e.paletteIndex,
       };
       final quantizer = Quantizer(_palette);
       final grid = List<int>.filled(cols * rows, 0);
@@ -1639,9 +1644,8 @@ class _RestorePageState extends State<RestorePage> {
             sb,
             candidates.isEmpty ? null : candidates,
           );
-          grid[r * cols + c] = (_blankEnable && distSq > _blankDistSq)
-              ? -1
-              : idx;
+          grid[r * cols + c] =
+              (_blankEnable && distSq > _blankDistSq) ? -1 : idx;
         }
       }
       if (!mounted) {
@@ -1952,131 +1956,155 @@ class _RestorePageState extends State<RestorePage> {
         // SingleChildScrollView 里（child 拿到无界高度约束），其变换矩阵
         // 算坏、child 整块渲染消失（图区纯白，2026-08-26 模拟器二分实测：
         // 同字节同页面，裸 Image.memory 彩、InteractiveViewer 包装白）。
-        // 查看模式的"拖动浏览"由 InteractiveViewer 自带平移承担（panEnabled）。
-        InteractiveViewer(
-          maxScale: 8,
-          minScale: 1,
-          // 单指手势留给框选（child GestureDetector 优先）；双指捏合缩放、
-          // 双指拖动平移由 scale 手势自带 translation 承担
-          panEnabled: false,
-          constrained: false,
-          child: GestureDetector(
-            onPanDown: (d) {
-                    // 每次按下先清上一轮拖画残留（上轮被双指取消时不会走到 End）
-                    _drawFrom = null;
-                    // 四角把手优先：命中则进入拖角，不走框选
-                    if (cornerPts != null) {
-                      _cornerDragIdx = -1;
-                      for (var i = 0; i < cornerPts.length; i++) {
-                        if ((cornerPts[i] - d.localPosition).distance <= 30) {
-                          _cornerDragIdx = i;
-                          onCornerDrag?.call(i, d.localPosition);
-                          return;
-                        }
-                      }
-                      return; // 非角区拖动不画框：防误触清掉四角
-                    }
-                    // 落点在把手上 -> 拖把手微调选区；选区内部 -> 整框平移
-                    // （第一次框完想挪位置直接拖走，不必重画）；空白 -> 画新框
-                    // （只记起点：双指缩放第一指落框外时不破坏现有选区）
-                    _selHandleDrag = (sel != null && sel.width > 2)
-                        ? _hitSelHandle(sel, d.localPosition)
-                        : -1;
-                    if (_selHandleDrag < 0) {
-                      if (sel != null &&
-                          sel.width > 2 &&
-                          sel.contains(d.localPosition)) {
-                        _selMoveFrom = d.localPosition;
-                        _selMoveBase = sel;
-                      } else {
-                        _drawFrom = d.localPosition;
+        // 查看模式的"拖动浏览"由滚轮平移 + 双指拖动承担。
+        LayoutBuilder(
+          builder: (ctx, cons) => InteractiveViewer(
+            maxScale: 8,
+            minScale: 1,
+            transformationController: _viewerCtrl,
+            // 滚轮缩放禁用开关：InteractiveViewer 滚轮缩放量 = exp(-dy/scaleFactor)，
+            // 取无穷大恒为 1（源码 _receivedPointerSignal），滚轮成无操作——
+            // 平移浏览交给 child 内 Listener（_onImgPointerSignal）；scaleFactor
+            // 只作用于滚轮，双指捏合缩放不受影响（不能用 scaleEnabled:false，
+            // 它会连捏合一起禁掉）
+            scaleFactor: double.infinity,
+            // 单指手势留给框选（child GestureDetector 优先）；双指捏合缩放、
+            // 双指拖动平移由 scale 手势自带 translation 承担
+            panEnabled: false,
+            constrained: false,
+            child: Listener(
+              // 滚轮=纵向平移浏览（图例清单展开会挡住图片下部，靠滚轮看回）
+              onPointerSignal: (s) => _onImgPointerSignal(s, cons),
+              child: GestureDetector(
+                onPanDown: (d) {
+                  // 每次按下先清上一轮拖画残留（上轮被双指取消时不会走到 End）
+                  _drawFrom = null;
+                  _drawActive = false;
+                  // 四角把手优先：命中则进入拖角，不走框选
+                  if (cornerPts != null) {
+                    _cornerDragIdx = -1;
+                    for (var i = 0; i < cornerPts.length; i++) {
+                      if ((cornerPts[i] - d.localPosition).distance <= 30) {
+                        _cornerDragIdx = i;
+                        onCornerDrag?.call(i, d.localPosition);
+                        return;
                       }
                     }
-                  },
-            onPanUpdate: (d) {
-                    if (_cornerDragIdx >= 0) {
-                      onCornerDrag?.call(_cornerDragIdx, d.localPosition);
-                      return;
+                    return; // 非角区拖动不画框：防误触清掉四角
+                  }
+                  // 落点在把手上 -> 拖把手微调选区；选区内部 -> 整框平移
+                  // （第一次框完想挪位置直接拖走，不必重画）；空白 -> 画新框
+                  // （只记起点：双指缩放第一指落框外时不破坏现有选区）
+                  _selHandleDrag = (sel != null && sel.width > 2)
+                      ? _hitSelHandle(sel, d.localPosition)
+                      : -1;
+                  if (_selHandleDrag < 0) {
+                    if (sel != null &&
+                        sel.width > 2 &&
+                        sel.contains(d.localPosition)) {
+                      _selMoveFrom = d.localPosition;
+                      _selMoveBase = sel;
+                    } else {
+                      _drawFrom = d.localPosition;
                     }
-                    if (cornerPts != null) {
-                      return;
-                    }
-                    if (_selMoveFrom != null && _selMoveBase != null) {
-                      // 整框平移：按起点位移移动选区，clamp 图内防拖丢
-                      final delta = d.localPosition - _selMoveFrom!;
-                      final base = _selMoveBase!;
-                      final left = (base.left + delta.dx).clamp(
-                        0.0,
-                        ds.width - base.width,
-                      );
-                      final top = (base.top + delta.dy).clamp(
-                        0.0,
-                        ds.height - base.height,
-                      );
-                      onSel(Rect.fromLTWH(left, top, base.width, base.height));
-                      return;
-                    }
-                    if (_selHandleDrag >= 0 && sel != null) {
-                      onSel(
-                        _applySelHandle(sel, _selHandleDrag, d.localPosition),
-                      );
-                      return;
-                    }
-                    if (_drawFrom != null) {
-                      onSel(Rect.fromPoints(_drawFrom!, d.localPosition));
-                    }
-                  },
-            onPanEnd: (_) {
-              // 拖画出的框太小（轻点+微动）视为误触：清掉选区而非留个点框
-              if (_drawFrom != null &&
-                  sel != null &&
-                  (sel.width < 4 || sel.height < 4)) {
-                onSel(Rect.zero);
-              }
-              _drawFrom = null;
-              _cornerDragIdx = -1;
-              _selHandleDrag = -1;
-              _selMoveFrom = null;
-              _selMoveBase = null;
-            },
-            // 双指缩放时 pan 手势在竞技场输给 scale：清状态防残留
-            onPanCancel: () {
-              _drawFrom = null;
-              _cornerDragIdx = -1;
-              _selHandleDrag = -1;
-              _selMoveFrom = null;
-              _selMoveBase = null;
-            },
-            child: Stack(
-              children: [
-                Image.memory(
-                  _displayBytes ?? _bytes!,
-                  width: ds.width,
-                  height: ds.height,
-                  fit: BoxFit.fill,
-                  // 解码失败必须可见（红底提示），不能静默白屏让用户"不知发生了什么"
-                  errorBuilder: (ctx, error, stack) {
-                    return ColoredBox(
-                      color: Colors.redAccent,
-                      child: Center(
-                        child: Text(
-                          "显示解码失败: $error",
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(color: Colors.white),
-                        ),
-                      ),
+                  }
+                },
+                onPanUpdate: (d) {
+                  if (_cornerDragIdx >= 0) {
+                    onCornerDrag?.call(_cornerDragIdx, d.localPosition);
+                    return;
+                  }
+                  if (cornerPts != null) {
+                    return;
+                  }
+                  if (_selMoveFrom != null && _selMoveBase != null) {
+                    // 整框平移：按起点位移移动选区，clamp 图内防拖丢
+                    final delta = d.localPosition - _selMoveFrom!;
+                    final base = _selMoveBase!;
+                    final left = (base.left + delta.dx).clamp(
+                      0.0,
+                      ds.width - base.width,
                     );
-                  },
+                    final top = (base.top + delta.dy).clamp(
+                      0.0,
+                      ds.height - base.height,
+                    );
+                    onSel(Rect.fromLTWH(left, top, base.width, base.height));
+                    return;
+                  }
+                  if (_selHandleDrag >= 0 && sel != null) {
+                    onSel(
+                      _applySelHandle(sel, _selHandleDrag, d.localPosition),
+                    );
+                    return;
+                  }
+                  if (_drawFrom != null) {
+                    // 启动阈值：累计位移 <10 逻辑像素视为轻点微动，不落新框
+                    // （真实鼠标轻点常带 1-2px 抖动，原首帧即画会覆盖掉现有选区）
+                    if (!_drawActive) {
+                      if ((d.localPosition - _drawFrom!).distance < 10) {
+                        return;
+                      }
+                      _drawActive = true;
+                    }
+                    onSel(Rect.fromPoints(_drawFrom!, d.localPosition));
+                  }
+                },
+                onPanEnd: (_) {
+                  // 只清"本轮真的画过"的误触小框；未达启动阈值的轻点完全不动现有选区
+                  if (_drawActive &&
+                      sel != null &&
+                      (sel.width < 4 || sel.height < 4)) {
+                    onSel(Rect.zero);
+                  }
+                  _drawFrom = null;
+                  _drawActive = false;
+                  _cornerDragIdx = -1;
+                  _selHandleDrag = -1;
+                  _selMoveFrom = null;
+                  _selMoveBase = null;
+                },
+                // 双指缩放时 pan 手势在竞技场输给 scale：清状态防残留
+                onPanCancel: () {
+                  _drawFrom = null;
+                  _drawActive = false;
+                  _cornerDragIdx = -1;
+                  _selHandleDrag = -1;
+                  _selMoveFrom = null;
+                  _selMoveBase = null;
+                },
+                child: Stack(
+                  children: [
+                    Image.memory(
+                      _displayBytes ?? _bytes!,
+                      width: ds.width,
+                      height: ds.height,
+                      fit: BoxFit.fill,
+                      // 解码失败必须可见（红底提示），不能静默白屏让用户"不知发生了什么"
+                      errorBuilder: (ctx, error, stack) {
+                        return ColoredBox(
+                          color: Colors.redAccent,
+                          child: Center(
+                            child: Text(
+                              "显示解码失败: $error",
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Colors.white),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                    if (sel != null && sel.width > 2)
+                      Positioned.fill(
+                        child: CustomPaint(painter: _SelPainter(sel)),
+                      ),
+                    if (overlay != null)
+                      Positioned.fill(
+                        child: CustomPaint(painter: overlay, size: ds),
+                      ),
+                  ],
                 ),
-                if (sel != null && sel.width > 2)
-                  Positioned.fill(
-                    child: CustomPaint(painter: _SelPainter(sel)),
-                  ),
-                if (overlay != null)
-                  Positioned.fill(
-                    child: CustomPaint(painter: overlay, size: ds),
-                  ),
-              ],
+              ),
             ),
           ),
         ),
@@ -2097,6 +2125,32 @@ class _RestorePageState extends State<RestorePage> {
           ),
       ],
     );
+  }
+
+  /// 滚轮纵向平移浏览图区：滚轮缩放已被 scaleFactor:infinity 禁掉
+  ///（见 _imageStage 内注释），此处是滚轮的唯一效果。
+  /// 平移量 clamp 在 [viewport-图, 0]，滚到底不再滚动；缩放后按当前
+  /// scale 折算可平移范围。图例清单面板挡住图片下部时靠滚轮回看。
+  void _onImgPointerSignal(PointerSignalEvent s, BoxConstraints cons) {
+    if (s is! PointerScrollEvent) {
+      return;
+    }
+    final cur = _viewerCtrl.value;
+    final scale = cur.storage[0];
+    final ds = _displaySize();
+    final minX = math.min(0.0, cons.maxWidth - ds.width * scale);
+    final minY = math.min(0.0, cons.maxHeight - ds.height * scale);
+    final dx =
+        (cur.getTranslation().x - s.scrollDelta.dx).clamp(minX, 0.0).toDouble();
+    final dy =
+        (cur.getTranslation().y - s.scrollDelta.dy).clamp(minY, 0.0).toDouble();
+    // 直设矩阵元（translate/scale 已废弃）：纯平移 + 等比缩放，无旋转
+    final m = Matrix4.identity();
+    m.setEntry(0, 0, scale);
+    m.setEntry(1, 1, scale);
+    m.setEntry(0, 3, dx);
+    m.setEntry(1, 3, dy);
+    _viewerCtrl.value = m;
   }
 
   /// 当前网格覆盖层（无有效参数返回 null）
@@ -2326,88 +2380,88 @@ class _RestorePageState extends State<RestorePage> {
                         return Padding(
                           padding: const EdgeInsets.symmetric(vertical: 3),
                           child: Row(
-                          children: [
-                            Tooltip(
-                              message: "点击修改色号",
-                              child: InkWell(
-                                onTap: () => _changeLegendColor(e),
-                                child: SizedBox(
-                                  width: 28,
-                                  height: 28,
-                                  child: Stack(
-                                    children: [
-                                      Positioned.fill(
-                                        child: ColoredBox(
-                                          color: Color.fromARGB(
-                                            255,
-                                            c.r,
-                                            c.g,
-                                            c.b,
+                            children: [
+                              Tooltip(
+                                message: "点击修改色号",
+                                child: InkWell(
+                                  onTap: () => _changeLegendColor(e),
+                                  child: SizedBox(
+                                    width: 28,
+                                    height: 28,
+                                    child: Stack(
+                                      children: [
+                                        Positioned.fill(
+                                          child: ColoredBox(
+                                            color: Color.fromARGB(
+                                              255,
+                                              c.r,
+                                              c.g,
+                                              c.b,
+                                            ),
                                           ),
                                         ),
-                                      ),
-                                      // 右下角编辑角标：提示色块可点改色号
-                                      Positioned(
-                                        right: 0,
-                                        bottom: 0,
-                                        child: Container(
-                                          color: Colors.white70,
-                                          padding: const EdgeInsets.all(1),
-                                          child: const Icon(
-                                            Icons.edit,
-                                            size: 10,
-                                            color: Colors.black54,
+                                        // 右下角编辑角标：提示色块可点改色号
+                                        Positioned(
+                                          right: 0,
+                                          bottom: 0,
+                                          child: Container(
+                                            color: Colors.white70,
+                                            padding: const EdgeInsets.all(1),
+                                            child: const Icon(
+                                              Icons.edit,
+                                              size: 10,
+                                              color: Colors.black54,
+                                            ),
                                           ),
                                         ),
-                                      ),
-                                    ],
+                                      ],
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                            const SizedBox(width: 8),
-                            SizedBox(width: 52, child: Text(c.id)),
-                            const SizedBox(width: 10),
-                            SizedBox(
-                              width: 72,
-                              child: TextField(
-                                controller: e.countCtrl,
-                                keyboardType: TextInputType.number,
-                                decoration: const InputDecoration(
-                                  hintText: "颗数",
-                                  border: OutlineInputBorder(),
-                                  isDense: true,
-                                  contentPadding: EdgeInsets.symmetric(
-                                    horizontal: 8,
-                                    vertical: 9,
+                              const SizedBox(width: 8),
+                              SizedBox(width: 52, child: Text(c.id)),
+                              const SizedBox(width: 10),
+                              SizedBox(
+                                width: 72,
+                                child: TextField(
+                                  controller: e.countCtrl,
+                                  keyboardType: TextInputType.number,
+                                  decoration: const InputDecoration(
+                                    hintText: "颗数",
+                                    border: OutlineInputBorder(),
+                                    isDense: true,
+                                    contentPadding: EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 9,
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                            // 占比条：填了颗数后按各色占比填充（颜色即豆色），
-                            // 填满中间空白让行更紧凑有信息量
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: _countBar(e, c),
-                            ),
-                            const SizedBox(width: 8),
-                            // 删除该色（识别错误且不需要的条目）
-                            SizedBox(
-                              width: 30,
-                              height: 32,
-                              child: IconButton(
-                                visualDensity: VisualDensity.compact,
-                                padding: EdgeInsets.zero,
-                                iconSize: 16,
-                                tooltip: "删除该色",
-                                onPressed: () => _removeLegendEntry(e),
-                                icon: const Icon(
-                                  Icons.close,
-                                  color: Colors.black38,
+                              // 占比条：填了颗数后按各色占比填充（颜色即豆色），
+                              // 填满中间空白让行更紧凑有信息量
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: _countBar(e, c),
+                              ),
+                              const SizedBox(width: 8),
+                              // 删除该色（识别错误且不需要的条目）
+                              SizedBox(
+                                width: 30,
+                                height: 32,
+                                child: IconButton(
+                                  visualDensity: VisualDensity.compact,
+                                  padding: EdgeInsets.zero,
+                                  iconSize: 16,
+                                  tooltip: "删除该色",
+                                  onPressed: () => _removeLegendEntry(e),
+                                  icon: const Icon(
+                                    Icons.close,
+                                    color: Colors.black38,
+                                  ),
                                 ),
                               ),
-                            ),
-                          ],
+                            ],
                           ),
                         );
                       },
@@ -2450,9 +2504,8 @@ class _RestorePageState extends State<RestorePage> {
     }
     final codes = dbg.elems.where((e) => e.code != null).length;
     final nums = dbg.elems.where((e) => e.count != null).length;
-    final paired = dbg.elems
-        .where((e) => e.code != null && e.pairedCount != null)
-        .length;
+    final paired =
+        dbg.elems.where((e) => e.code != null && e.pairedCount != null).length;
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -2527,8 +2580,7 @@ class _RestorePageState extends State<RestorePage> {
                 itemCount: dbg.elems.length,
                 itemBuilder: (_, i) {
                   final e = dbg.elems[i];
-                  final geo =
-                      "(${e.rect.left.toInt()},${e.rect.top.toInt()} "
+                  final geo = "(${e.rect.left.toInt()},${e.rect.top.toInt()} "
                       "${e.rect.width.toInt()}×${e.rect.height.toInt()})";
                   return Text(
                     e.code != null
@@ -2595,8 +2647,8 @@ class _RestorePageState extends State<RestorePage> {
                 _useCornerAlign
                     ? "把 4 个圆点拖到图案网格的四个角（斜拍/歪图用此模式，网格随四角透视贴合）"
                     : _pitchX > 0
-                          ? "网格已覆盖（蓝线）· 不对齐就微调下方参数"
-                          : "② 框选主体图案区域，或直接自动检测",
+                        ? "网格已覆盖（蓝线）· 不对齐就微调下方参数"
+                        : "② 框选主体图案区域，或直接自动检测",
                 style: Theme.of(context).textTheme.bodySmall,
               ),
               const SizedBox(height: 8),
@@ -2632,9 +2684,8 @@ class _RestorePageState extends State<RestorePage> {
                   ),
                   const SizedBox(width: 12),
                   OutlinedButton.icon(
-                    onPressed: (_detecting || _useCornerAlign)
-                        ? null
-                        : _autoDetect,
+                    onPressed:
+                        (_detecting || _useCornerAlign) ? null : _autoDetect,
                     icon: _detecting
                         ? const SizedBox(
                             width: 14,
@@ -2668,39 +2719,39 @@ class _RestorePageState extends State<RestorePage> {
                 Row(
                   children: [
                     const Text("格子大小"),
-                  IconButton(
-                    onPressed: _pitchX > 0 ? () => _adjustPitch(-0.2) : null,
-                    icon: const Icon(Icons.remove_circle_outline),
-                  ),
-                  Text(_pitchX > 0 ? _pitchX.toStringAsFixed(2) : "--"),
-                  IconButton(
-                    onPressed: _pitchX > 0 ? () => _adjustPitch(0.2) : null,
-                    icon: const Icon(Icons.add_circle_outline),
-                  ),
-                  const VerticalDivider(width: 12),
-                  const Text("微移"),
-                  IconButton(
-                    onPressed: _pitchX > 0 ? () => _nudge(-1, 0) : null,
-                    icon: const Icon(Icons.arrow_left),
-                    tooltip: "左移",
-                  ),
-                  IconButton(
-                    onPressed: _pitchX > 0 ? () => _nudge(0, -1) : null,
-                    icon: const Icon(Icons.arrow_upward),
-                    tooltip: "上移",
-                  ),
-                  IconButton(
-                    onPressed: _pitchX > 0 ? () => _nudge(0, 1) : null,
-                    icon: const Icon(Icons.arrow_downward),
-                    tooltip: "下移",
-                  ),
-                  IconButton(
-                    onPressed: _pitchX > 0 ? () => _nudge(1, 0) : null,
-                    icon: const Icon(Icons.arrow_right),
-                    tooltip: "右移",
-                  ),
-                ],
-              ),
+                    IconButton(
+                      onPressed: _pitchX > 0 ? () => _adjustPitch(-0.2) : null,
+                      icon: const Icon(Icons.remove_circle_outline),
+                    ),
+                    Text(_pitchX > 0 ? _pitchX.toStringAsFixed(2) : "--"),
+                    IconButton(
+                      onPressed: _pitchX > 0 ? () => _adjustPitch(0.2) : null,
+                      icon: const Icon(Icons.add_circle_outline),
+                    ),
+                    const VerticalDivider(width: 12),
+                    const Text("微移"),
+                    IconButton(
+                      onPressed: _pitchX > 0 ? () => _nudge(-1, 0) : null,
+                      icon: const Icon(Icons.arrow_left),
+                      tooltip: "左移",
+                    ),
+                    IconButton(
+                      onPressed: _pitchX > 0 ? () => _nudge(0, -1) : null,
+                      icon: const Icon(Icons.arrow_upward),
+                      tooltip: "上移",
+                    ),
+                    IconButton(
+                      onPressed: _pitchX > 0 ? () => _nudge(0, 1) : null,
+                      icon: const Icon(Icons.arrow_downward),
+                      tooltip: "下移",
+                    ),
+                    IconButton(
+                      onPressed: _pitchX > 0 ? () => _nudge(1, 0) : null,
+                      icon: const Icon(Icons.arrow_right),
+                      tooltip: "右移",
+                    ),
+                  ],
+                ),
               const SizedBox(height: 4),
               Row(
                 children: [
@@ -2789,9 +2840,8 @@ class _RestorePageState extends State<RestorePage> {
                                 model: model,
                                 palette: _palette,
                                 selectedColorIndex: -1,
-                                highlightIndex: _reviewColor >= 0
-                                    ? _reviewColor
-                                    : null,
+                                highlightIndex:
+                                    _reviewColor >= 0 ? _reviewColor : null,
                               ),
                             ),
                             if (_reviewColor == -1)
@@ -2896,8 +2946,8 @@ class _RestorePageState extends State<RestorePage> {
     final border = ok == false
         ? Colors.orange
         : ok == true
-        ? Colors.green
-        : (selected ? Colors.blue : Colors.black26);
+            ? Colors.green
+            : (selected ? Colors.blue : Colors.black26);
     return Padding(
       padding: const EdgeInsets.only(right: 8),
       child: InkWell(
@@ -2986,12 +3036,24 @@ class _RestorePageState extends State<RestorePage> {
 /// 选区绘制：外部半透明遮罩 + 蓝色边框
 /// 一行的游程特征（长游程 = 图例色块；豆子/文字游程短），图例自动检测用
 class _RowFeat {
-  final int nBlocks; ///< 长游程块数
-  final int maxLen; ///< 最长游程
-  final double nonWhite; ///< 非白像素占比
-  final Set<int> colors; ///< 块颜色集合
-  final int minX; ///< 块起点最小 x
-  final int maxX; ///< 块终点最大 x
+  final int nBlocks;
+
+  ///< 长游程块数
+  final int maxLen;
+
+  ///< 最长游程
+  final double nonWhite;
+
+  ///< 非白像素占比
+  final Set<int> colors;
+
+  ///< 块颜色集合
+  final int minX;
+
+  ///< 块起点最小 x
+  final int maxX;
+
+  ///< 块终点最大 x
   const _RowFeat(this.nBlocks, this.maxLen, this.nonWhite, this.colors,
       this.minX, this.maxX);
 }
@@ -3014,8 +3076,7 @@ class _SelPainter extends CustomPainter {
     // 框外略暗遮罩：整图挖掉选区（difference 两个独立 path，不能用
     // addPath 叠进同一个 path——nonzero 填充规则下重叠区 winding=2 仍
     // 被填充，遮罩会盖住选区内部，框内外无明暗区分）
-    final outer = Path()
-      ..addRect(Rect.fromLTWH(0, 0, size.width, size.height));
+    final outer = Path()..addRect(Rect.fromLTWH(0, 0, size.width, size.height));
     final inner = Path()..addRect(rect);
     canvas.drawPath(
       Path.combine(PathOperation.difference, outer, inner),
@@ -3151,7 +3212,8 @@ class _CornerGridPainter extends CustomPainter {
   final int cols;
   final int rows;
 
-  _CornerGridPainter({required this.pts, required this.cols, required this.rows});
+  _CornerGridPainter(
+      {required this.pts, required this.cols, required this.rows});
 
   @override
   void paint(Canvas canvas, Size size) {
