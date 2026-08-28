@@ -270,9 +270,20 @@ class _RestorePageState extends State<RestorePage> {
 
   ///< 画新框的按下起点（onPanDown 只记录不落框，首帧 onPanUpdate 才画——
   ///双指缩放第一指按下时 pan 尚未裁决，立即画零点框会把选区破坏掉）
-  bool _drawActive = false;
+  ///< 本次 pan 开始前的选区快照：抬手总位移 <_tapRecoverDist 视为点击，
+  ///恢复快照——pan 首个 update 必然已位移超 touch slop(18px)，逐帧阈值
+  ///拦不住真实点击抖动，只能事后回溯（onPanEnd 判定）
+  Rect? _gestureStartSel;
 
-  ///< 画框累计位移已超过启动阈值（<10px 的轻点微动不落新框，防覆盖现有选区）
+  ///< 点击/拖画的分界总位移（逻辑像素）：真实画框挪框远超此值，
+  ///触屏/鼠标点击抖动（含 slop 起步位移）达不到
+  static const _tapRecoverDist = 60.0;
+
+  ///< pan 起点（onPanDown 记录，与 _lastPanPos 差值=总位移）
+  Offset? _panStartPos;
+
+  ///< pan 过程最新位置（onPanEnd 的 DragEndDetails 无位置，靠 update 持续记）
+  Offset? _lastPanPos;
   final TransformationController _viewerCtrl = TransformationController();
 
   ///< 图区变换（滚轮纵向平移浏览；双指捏合缩放仍由 InteractiveViewer 手势承担）
@@ -1979,7 +1990,9 @@ class _RestorePageState extends State<RestorePage> {
                 onPanDown: (d) {
                   // 每次按下先清上一轮拖画残留（上轮被双指取消时不会走到 End）
                   _drawFrom = null;
-                  _drawActive = false;
+                  _gestureStartSel = null;
+                  _panStartPos = null;
+                  _lastPanPos = null;
                   // 四角把手优先：命中则进入拖角，不走框选
                   if (cornerPts != null) {
                     _cornerDragIdx = -1;
@@ -1992,9 +2005,12 @@ class _RestorePageState extends State<RestorePage> {
                     }
                     return; // 非角区拖动不画框：防误触清掉四角
                   }
-                  // 落点在把手上 -> 拖把手微调选区；选区内部 -> 整框平移
-                  // （第一次框完想挪位置直接拖走，不必重画）；空白 -> 画新框
-                  // （只记起点：双指缩放第一指落框外时不破坏现有选区）
+                  // 落点在把手上 -> 拖把手微调选区；选区内部 -> 整框平移；
+                  // 空白 -> 画新框。三种都可能被"点击抖动超 slop"触发，
+                  // 一律快照原选区供抬手回溯（把手命中半径 10 逻辑px 内的
+                  // 点击抖动同样会把框边拉走，实测 5px 位移即破坏选区）
+                  _gestureStartSel = sel;
+                  _panStartPos = d.localPosition;
                   _selHandleDrag = (sel != null && sel.width > 2)
                       ? _hitSelHandle(sel, d.localPosition)
                       : -1;
@@ -2010,6 +2026,7 @@ class _RestorePageState extends State<RestorePage> {
                   }
                 },
                 onPanUpdate: (d) {
+                  _lastPanPos = d.localPosition;
                   if (_cornerDragIdx >= 0) {
                     onCornerDrag?.call(_cornerDragIdx, d.localPosition);
                     return;
@@ -2039,35 +2056,40 @@ class _RestorePageState extends State<RestorePage> {
                     return;
                   }
                   if (_drawFrom != null) {
-                    // 启动阈值：累计位移 <10 逻辑像素视为轻点微动，不落新框
-                    // （真实鼠标轻点常带 1-2px 抖动，原首帧即画会覆盖掉现有选区）
-                    if (!_drawActive) {
-                      if ((d.localPosition - _drawFrom!).distance < 10) {
-                        return;
-                      }
-                      _drawActive = true;
-                    }
                     onSel(Rect.fromPoints(_drawFrom!, d.localPosition));
                   }
                 },
                 onPanEnd: (_) {
-                  // 只清"本轮真的画过"的误触小框；未达启动阈值的轻点完全不动现有选区
-                  if (_drawActive &&
-                      sel != null &&
-                      (sel.width < 4 || sel.height < 4)) {
-                    onSel(Rect.zero);
+                  // 点击回溯：pan 首个 update 必然已位移超 touch slop(18px)
+                  //（手势被接受的代价），逐帧阈值拦不住点击抖动。这里按
+                  // 总位移事后判定：<_tapRecoverDist 视为点击，恢复手势前
+                  //选区——点击（含触屏抖动）不再画小框/挪动选区；真拖画
+                  //远超 60px，结果保留
+                  final startSel = _gestureStartSel;
+                  final start = _panStartPos;
+                  if (startSel != null && start != null) {
+                    final end = _lastPanPos ?? start;
+                    if ((end - start).distance < _tapRecoverDist) {
+                      onSel(startSel);
+                    }
                   }
                   _drawFrom = null;
-                  _drawActive = false;
+                  _gestureStartSel = null;
+                  _panStartPos = null;
+                  _lastPanPos = null;
                   _cornerDragIdx = -1;
                   _selHandleDrag = -1;
                   _selMoveFrom = null;
                   _selMoveBase = null;
                 },
-                // 双指缩放时 pan 手势在竞技场输给 scale：清状态防残留
+                // 双指缩放时 pan 手势在竞技场输给 scale：清状态防残留。
+                // 不做点击回溯——第二指落下时第一指可能已画了一半的框，
+                // 回溯恢复快照会把进行中的框丢掉（保留 cancel 前的进度）
                 onPanCancel: () {
                   _drawFrom = null;
-                  _drawActive = false;
+                  _gestureStartSel = null;
+                  _panStartPos = null;
+                  _lastPanPos = null;
                   _cornerDragIdx = -1;
                   _selHandleDrag = -1;
                   _selMoveFrom = null;
