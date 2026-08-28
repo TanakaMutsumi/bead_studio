@@ -262,8 +262,13 @@ class _RestorePageState extends State<RestorePage> {
   ///< 选区把手拖拽中（-1=非把手，0-7=把手索引）
   bool _panViewMode = false;
 
-  ///< 拖动=平移画面模式（框存在时框内/空白拖动走此路）：框一旦存在只能
-  ///靠八把手或自动框选改变，拖动一律平移画面供放大观察（2026-08-28 拍板）
+  ///< 拖动=平移画面模式（框外空白拖动走此路，放大观察用）
+  Offset? _selMoveFrom;
+
+  ///< 框内挪框起点（图坐标，null=非挪框）
+  Rect? _selMoveBase;
+
+  ///< 框内挪框开始时的选区
   Offset? _drawFrom;
 
   ///< 画新框的按下起点（onPanDown 只记录不落框，首帧 onPanUpdate 才画——
@@ -313,7 +318,33 @@ class _RestorePageState extends State<RestorePage> {
 
   final TransformationController _viewerCtrl = TransformationController();
 
-  ///< 图区变换（滚轮纵向平移浏览；双指捏合缩放仍由 InteractiveViewer 手势承担）
+  ///< 图区变换（滚轮平移 / 自实现双指捏合缩放 / 双击复位）
+  final GlobalKey _viewerKey = GlobalKey();
+
+  ///< InteractiveViewer 的 RenderBox key：捏合锚点需要 global→viewport
+  ///局部坐标换算（PointerEvent.position 是全局坐标，含 AppBar 偏移）
+  final Map<int, Offset> _activePtrs = {};
+
+  ///< 活动指针表（pointer id → 全局位置）：双指 span/center 计算源，
+  ///也是 _ptrCount 的真值（length）
+  double _pinchStartSpan = 0;
+
+  ///< 捏合起始两指间距（<=1 视为无效）
+  Offset _pinchStartCenter = Offset.zero;
+
+  ///< 捏合起始两指中心（viewport 局部坐标）
+  Matrix4? _pinchStartMatrix;
+
+  ///< 捏合起始矩阵（非增量式推算当前矩阵，避免逐帧累积误差）
+  Offset? _prevMoveScreen;
+
+  ///< 倒数第二次 move 全局位置（抬手末速计算）
+  DateTime? _prevMoveTime;
+
+  Offset? _lastMoveScreen;
+
+  ///< 最近一次 move 全局位置（与 _prev 配对算末速，替代 DragEndDetails.velocity）
+  DateTime? _lastMoveTime;
   Uint8List? _displayBytes;
 
   ///< 显示用重编码 JPEG（decodeForDisplay 产物，识别/裁剪仍用 _image 原始像素）
@@ -2006,154 +2037,35 @@ class _RestorePageState extends State<RestorePage> {
             // 只作用于滚轮，双指捏合缩放不受影响（不能用 scaleEnabled:false，
             // 它会连捏合一起禁掉）
             scaleFactor: double.infinity,
-            // 单指手势留给框选（child GestureDetector 优先）；双指捏合缩放、
-            // 双指拖动平移由 scale 手势自带 translation 承担
+            // 单指拖动逻辑与双指捏合缩放全部由 child 内 Listener 原始事件
+            // 自实现（不用 InteractiveViewer 的 scale 手势）：child 一旦声明
+            // pan/scale 手势就会在竞技场抢走第一指，双指捏合时 scale 手势
+            // 只剩一根手指无法算 span——Ctrl+左键/双指捏合缩放彻底失效
+            //（2026-08-28 实测）。Listener 不进竞技场，原始事件全量可得。
+            scaleEnabled: false,
             panEnabled: false,
             constrained: false,
-            child: Listener(
-              // 滚轮=纵向平移浏览（图例清单展开会挡住图片下部，靠滚轮看回）
-              onPointerSignal: (s) => _onImgPointerSignal(s, cons),
-              // 多指防护（Listener 在外层先于 GestureDetector 收到原始事件）：
-              // 第二指落下瞬间作废进行中的单指框选并恢复快照——覆盖慢双指
-              //（第一指已让 pan 赢得竞技场，scale 抢不回，只能在这里拦）
-              onPointerDown: (_) => _onStagePtrDown(onSel),
-              onPointerUp: (_) => _onStagePtrUp(),
-              onPointerCancel: (_) => _onStagePtrUp(),
-              // 桌面触控板捏合/双指滚动走独立的 PointerPanZoom 事件流
-              onPointerPanZoomStart: (_) => _onStagePtrDown(onSel),
-              onPointerPanZoomEnd: (_) => _onStagePtrUp(),
-              child: GestureDetector(
+            key: _viewerKey,
+            child: Builder(
+              builder: (_) {
+                final ctx = _StageCtx(
+                  onSel, sel, cornerPts, onCornerDrag, cons);
+                return Listener(
+                  // 滚轮=纵向平移浏览（图例清单展开会挡住图片下部，靠滚轮看回）
+                  onPointerSignal: (s) => _onImgPointerSignal(s, cons),
+                  onPointerDown: (e) => _onStagePointerDown(e, ctx),
+                  onPointerMove: (e) => _onStagePointerMove(e, ctx),
+                  onPointerUp: (e) => _onStagePointerUp(e, ctx),
+                  onPointerCancel: (e) => _onStagePointerCancel(e, ctx),
+                  // 桌面触控板捏合/双指滚动走独立的 PointerPanZoom 事件流：
+                  // 缩放暂不支持，只作废进行中的单指手势防误框
+                  onPointerPanZoomStart: (_) =>
+                      _onStagePanZoomStart(onSel),
+                  child: GestureDetector(
                 // 双击复位视角：滚轮平移把图（连同选区框）滚出视口后，
                 // 框没被删只是看不见——双击立即回到全图视角找回
                 onDoubleTap: () {
                   _viewerCtrl.value = Matrix4.identity();
-                },
-                onPanDown: (d) {
-                  // 第二指及以后的按下：捏合意图，框选流程已在
-                  // _onStagePtrDown 作废，这里不重置 voided、不快照
-                  if (_ptrCount > 1) {
-                    return;
-                  }
-                  // 每次按下先清上一轮拖画残留（上轮被双指取消时不会走到 End）
-                  _gestureVoided = false;
-                  _drawFrom = null;
-                  _gestureStartSel = null;
-                  _panStartPos = null;
-                  _lastPanPos = null;
-                  _panStartTime = DateTime.now();
-                  // 四角把手优先：命中则进入拖角，不走框选
-                  if (cornerPts != null) {
-                    _cornerDragIdx = -1;
-                    for (var i = 0; i < cornerPts.length; i++) {
-                      if ((cornerPts[i] - d.localPosition).distance <= 30) {
-                        _cornerDragIdx = i;
-                        onCornerDrag?.call(i, d.localPosition);
-                        return;
-                      }
-                    }
-                    return; // 非角区拖动不画框：防误触清掉四角
-                  }
-                  // 落点在把手上 -> 拖把手微调选区（改框唯二途径之一）；
-                  // 框存在时的框内/空白拖动 -> 平移画面（放大观察），
-                  // 不再建新框/挪框；仅无框时保留拖画建框兜底。
-                  // 把手命中半径 10 逻辑px 内的点击抖动同样会把框边拉走
-                  //（实测 5px 位移即破坏选区），仍快照原选区供抬手回溯
-                  _gestureStartSel = sel;
-                  _panStartPos = d.localPosition;
-                  _selHandleDrag = (sel != null && sel.width > 2)
-                      ? _hitSelHandle(sel, d.localPosition)
-                      : -1;
-                  if (_selHandleDrag < 0) {
-                    if (sel != null && sel.width > 2) {
-                      _panViewMode = true;
-                    } else {
-                      _drawFrom = d.localPosition;
-                    }
-                  }
-                },
-                onPanUpdate: (d) {
-                  // 已被第二指作废（快照已恢复）：后续 update 全部忽略
-                  if (_gestureVoided) {
-                    return;
-                  }
-                  _lastPanPos = d.localPosition;
-                  if (_cornerDragIdx >= 0) {
-                    onCornerDrag?.call(_cornerDragIdx, d.localPosition);
-                    return;
-                  }
-                  if (cornerPts != null) {
-                    return;
-                  }
-                  // 平移画面模式：框存在时的默认拖动（delta 为屏幕坐标
-                  //增量，直接累加矩阵平移分量，跟手）
-                  if (_panViewMode) {
-                    _panViewBy(d.delta, cons);
-                    return;
-                  }
-                  if (_selHandleDrag >= 0 && sel != null) {
-                    onSel(
-                      _applySelHandle(sel, _selHandleDrag, d.localPosition),
-                    );
-                    return;
-                  }
-                  if (_drawFrom != null) {
-                    onSel(Rect.fromPoints(_drawFrom!, d.localPosition));
-                  }
-                },
-                onPanEnd: (details) {
-                  final startSel = _gestureStartSel;
-                  final start = _panStartPos;
-                  // 已被第二指作废：快照已恢复过，不再重复处理
-                  final voided = _gestureVoided;
-                  if (!voided && startSel != null && start != null) {
-                    final end = _lastPanPos ?? start;
-                    final dist = (end - start).distance;
-                    // 点击回溯：pan 首个 update 必带超 slop 位移，逐帧阈值
-                    //拦不住，只能抬手按总位移判定。滑动点击回溯：触屏
-                    //"轻点"常带 300~600物理px 滑动（远超位移分界）但整个
-                    //手势 300ms 内完成；有意拖画要对准框位，按住拖 400ms+
-                    //——按 时长(+速度)+位移 三重判定，中慢速真拖画不误伤
-                    final v = details.velocity.pixelsPerSecond.distance;
-                    final elapsed = _panStartTime == null
-                        ? 9999
-                        : DateTime.now()
-                            .difference(_panStartTime!)
-                            .inMilliseconds;
-                    final quickSlide = dist < _flingRecoverDist &&
-                        elapsed < _flingMaxElapsed &&
-                        (elapsed < 260 || v > _flingVelocity);
-                    if (dist < _tapRecoverDist || quickSlide) {
-                      onSel(startSel);
-                    }
-                  }
-                  _drawFrom = null;
-                  _gestureStartSel = null;
-                  _panStartPos = null;
-                  _lastPanPos = null;
-                  _cornerDragIdx = -1;
-                  _selHandleDrag = -1;
-                  _panViewMode = false;
-                  _gestureVoided = false;
-                  _panStartTime = null;
-                },
-                // 手势异常中止（双指缩放时 pan 在竞技场输给 scale、系统夺走
-                // 指针等）：无条件恢复按下前快照。cancel 意味着本次手势作废
-                // ——第一指被取消前画了一半的框是中间态残留（双指缩放意图
-                // 是缩放不是画框），恢复快照才正确，不保留"进度"
-                onPanCancel: () {
-                  final startSel = _gestureStartSel;
-                  if (!_gestureVoided && startSel != null) {
-                    onSel(startSel);
-                  }
-                  _drawFrom = null;
-                  _gestureStartSel = null;
-                  _panStartPos = null;
-                  _lastPanPos = null;
-                  _cornerDragIdx = -1;
-                  _selHandleDrag = -1;
-                  _panViewMode = false;
-                  _gestureVoided = false;
-                  _panStartTime = null;
                 },
                 child: Stack(
                   children: [
@@ -2187,6 +2099,8 @@ class _RestorePageState extends State<RestorePage> {
                   ],
                 ),
               ),
+                );
+              },
             ),
           ),
         ),
@@ -2209,23 +2123,275 @@ class _RestorePageState extends State<RestorePage> {
     );
   }
 
-  /// 图区第二指落下：作废进行中的单指框选（含慢双指——第一指已让 pan
-  /// 赢得竞技场、scale 抢不回的情况），立即恢复按下前选区快照
-  void _onStagePtrDown(void Function(Rect) onSel) {
-    _ptrCount++;
-    if (_ptrCount == 2) {
-      _gestureVoided = true;
-      final startSel = _gestureStartSel;
-      if (startSel != null) {
-        onSel(startSel);
+  /// 图区指针按下：单指按拖动模式分派（把手/挪框/平移画面/画框兜底/
+  /// 角点校正），第二指落下转捏合缩放（作废单指手势+恢复快照+记起始）
+  void _onStagePointerDown(PointerDownEvent e, _StageCtx ctx) {
+    _activePtrs[e.pointer] = e.position;
+    _ptrCount = _activePtrs.length;
+    if (_ptrCount >= 2) {
+      if (_ptrCount == 2) {
+        _gestureVoided = true;
+        final startSel = _gestureStartSel;
+        if (startSel != null) {
+          ctx.onSel(startSel);
+        }
+        _clearDragState();
+        final pts = _activePtrs.values.toList();
+        _pinchStartSpan = (pts[0] - pts[1]).distance;
+        _pinchStartCenter = ((pts[0] + pts[1]) / 2) - _viewerOrigin();
+        _pinchStartMatrix = _viewerCtrl.value.clone();
+      }
+      return; // 三指及以上不处理
+    }
+    // —— 单指按下：模式判定 ——
+    _gestureVoided = false;
+    _drawFrom = null;
+    _gestureStartSel = null;
+    _panStartPos = e.position;
+    _lastPanPos = e.position;
+    _panStartTime = DateTime.now();
+    _prevMoveScreen = null;
+    _prevMoveTime = null;
+    _lastMoveScreen = e.position;
+    _lastMoveTime = DateTime.now();
+    // 四角把手优先（角点校正模式）：命中则进入拖角
+    if (ctx.cornerPts != null) {
+      _cornerDragIdx = -1;
+      for (var i = 0; i < ctx.cornerPts!.length; i++) {
+        if ((ctx.cornerPts![i] - e.localPosition).distance <= 30) {
+          _cornerDragIdx = i;
+          ctx.onCornerDrag?.call(i, e.localPosition);
+          return;
+        }
+      }
+      return; // 非角区拖动不画框：防误触清掉四角
+    }
+    // 把手 -> 拖把手调框；框内 -> 挪框；框外空白 -> 平移画面（放大观察，
+    // 不建新框）；无框 -> 拖画建框兜底。把手命中半径 10 逻辑px 内的点击
+    // 抖动同样会把框边拉走（实测 5px 即破坏选区），快照供抬手回溯
+    final sel = ctx.sel;
+    _gestureStartSel = sel;
+    _selHandleDrag = (sel != null && sel.width > 2)
+        ? _hitSelHandle(sel, e.localPosition)
+        : -1;
+    if (_selHandleDrag < 0) {
+      if (sel != null && sel.width > 2) {
+        if (sel.contains(e.localPosition)) {
+          _selMoveFrom = e.localPosition;
+          _selMoveBase = sel;
+        } else {
+          _panViewMode = true;
+        }
+      } else {
+        _drawFrom = e.localPosition;
       }
     }
   }
 
-  /// 图区指指针抬起：计数递减（voided 不在此清——第一指的 pan
-  /// end/cancel 可能尚未走完，清早了会让后续 update 复活画框）
-  void _onStagePtrUp() {
-    _ptrCount = math.max(0, _ptrCount - 1);
+  /// 图区指针移动：双指捏合改矩阵；单指按模式处理（角点/平移画面/挪框/
+  /// 把手/画框）。localPosition 经 InteractiveViewer 逆变换即图坐标
+  void _onStagePointerMove(PointerMoveEvent e, _StageCtx ctx) {
+    if (_activePtrs.containsKey(e.pointer)) {
+      _activePtrs[e.pointer] = e.position;
+    }
+    if (_ptrCount >= 2) {
+      final base = _pinchStartMatrix;
+      if (base != null && _pinchStartSpan > 1 && _activePtrs.length >= 2) {
+        final pts = _activePtrs.values.toList();
+        final span = (pts[0] - pts[1]).distance;
+        final center = ((pts[0] + pts[1]) / 2) - _viewerOrigin();
+        _applyPinch(base, span, center, ctx.cons);
+      }
+      return;
+    }
+    if (_gestureVoided) {
+      return;
+    }
+    _prevMoveScreen = _lastMoveScreen;
+    _prevMoveTime = _lastMoveTime;
+    _lastMoveScreen = e.position;
+    _lastMoveTime = DateTime.now();
+    _lastPanPos = e.position;
+    if (_cornerDragIdx >= 0) {
+      ctx.onCornerDrag?.call(_cornerDragIdx, e.localPosition);
+      return;
+    }
+    if (ctx.cornerPts != null) {
+      return;
+    }
+    if (_panViewMode) {
+      _panViewBy(e.delta, ctx.cons);
+      return;
+    }
+    final sel = ctx.sel;
+    if (_selMoveFrom != null && _selMoveBase != null) {
+      // 框内挪框：按起点位移移动选区，clamp 图内防拖丢
+      final delta = e.localPosition - _selMoveFrom!;
+      final base = _selMoveBase!;
+      final dsz = _displaySize();
+      final left = (base.left + delta.dx).clamp(0.0, dsz.width - base.width);
+      final top = (base.top + delta.dy).clamp(0.0, dsz.height - base.height);
+      ctx.onSel(Rect.fromLTWH(left, top, base.width, base.height));
+      return;
+    }
+    if (_selHandleDrag >= 0 && sel != null) {
+      ctx.onSel(_applySelHandle(sel, _selHandleDrag, e.localPosition));
+      return;
+    }
+    if (_drawFrom != null) {
+      ctx.onSel(Rect.fromPoints(_drawFrom!, e.localPosition));
+    }
+  }
+
+  /// 图区指针抬起：全部抬起时按 位移+时长+速度 三重判定回溯误触；
+  /// 捏合结束剩一指则转为平移画面继续跟手
+  void _onStagePointerUp(PointerUpEvent e, _StageCtx ctx) {
+    _activePtrs.remove(e.pointer);
+    _ptrCount = _activePtrs.length;
+    if (_ptrCount == 1) {
+      _enterPanViewAfterPinch();
+      return;
+    }
+    if (_ptrCount > 0) {
+      return;
+    }
+    _pinchStartMatrix = null;
+    final startSel = _gestureStartSel;
+    final start = _panStartPos;
+    if (!_gestureVoided && startSel != null && start != null) {
+      final end = _lastPanPos ?? start;
+      final dist = (end - start).distance;
+      // 误触回溯三重判定：真实"滑动点击"整个手势 300ms 内完成（快速划
+      // 过抬手）；有意拖画/挪框/拖把手要对准位置，按住 400ms+。时长+
+      //（位移 或 速度）组合判定，中慢速真拖画不误伤
+      final v = _releaseVelocity();
+      final elapsed = _panStartTime == null
+          ? 9999
+          : DateTime.now().difference(_panStartTime!).inMilliseconds;
+      final quickSlide = dist < _flingRecoverDist &&
+          elapsed < _flingMaxElapsed &&
+          (elapsed < 260 || v > _flingVelocity);
+      if (dist < _tapRecoverDist || quickSlide) {
+        ctx.onSel(startSel);
+      }
+    }
+    _clearDragState();
+  }
+
+  /// 指针异常中止（系统夺走等）：剩一指转平移画面，全抬起视为手势作废
+  ///——恢复按下前选区快照（cancel 意味着手势没走完，中间态不留）
+  void _onStagePointerCancel(PointerCancelEvent e, _StageCtx ctx) {
+    _activePtrs.remove(e.pointer);
+    _ptrCount = _activePtrs.length;
+    if (_ptrCount == 1) {
+      _enterPanViewAfterPinch();
+      return;
+    }
+    if (_ptrCount > 0) {
+      return;
+    }
+    _pinchStartMatrix = null;
+    final startSel = _gestureStartSel;
+    if (!_gestureVoided && startSel != null) {
+      ctx.onSel(startSel);
+    }
+    _clearDragState();
+  }
+
+  /// 捏合结束（2→1 指）：剩余手指转为平移画面继续跟手，不触发框回溯
+  void _enterPanViewAfterPinch() {
+    _pinchStartMatrix = null;
+    _panViewMode = true;
+    _gestureVoided = false;
+    _panStartTime = DateTime.now();
+    _gestureStartSel = null;
+    _panStartPos = null;
+    _lastPanPos = null;
+  }
+
+  /// 桌面触控板手势开始（独立事件流，无 pointer id）：作废进行中的单指
+  /// 手势防误框，触控板捏合缩放暂不支持
+  void _onStagePanZoomStart(void Function(Rect) onSel) {
+    final startSel = _gestureStartSel;
+    if (startSel != null) {
+      onSel(startSel);
+    }
+    _clearDragState();
+  }
+
+  /// 双指捏合：由起始矩阵+当前 span/center 非增量式推算新矩阵——锚点=
+  /// 起始两指中心（该处内容跟手移到当前中心），span 比例定缩放倍率，
+  /// scale 与平移均 clamp（同滚轮平移边界），避免逐帧增量累积误差
+  void _applyPinch(Matrix4 base, double span, Offset center, BoxConstraints cons) {
+    final s0 = base.storage[0];
+    if (s0 <= 0 || _pinchStartSpan <= 1) {
+      return;
+    }
+    final s1 = (s0 * span / _pinchStartSpan).clamp(1.0, 8.0);
+    final c0 = _pinchStartCenter;
+    final t0 = base.getTranslation();
+    // 屏幕点 p = t + s*x；要求捏合起始锚点 c0 的内容出现在 center：
+    // t1 = center - (c0 - t0) * s1/s0
+    var dx = center.dx - (c0.dx - t0.x) * (s1 / s0);
+    var dy = center.dy - (c0.dy - t0.y) * (s1 / s0);
+    final dsz = _displaySize();
+    final minX = math.min(0.0, cons.maxWidth - dsz.width * s1);
+    final minY = math.min(0.0, cons.maxHeight - dsz.height * s1);
+    dx = dx.clamp(minX, 0.0).toDouble();
+    dy = dy.clamp(minY, 0.0).toDouble();
+    // 直设矩阵元（translate/scale 已废弃）：纯平移 + 等比缩放，无旋转
+    final m = Matrix4.identity();
+    m.setEntry(0, 0, s1);
+    m.setEntry(1, 1, s1);
+    m.setEntry(0, 3, dx);
+    m.setEntry(1, 3, dy);
+    _viewerCtrl.value = m;
+  }
+
+  /// viewport 左上角的全局坐标：PointerEvent.position 是全局坐标（含
+  /// AppBar 偏移），矩阵 translation 是 viewport 局部坐标，换算差此原点
+  Offset _viewerOrigin() {
+    final obj = _viewerKey.currentContext?.findRenderObject();
+    if (obj is RenderBox) {
+      return obj.localToGlobal(Offset.zero);
+    }
+    return Offset.zero;
+  }
+
+  /// 抬手末速（逻辑px/s）：最近两帧 move 位移/时间差——自实现手势没有
+  /// DragEndDetails.velocity，末速只作误触判定的辅助条件，近似即可
+  double _releaseVelocity() {
+    final a = _prevMoveScreen;
+    final b = _lastMoveScreen;
+    final ta = _prevMoveTime;
+    final tb = _lastMoveTime;
+    if (a == null || b == null || ta == null || tb == null) {
+      return 0;
+    }
+    final dt = tb.difference(ta).inMicroseconds;
+    if (dt <= 0) {
+      return 0;
+    }
+    return (b - a).distance / (dt / 1e6);
+  }
+
+  /// 清空单指手势中间态（不动 _activePtrs/_ptrCount/_pinch*）
+  void _clearDragState() {
+    _drawFrom = null;
+    _gestureStartSel = null;
+    _panStartPos = null;
+    _lastPanPos = null;
+    _cornerDragIdx = -1;
+    _selHandleDrag = -1;
+    _panViewMode = false;
+    _selMoveFrom = null;
+    _selMoveBase = null;
+    _gestureVoided = false;
+    _panStartTime = null;
+    _prevMoveScreen = null;
+    _prevMoveTime = null;
+    _lastMoveScreen = null;
+    _lastMoveTime = null;
   }
 
   /// 单指拖动平移画面（框存在时的默认拖动行为——放大观察）。与滚轮
@@ -3190,6 +3356,34 @@ class _RowFeat {
   ///< 块终点最大 x
   const _RowFeat(this.nBlocks, this.maxLen, this.nonWhite, this.colors,
       this.minX, this.maxX);
+}
+
+/// 图区手势上下文：build 闭包里的回调/选区/角点/约束打包，
+/// 供 Listener 的四个指针处理方法共用（避免长参数表）
+class _StageCtx {
+  final void Function(Rect) onSel;
+
+  ///< 选区变更回调（图坐标）
+  final Rect? sel;
+
+  ///< 当前选区（角点校正模式下为 null）
+  final List<Offset>? cornerPts;
+
+  ///< 角点校正模式的四角点（null=非角点模式）
+  final void Function(int, Offset)? onCornerDrag;
+
+  ///< 角点拖拽回调（索引, 图坐标）
+  final BoxConstraints cons;
+
+  ///< 图区 viewport 约束（平移/捏合 clamp 用）
+
+  const _StageCtx(
+    this.onSel,
+    this.sel,
+    this.cornerPts,
+    this.onCornerDrag,
+    this.cons,
+  );
 }
 
 class _SelPainter extends CustomPainter {
