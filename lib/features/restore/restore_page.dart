@@ -284,6 +284,26 @@ class _RestorePageState extends State<RestorePage> {
 
   ///< pan 过程最新位置（onPanEnd 的 DragEndDetails 无位置，靠 update 持续记）
   Offset? _lastPanPos;
+
+  int _ptrCount = 0;
+
+  ///< 当前按下的指针数（Listener 原始计数）：>=2 说明用户意图是双指
+  ///捏合缩放/触控板手势，正在进行的单指框选必须作废
+  bool _gestureVoided = false;
+
+  ///< true=本次手势已被第二指作废（已恢复快照），pan update/end 不再
+  ///生效——覆盖「慢双指」：第一指先超 slop 让 pan 赢了竞技场，第二指
+  ///再落下时 scale 已抢不回手势，第一指的 pan 会继续画框，靠此标志拦截
+
+  static const _flingVelocity = 900.0;
+
+  ///< 快速轻扫速度分界（逻辑px/s）：触屏"轻点"常带 200+物理px 位移
+  ///（超 60 逻辑分界被判拖画），但速度快——高速+位移不太大也判误触
+  static const _flingRecoverDist = 130.0;
+
+  ///< 轻扫回溯的位移上限（逻辑px）：快速且位移小于此值判误触回溯，
+  ///超过则视为有意拖画（慢慢拖出精确小框的速度远低于此阈值）
+
   final TransformationController _viewerCtrl = TransformationController();
 
   ///< 图区变换（滚轮纵向平移浏览；双指捏合缩放仍由 InteractiveViewer 手势承担）
@@ -1986,9 +2006,29 @@ class _RestorePageState extends State<RestorePage> {
             child: Listener(
               // 滚轮=纵向平移浏览（图例清单展开会挡住图片下部，靠滚轮看回）
               onPointerSignal: (s) => _onImgPointerSignal(s, cons),
+              // 多指防护（Listener 在外层先于 GestureDetector 收到原始事件）：
+              // 第二指落下瞬间作废进行中的单指框选并恢复快照——覆盖慢双指
+              //（第一指已让 pan 赢得竞技场，scale 抢不回，只能在这里拦）
+              onPointerDown: (_) => _onStagePtrDown(onSel),
+              onPointerUp: (_) => _onStagePtrUp(),
+              onPointerCancel: (_) => _onStagePtrUp(),
+              // 桌面触控板捏合/双指滚动走独立的 PointerPanZoom 事件流
+              onPointerPanZoomStart: (_) => _onStagePtrDown(onSel),
+              onPointerPanZoomEnd: (_) => _onStagePtrUp(),
               child: GestureDetector(
+                // 双击复位视角：滚轮平移把图（连同选区框）滚出视口后，
+                // 框没被删只是看不见——双击立即回到全图视角找回
+                onDoubleTap: () {
+                  _viewerCtrl.value = Matrix4.identity();
+                },
                 onPanDown: (d) {
+                  // 第二指及以后的按下：捏合意图，框选流程已在
+                  // _onStagePtrDown 作废，这里不重置 voided、不快照
+                  if (_ptrCount > 1) {
+                    return;
+                  }
                   // 每次按下先清上一轮拖画残留（上轮被双指取消时不会走到 End）
+                  _gestureVoided = false;
                   _drawFrom = null;
                   _gestureStartSel = null;
                   _panStartPos = null;
@@ -2026,6 +2066,10 @@ class _RestorePageState extends State<RestorePage> {
                   }
                 },
                 onPanUpdate: (d) {
+                  // 已被第二指作废（快照已恢复）：后续 update 全部忽略
+                  if (_gestureVoided) {
+                    return;
+                  }
                   _lastPanPos = d.localPosition;
                   if (_cornerDragIdx >= 0) {
                     onCornerDrag?.call(_cornerDragIdx, d.localPosition);
@@ -2059,17 +2103,21 @@ class _RestorePageState extends State<RestorePage> {
                     onSel(Rect.fromPoints(_drawFrom!, d.localPosition));
                   }
                 },
-                onPanEnd: (_) {
-                  // 点击回溯：pan 首个 update 必然已位移超 touch slop(18px)
-                  //（手势被接受的代价），逐帧阈值拦不住点击抖动。这里按
-                  // 总位移事后判定：<_tapRecoverDist 视为点击，恢复手势前
-                  //选区——点击（含触屏抖动）不再画小框/挪动选区；真拖画
-                  //远超 60px，结果保留
+                onPanEnd: (details) {
                   final startSel = _gestureStartSel;
                   final start = _panStartPos;
-                  if (startSel != null && start != null) {
+                  // 已被第二指作废：快照已恢复过，不再重复处理
+                  final voided = _gestureVoided;
+                  if (!voided && startSel != null && start != null) {
                     final end = _lastPanPos ?? start;
-                    if ((end - start).distance < _tapRecoverDist) {
+                    final dist = (end - start).distance;
+                    // 点击回溯：pan 首个 update 必带超 slop 位移，逐帧阈值
+                    //拦不住，只能抬手按总位移判定；轻扫回溯：触屏"轻点"常
+                    //带 200+物理px 位移（超位移分界），但速度快——高速且
+                    //位移 <_flingRecoverDist 也判误触恢复
+                    final v = details.velocity.pixelsPerSecond.distance;
+                    if (dist < _tapRecoverDist ||
+                        (v > _flingVelocity && dist < _flingRecoverDist)) {
                       onSel(startSel);
                     }
                   }
@@ -2081,6 +2129,7 @@ class _RestorePageState extends State<RestorePage> {
                   _selHandleDrag = -1;
                   _selMoveFrom = null;
                   _selMoveBase = null;
+                  _gestureVoided = false;
                 },
                 // 手势异常中止（双指缩放时 pan 在竞技场输给 scale、系统夺走
                 // 指针等）：无条件恢复按下前快照。cancel 意味着本次手势作废
@@ -2088,7 +2137,7 @@ class _RestorePageState extends State<RestorePage> {
                 // 是缩放不是画框），恢复快照才正确，不保留"进度"
                 onPanCancel: () {
                   final startSel = _gestureStartSel;
-                  if (startSel != null) {
+                  if (!_gestureVoided && startSel != null) {
                     onSel(startSel);
                   }
                   _drawFrom = null;
@@ -2099,6 +2148,7 @@ class _RestorePageState extends State<RestorePage> {
                   _selHandleDrag = -1;
                   _selMoveFrom = null;
                   _selMoveBase = null;
+                  _gestureVoided = false;
                 },
                 child: Stack(
                   children: [
@@ -2152,6 +2202,25 @@ class _RestorePageState extends State<RestorePage> {
           ),
       ],
     );
+  }
+
+  /// 图区第二指落下：作废进行中的单指框选（含慢双指——第一指已让 pan
+  /// 赢得竞技场、scale 抢不回的情况），立即恢复按下前选区快照
+  void _onStagePtrDown(void Function(Rect) onSel) {
+    _ptrCount++;
+    if (_ptrCount == 2) {
+      _gestureVoided = true;
+      final startSel = _gestureStartSel;
+      if (startSel != null) {
+        onSel(startSel);
+      }
+    }
+  }
+
+  /// 图区指指针抬起：计数递减（voided 不在此清——第一指的 pan
+  /// end/cancel 可能尚未走完，清早了会让后续 update 复活画框）
+  void _onStagePtrUp() {
+    _ptrCount = math.max(0, _ptrCount - 1);
   }
 
   /// 滚轮纵向平移浏览图区：滚轮缩放已被 scaleFactor:infinity 禁掉
