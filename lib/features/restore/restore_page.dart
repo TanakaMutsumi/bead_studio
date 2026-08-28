@@ -259,13 +259,11 @@ class _RestorePageState extends State<RestorePage> {
   _OcrDebugInfo? _ocrDebug;
   int _selHandleDrag = -1;
 
-  ///< 选区把手拖拽中（-1=画新框，0-7=把手索引）
-  Offset? _selMoveFrom;
+  ///< 选区把手拖拽中（-1=非把手，0-7=把手索引）
+  bool _panViewMode = false;
 
-  ///< 整框拖动起点（null=非移框）
-  Rect? _selMoveBase;
-
-  ///< 整框拖动开始时的选区
+  ///< 拖动=平移画面模式（框存在时框内/空白拖动走此路）：框一旦存在只能
+  ///靠八把手或自动框选改变，拖动一律平移画面供放大观察（2026-08-28 拍板）
   Offset? _drawFrom;
 
   ///< 画新框的按下起点（onPanDown 只记录不落框，首帧 onPanUpdate 才画——
@@ -2055,21 +2053,19 @@ class _RestorePageState extends State<RestorePage> {
                     }
                     return; // 非角区拖动不画框：防误触清掉四角
                   }
-                  // 落点在把手上 -> 拖把手微调选区；选区内部 -> 整框平移；
-                  // 空白 -> 画新框。三种都可能被"点击抖动超 slop"触发，
-                  // 一律快照原选区供抬手回溯（把手命中半径 10 逻辑px 内的
-                  // 点击抖动同样会把框边拉走，实测 5px 位移即破坏选区）
+                  // 落点在把手上 -> 拖把手微调选区（改框唯二途径之一）；
+                  // 框存在时的框内/空白拖动 -> 平移画面（放大观察），
+                  // 不再建新框/挪框；仅无框时保留拖画建框兜底。
+                  // 把手命中半径 10 逻辑px 内的点击抖动同样会把框边拉走
+                  //（实测 5px 位移即破坏选区），仍快照原选区供抬手回溯
                   _gestureStartSel = sel;
                   _panStartPos = d.localPosition;
                   _selHandleDrag = (sel != null && sel.width > 2)
                       ? _hitSelHandle(sel, d.localPosition)
                       : -1;
                   if (_selHandleDrag < 0) {
-                    if (sel != null &&
-                        sel.width > 2 &&
-                        sel.contains(d.localPosition)) {
-                      _selMoveFrom = d.localPosition;
-                      _selMoveBase = sel;
+                    if (sel != null && sel.width > 2) {
+                      _panViewMode = true;
                     } else {
                       _drawFrom = d.localPosition;
                     }
@@ -2088,19 +2084,10 @@ class _RestorePageState extends State<RestorePage> {
                   if (cornerPts != null) {
                     return;
                   }
-                  if (_selMoveFrom != null && _selMoveBase != null) {
-                    // 整框平移：按起点位移移动选区，clamp 图内防拖丢
-                    final delta = d.localPosition - _selMoveFrom!;
-                    final base = _selMoveBase!;
-                    final left = (base.left + delta.dx).clamp(
-                      0.0,
-                      ds.width - base.width,
-                    );
-                    final top = (base.top + delta.dy).clamp(
-                      0.0,
-                      ds.height - base.height,
-                    );
-                    onSel(Rect.fromLTWH(left, top, base.width, base.height));
+                  // 平移画面模式：框存在时的默认拖动（delta 为屏幕坐标
+                  //增量，直接累加矩阵平移分量，跟手）
+                  if (_panViewMode) {
+                    _panViewBy(d.delta, cons);
                     return;
                   }
                   if (_selHandleDrag >= 0 && sel != null) {
@@ -2145,8 +2132,7 @@ class _RestorePageState extends State<RestorePage> {
                   _lastPanPos = null;
                   _cornerDragIdx = -1;
                   _selHandleDrag = -1;
-                  _selMoveFrom = null;
-                  _selMoveBase = null;
+                  _panViewMode = false;
                   _gestureVoided = false;
                   _panStartTime = null;
                 },
@@ -2165,8 +2151,7 @@ class _RestorePageState extends State<RestorePage> {
                   _lastPanPos = null;
                   _cornerDragIdx = -1;
                   _selHandleDrag = -1;
-                  _selMoveFrom = null;
-                  _selMoveBase = null;
+                  _panViewMode = false;
                   _gestureVoided = false;
                   _panStartTime = null;
                 },
@@ -2241,6 +2226,28 @@ class _RestorePageState extends State<RestorePage> {
   /// end/cancel 可能尚未走完，清早了会让后续 update 复活画框）
   void _onStagePtrUp() {
     _ptrCount = math.max(0, _ptrCount - 1);
+  }
+
+  /// 单指拖动平移画面（框存在时的默认拖动行为——放大观察）。与滚轮
+  /// 平移（_onImgPointerSignal）同 clamp：[viewport-图, 0]，滚到边界即停；
+  /// delta 为屏幕坐标增量直接累加矩阵平移分量，内容跟手
+  void _panViewBy(Offset delta, BoxConstraints cons) {
+    final cur = _viewerCtrl.value;
+    final scale = cur.storage[0];
+    final ds = _displaySize();
+    final minX = math.min(0.0, cons.maxWidth - ds.width * scale);
+    final minY = math.min(0.0, cons.maxHeight - ds.height * scale);
+    final dx =
+        (cur.getTranslation().x + delta.dx).clamp(minX, 0.0).toDouble();
+    final dy =
+        (cur.getTranslation().y + delta.dy).clamp(minY, 0.0).toDouble();
+    // 直设矩阵元（translate/scale 已废弃）：纯平移 + 等比缩放，无旋转
+    final m = Matrix4.identity();
+    m.setEntry(0, 0, scale);
+    m.setEntry(1, 1, scale);
+    m.setEntry(0, 3, dx);
+    m.setEntry(1, 3, dy);
+    _viewerCtrl.value = m;
   }
 
   /// 滚轮纵向平移浏览图区：滚轮缩放已被 scaleFactor:infinity 禁掉
