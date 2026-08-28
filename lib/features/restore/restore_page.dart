@@ -285,6 +285,11 @@ class _RestorePageState extends State<RestorePage> {
   ///< pan 过程最新位置（onPanEnd 的 DragEndDetails 无位置，靠 update 持续记）
   Offset? _lastPanPos;
 
+  DateTime? _panStartTime;
+
+  ///< 本次 pan 按下时刻（onPanDown 记）：手势总时长参与误触判定——
+  ///滑动点击 300ms 内完成，有意拖画对准位置必然 400ms+
+
   int _ptrCount = 0;
 
   ///< 当前按下的指针数（Listener 原始计数）：>=2 说明用户意图是双指
@@ -295,14 +300,18 @@ class _RestorePageState extends State<RestorePage> {
   ///生效——覆盖「慢双指」：第一指先超 slop 让 pan 赢了竞技场，第二指
   ///再落下时 scale 已抢不回手势，第一指的 pan 会继续画框，靠此标志拦截
 
-  static const _flingVelocity = 900.0;
+  static const _flingVelocity = 500.0;
 
-  ///< 快速轻扫速度分界（逻辑px/s）：触屏"轻点"常带 200+物理px 位移
-  ///（超 60 逻辑分界被判拖画），但速度快——高速+位移不太大也判误触
-  static const _flingRecoverDist = 130.0;
+  ///< 快速轻扫速度分界（逻辑px/s）：与时长条件组合判定误触（见
+  ///_flingMaxElapsed），单独速度不回溯——中慢速拖画速度可能波动超阈值
+  static const _flingRecoverDist = 220.0;
 
-  ///< 轻扫回溯的位移上限（逻辑px）：快速且位移小于此值判误触回溯，
-  ///超过则视为有意拖画（慢慢拖出精确小框的速度远低于此阈值）
+  ///< 轻扫回溯的位移上限（逻辑px）：位移小于此值才可能判误触
+  static const _flingMaxElapsed = 400;
+
+  ///< 误触手势的时长上限（毫秒）：真实"滑动点击"整个手势 300ms 内
+  ///完成（快速划过抬手）；有意拖画要对准框的位置，按住拖 400ms+。
+  ///时长+位移（<260ms 兜底速度缺失）或 时长+速度+位移 双条件回溯
 
   final TransformationController _viewerCtrl = TransformationController();
 
@@ -2033,6 +2042,7 @@ class _RestorePageState extends State<RestorePage> {
                   _gestureStartSel = null;
                   _panStartPos = null;
                   _lastPanPos = null;
+                  _panStartTime = DateTime.now();
                   // 四角把手优先：命中则进入拖角，不走框选
                   if (cornerPts != null) {
                     _cornerDragIdx = -1;
@@ -2112,12 +2122,20 @@ class _RestorePageState extends State<RestorePage> {
                     final end = _lastPanPos ?? start;
                     final dist = (end - start).distance;
                     // 点击回溯：pan 首个 update 必带超 slop 位移，逐帧阈值
-                    //拦不住，只能抬手按总位移判定；轻扫回溯：触屏"轻点"常
-                    //带 200+物理px 位移（超位移分界），但速度快——高速且
-                    //位移 <_flingRecoverDist 也判误触恢复
+                    //拦不住，只能抬手按总位移判定。滑动点击回溯：触屏
+                    //"轻点"常带 300~600物理px 滑动（远超位移分界）但整个
+                    //手势 300ms 内完成；有意拖画要对准框位，按住拖 400ms+
+                    //——按 时长(+速度)+位移 三重判定，中慢速真拖画不误伤
                     final v = details.velocity.pixelsPerSecond.distance;
-                    if (dist < _tapRecoverDist ||
-                        (v > _flingVelocity && dist < _flingRecoverDist)) {
+                    final elapsed = _panStartTime == null
+                        ? 9999
+                        : DateTime.now()
+                            .difference(_panStartTime!)
+                            .inMilliseconds;
+                    final quickSlide = dist < _flingRecoverDist &&
+                        elapsed < _flingMaxElapsed &&
+                        (elapsed < 260 || v > _flingVelocity);
+                    if (dist < _tapRecoverDist || quickSlide) {
                       onSel(startSel);
                     }
                   }
@@ -2130,6 +2148,7 @@ class _RestorePageState extends State<RestorePage> {
                   _selMoveFrom = null;
                   _selMoveBase = null;
                   _gestureVoided = false;
+                  _panStartTime = null;
                 },
                 // 手势异常中止（双指缩放时 pan 在竞技场输给 scale、系统夺走
                 // 指针等）：无条件恢复按下前快照。cancel 意味着本次手势作废
@@ -2149,6 +2168,7 @@ class _RestorePageState extends State<RestorePage> {
                   _selMoveFrom = null;
                   _selMoveBase = null;
                   _gestureVoided = false;
+                  _panStartTime = null;
                 },
                 child: Stack(
                   children: [
@@ -2325,6 +2345,17 @@ class _RestorePageState extends State<RestorePage> {
                 const Text(
                   "① 只框出图纸底部的图例区（色号 + 颗数对照表）",
                   style: TextStyle(fontSize: 12, color: Colors.black54),
+                ),
+                const SizedBox(height: 8),
+                // 显式自动框选入口：载入时已自动尝试过，选区被改动或
+                // 想重选时可随时点这里重跑（AppBar 魔法棒同功能）
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _autoSelectLegend,
+                    icon: const Icon(Icons.auto_awesome, size: 18),
+                    label: const Text("自动框选图例区"),
+                  ),
                 ),
                 const SizedBox(height: 8),
                 Row(
