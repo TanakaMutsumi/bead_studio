@@ -2262,8 +2262,11 @@ class _RestorePageState extends State<RestorePage> {
       final end = _lastPanPos ?? start;
       final dist = (end - start).distance;
       // 误触回溯三重判定：真实"滑动点击"整个手势 300ms 内完成（快速划
-      // 过抬手）；有意拖画/挪框/拖把手要对准位置，按住 400ms+。时长+
-      //（位移 或 速度）组合判定，中慢速真拖画不误伤
+      // 过抬手）；有意拖画/拖把手要对准位置，按住 400ms+。时长+
+      //（位移 或 速度）组合判定，中慢速真拖画不误伤。
+      // 挪框不回溯（所见即所得）：挪框有实时视觉反馈、误挪一眼可见可
+      // 再挪回来；回溯只拦画框（覆盖旧框）与把手（拉变形）两类破坏性
+      // 误触——否则 <60 逻辑px 的微调挪框必被弹回，等于不可用
       final v = _releaseVelocity();
       final elapsed = _panStartTime == null
           ? 9999
@@ -2271,7 +2274,7 @@ class _RestorePageState extends State<RestorePage> {
       final quickSlide = dist < _flingRecoverDist &&
           elapsed < _flingMaxElapsed &&
           (elapsed < 260 || v > _flingVelocity);
-      if (dist < _tapRecoverDist || quickSlide) {
+      if (_selMoveFrom == null && (dist < _tapRecoverDist || quickSlide)) {
         ctx.onSel(startSel);
       }
     }
