@@ -257,12 +257,18 @@ class _RestorePageState extends State<RestorePage> {
   ///< 图例确认面板展开（收起后图片区变大，便于对照原图校对）
   // 【临时调试】最近一次图例 OCR 的调试信息（放大图/元素/配对），正式版随调试视图一起移除
   _OcrDebugInfo? _ocrDebug;
-  ///< 选区把手拖拽中（-1=非把手，0-7=把手索引）
   int _selHandleDrag = -1;
 
-  ///< 拖动=平移画面模式（框已创建后框内/框外拖动一律走此路，放大观察用）
+  ///< 选区把手拖拽中（-1=非把手，0-7=把手索引）
   bool _panViewMode = false;
 
+  ///< 拖动=平移画面模式（框外空白拖动走此路，放大观察用）
+  Offset? _selMoveFrom;
+
+  ///< 框内挪框起点（图坐标，null=非挪框）
+  Rect? _selMoveBase;
+
+  ///< 框内挪框开始时的选区
   Offset? _drawFrom;
 
   ///< 画新框的按下起点（onPanDown 只记录不落框，首帧 onPanUpdate 才画——
@@ -272,7 +278,7 @@ class _RestorePageState extends State<RestorePage> {
   ///拦不住真实点击抖动，只能事后回溯（onPanEnd 判定）
   Rect? _gestureStartSel;
 
-  ///< 点击/拖画的分界总位移（逻辑像素）：真实画框拖把手远超此值，
+  ///< 点击/拖画的分界总位移（逻辑像素）：真实画框挪框远超此值，
   ///触屏/鼠标点击抖动（含 slop 起步位移）达不到
   static const _tapRecoverDist = 60.0;
 
@@ -2000,10 +2006,9 @@ class _RestorePageState extends State<RestorePage> {
 
   /// 图片 + 统一框选手势 + 可选网格覆盖（图例/对齐阶段共用）
   ///
-  /// 单指：无框拖动 = 画新选区；框已创建后框内/框外拖动 = 平移画面
-  /// （框比可视区大时框内若还挪框，放大观察将无处平移，挪位置改由
-  /// 把手/自动框选承担）；四角/四边把手 = 微调大小。双指：捏合缩放 +
-  /// 拖动平移原图（InteractiveViewer 承担，查看大图不需要独立的查看模式）。
+  /// 单指：空白处拖动 = 画新选区；选区内部拖动 = 整框平移（框完想挪位置
+  /// 不必重画）；四角/四边把手 = 微调大小。双指：捏合缩放 + 拖动平移原图
+  /// （InteractiveViewer 承担，查看大图不需要独立的查看模式）。
   /// [cornerPts] 非空时四角把手接管手势（拖角微调，非角区拖动不画框防误触清角）。
   Widget _imageStage({
     required Rect? sel,
@@ -2118,7 +2123,7 @@ class _RestorePageState extends State<RestorePage> {
     );
   }
 
-  /// 图区指针按下：单指按拖动模式分派（把手/平移画面/画框兜底/
+  /// 图区指针按下：单指按拖动模式分派（把手/挪框/平移画面/画框兜底/
   /// 角点校正），第二指落下转捏合缩放（作废单指手势+恢复快照+记起始）
   void _onStagePointerDown(PointerDownEvent e, _StageCtx ctx) {
     _activePtrs[e.pointer] = e.position;
@@ -2161,9 +2166,8 @@ class _RestorePageState extends State<RestorePage> {
       }
       return; // 非角区拖动不画框：防误触清掉四角
     }
-    // 把手 -> 拖把手调框（唯一改框手段）；框已创建 -> 框内/框外一律平移
-    // 画面（放大观察，不建新框：框比可视区还大时框内若还挪框，平移视野
-    // 将无处可拖）；无框 -> 拖画建框兜底。把手命中半径 10 逻辑px 内的点击
+    // 把手 -> 拖把手调框；框内 -> 挪框；框外空白 -> 平移画面（放大观察，
+    // 不建新框）；无框 -> 拖画建框兜底。把手命中半径 10 逻辑px 内的点击
     // 抖动同样会把框边拉走（实测 5px 即破坏选区），快照供抬手回溯
     final sel = ctx.sel;
     _gestureStartSel = sel;
@@ -2172,14 +2176,19 @@ class _RestorePageState extends State<RestorePage> {
         : -1;
     if (_selHandleDrag < 0) {
       if (sel != null && sel.width > 2) {
-        _panViewMode = true;
+        if (sel.contains(e.localPosition)) {
+          _selMoveFrom = e.localPosition;
+          _selMoveBase = sel;
+        } else {
+          _panViewMode = true;
+        }
       } else {
         _drawFrom = e.localPosition;
       }
     }
   }
 
-  /// 图区指针移动：双指捏合改矩阵；单指按模式处理（角点/平移画面/
+  /// 图区指针移动：双指捏合改矩阵；单指按模式处理（角点/平移画面/挪框/
   /// 把手/画框）。localPosition 经 InteractiveViewer 逆变换即图坐标
   void _onStagePointerMove(PointerMoveEvent e, _StageCtx ctx) {
     if (_activePtrs.containsKey(e.pointer)) {
@@ -2215,6 +2224,16 @@ class _RestorePageState extends State<RestorePage> {
       return;
     }
     final sel = ctx.sel;
+    if (_selMoveFrom != null && _selMoveBase != null) {
+      // 框内挪框：按起点位移移动选区，clamp 图内防拖丢
+      final delta = e.localPosition - _selMoveFrom!;
+      final base = _selMoveBase!;
+      final dsz = _displaySize();
+      final left = (base.left + delta.dx).clamp(0.0, dsz.width - base.width);
+      final top = (base.top + delta.dy).clamp(0.0, dsz.height - base.height);
+      ctx.onSel(Rect.fromLTWH(left, top, base.width, base.height));
+      return;
+    }
     if (_selHandleDrag >= 0 && sel != null) {
       ctx.onSel(_applySelHandle(sel, _selHandleDrag, e.localPosition));
       return;
@@ -2243,7 +2262,7 @@ class _RestorePageState extends State<RestorePage> {
       final end = _lastPanPos ?? start;
       final dist = (end - start).distance;
       // 误触回溯三重判定：真实"滑动点击"整个手势 300ms 内完成（快速划
-      // 过抬手）；有意拖画/拖把手要对准位置，按住 400ms+。时长+
+      // 过抬手）；有意拖画/挪框/拖把手要对准位置，按住 400ms+。时长+
       //（位移 或 速度）组合判定，中慢速真拖画不误伤
       final v = _releaseVelocity();
       final elapsed = _panStartTime == null
@@ -2365,6 +2384,8 @@ class _RestorePageState extends State<RestorePage> {
     _cornerDragIdx = -1;
     _selHandleDrag = -1;
     _panViewMode = false;
+    _selMoveFrom = null;
+    _selMoveBase = null;
     _gestureVoided = false;
     _panStartTime = null;
     _prevMoveScreen = null;
