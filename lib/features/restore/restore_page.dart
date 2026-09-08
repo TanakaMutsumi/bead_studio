@@ -21,8 +21,8 @@ import '../../core/quantizer.dart';
 import '../editor/editor_page.dart';
 import '../editor/grid_painter.dart';
 
-/// 页面阶段：选图 -> 框图例 -> 网格对齐 -> 识别复核
-enum _Stage { pick, legend, align, review }
+/// 页面阶段：选图 -> 框图例 -> 九宫格对齐 -> 框选主体 -> 识别复核
+enum _Stage { pick, legend, align, frame, review }
 
 /// 空白判定阈值：格色与候选色的 Lab 距离平方超过此值视为空白格
 const double _blankDistSq = 900.0; // ΔE ≈ 30
@@ -41,6 +41,24 @@ Offset _bilinearQuad(List<Offset> q, double u, double v) {
     a * q[0].dx + b * q[1].dx + c * q[2].dx + d * q[3].dx,
     a * q[0].dy + b * q[1].dy + c * q[2].dy + d * q[3].dy,
   );
+}
+
+/// 灰度构建 + 主体格距自相关检测（顶层函数供 compute isolate 调用）
+///
+/// 主体图用自相关版 detectGridAutocorr：图纸格内豆圆弧产生 8-14px 次峰，
+/// 峰间距中位数法（detectGrid）在这类图上会锁到次结构或离散检验失败
+/// （2026-09-08 pic5 实测 X 方向 in-band 0.49 返回 null，兜底格距差真值
+/// 2.3 倍）；图例路径仍走 detectGrid（色块行结构简单，中位数法已验证
+/// 稳定）。百万像素级逐像素扫描同步执行会冻结 UI 秒级，移入 isolate。
+GridDetectResult? detectGridInIsolate(img.Image image) {
+  final gray = <int>[];
+  for (var y = 0; y < image.height; y++) {
+    for (var x = 0; x < image.width; x++) {
+      final p = image.getPixel(x, y);
+      gray.add((p.r * 0.299 + p.g * 0.587 + p.b * 0.114).round());
+    }
+  }
+  return detectGridAutocorr(gray, image.width, image.height);
 }
 
 /// OCR 常见字符混淆表（色号匹配用：印刷小字 0/O、1/I/L、2/Z、5/S、6/G、8/B、4/A 互混）
@@ -210,9 +228,13 @@ class _LegendEntry {
 /// 图纸还原页：复刻原 App 五步链路
 ///
 /// 1. 只框出图纸的图例区域 -> 识别图纸用色清单（可勾选/换色号/填数量）
-/// 2. 核对图例识别结果
-/// 3. 框选主体 + 九宫格对齐（自动检测 + 格子大小/微移可视化调整）
-/// 4. 检查网格覆盖是否对齐
+/// 2. 核对图例识别结果（附属面板，收起可露出原图对照）
+/// 3. 九宫格对齐（独立步骤，只做标定）：3×3 标定框拖到图上任意一组格子
+///    上，调格子大小（± 精调/拖右下角缩放/微移）使 9 格与图纸格子完全
+///    重叠 -> 定出每格尺寸
+/// 4. 框选主体（独立步骤，只做框选）-> 开始识别：格线按九宫格相位铺进
+///    选区逐小格采样（行列数 = 选区尺寸/格距 自动算，框住主体即天然
+///    排除图例区）
 /// 5. 识别后按色号分组复核，错误格子手工归类 + 图例数量对账
 class RestorePage extends StatefulWidget {
   const RestorePage({super.key});
@@ -353,19 +375,37 @@ class _RestorePageState extends State<RestorePage> {
   ///< 解码/重编码中（图片区遮罩，避免"白屏不知发生什么"）
 
   // ========== 主体对齐（步骤 3/4） ==========
-  Rect? _selDisplay;
-
-  ///< 主体选区（显示坐标）
   final _colsCtrl = TextEditingController();
   final _rowsCtrl = TextEditingController();
   var _detecting = false;
   var _recognizing = false;
   double _pitchX = 0, _pitchY = 0;
 
-  ///< 网格格距（图片坐标）
-  double _offX = 0, _offY = 0;
+  ///< 网格格距（图片坐标，九宫格标定出的每格尺寸）
+  Rect? _selDisplay;
 
-  ///< 第一根网格线相对选区左上偏移（图片坐标）
+  ///< 主体选区（显示坐标，九宫格定格距后框选，行列数=选区/格距自动算）
+  Offset? _miniAnchor;
+
+  ///< 九宫格标定框左上角（显示坐标，即第一根格线交点）
+  Offset? _miniDragFrom;
+
+  ///< 九宫格拖动起点（图坐标，null=非拖动中）
+  Offset? _miniDragBase;
+
+  ///< 九宫格拖动开始时的锚点
+  bool _miniScaleDrag = false;
+
+  ///< 九宫格右下角缩放把手拖拽中（拖动=调格距，锚点=左上角不动）
+  double _miniScaleBaseSpan = 0;
+
+  ///< 缩放拖动起始 span（按下时把手到锚点 max(|dx|,|dy|)）
+  double _miniScaleBasePx = 0;
+
+  ///< 缩放拖动起始格距 X（f 比例缩放基准，保住非方形 pitchY 不被抹平）
+  double _miniScaleBasePy = 0;
+
+  ///< 缩放拖动起始格距 Y
   bool _blankEnable = true;
 
   ///< 偏色过大识别为空白格
@@ -446,6 +486,7 @@ class _RestorePageState extends State<RestorePage> {
         _displayBytes = display;
         _image = decoded;
         _legendSel = null;
+        _miniAnchor = null;
         _selDisplay = null;
         _legend = [];
         _legendByOcr = false;
@@ -673,25 +714,37 @@ class _RestorePageState extends State<RestorePage> {
     return (0, 0, image.width.toDouble(), image.height.toDouble());
   }
 
-  /// 格子中心 3×3 均值采样（避开网格线/边缘，抗高光干扰）
+  /// 格子中心 5×5 亮度中值采样（避开网格线，抗印刷色号文字污染）
+  ///
+  /// 图纸每格中心印着色号/数字（白亮小字）+ 豆圆右上高光，均值采样会被
+  /// 少数派亮像素抬高（黑格底色 0-9 被抬到 13-45 的中灰带，2026-09-08
+  /// pic5 实测 H7 343 颗崩到 5）。25 点按亮度（r+g+b）排序取中值像素：
+  /// 白字与高光被排到亮侧丢弃，中值稳定落回印刷底色（离线同款验证：
+  /// 亮度 0-9 纯黑格 348 颗精确对上基线 H7 343）。
   (int, int, int) _sampleCenter(double cx, double cy, double cw, double ch) {
     final image = _image!;
-    var sr = 0, sg = 0, sb = 0, n = 0;
-    for (var dy = -1; dy <= 1; dy++) {
-      for (var dx = -1; dx <= 1; dx++) {
+    final pts = <(int, int, int)>[];
+    for (var dy = -2; dy <= 2; dy++) {
+      for (var dx = -2; dx <= 2; dx++) {
         final px = (cx + dx * (cw / 6)).round();
         final py = (cy + dy * (ch / 6)).round();
         if (px < 0 || px >= image.width || py < 0 || py >= image.height) {
           continue;
         }
         final p = image.getPixel(px, py);
-        sr += p.r.toInt();
-        sg += p.g.toInt();
-        sb += p.b.toInt();
-        n++;
+        pts.add((p.r.toInt(), p.g.toInt(), p.b.toInt()));
       }
     }
-    return n == 0 ? (0, 0, 0) : (sr ~/ n, sg ~/ n, sb ~/ n);
+    if (pts.isEmpty) {
+      // 全部采样点出界（四角模式角点拖出图界、格中心在图外）返回纯白
+      // 而非纯黑：(0,0,0) 会以 Lab 距离 0 归到 H7 纯黑豆，图外整片
+      // 格子被计成黑豆对账虚涨；纯白走近白/偏色判定，空白开关开启时
+      // 正确落空白（图外格=空白），关闭时归候选最近色（不判空白语义
+      // 下的合理回退）
+      return (255, 255, 255);
+    }
+    pts.sort((a, b) => (a.$1 + a.$2 + a.$3) - (b.$1 + b.$2 + b.$3));
+    return pts[pts.length ~/ 2];
   }
 
   // ==================== 步骤 1/2：图例识别 ====================
@@ -1511,73 +1564,81 @@ class _RestorePageState extends State<RestorePage> {
     });
   }
 
-  // ==================== 步骤 3/4：主体网格对齐 ====================
+  // ==================== 步骤 3/4：九宫格标定 ====================
 
-  /// 自动检测主体网格（选区内投影分析），初始化微调参数
-  void _autoDetect() {
+  /// 初始化九宫格标定：全图投影自动检测取格距与第一条格线交点（锚点
+  /// 直接落在真实格线上，用户只需微调）；检测不到用全图宽/20 兜底、
+  /// 锚点放图中央。进入对齐阶段时调一次，回对齐微调不重跑。
+  /// 灰度构建 + 自相关检测走 compute isolate：全图逐像素同步扫描
+  /// （12MP 手机照片百万次 getPixel）在 UI 线程会冻结秒级（与
+  /// encodeDisplayJpg 同理），期间动画/触摸全无响应。
+  Future<void> _initMiniGrid() async {
     final image = _image;
-    if (image == null) {
-      return;
-    }
-    if (_useCornerAlign) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("自动检测只支持均分网格；歪图请拖四角对齐，或切回均分网格再检测")),
-      );
-      return;
+    if (image == null || _detecting) {
+      return; // 检测进行中防重入（来回切阶段触发两次会竞态覆盖锚点）
     }
     setState(() => _detecting = true);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final (rx, ry, rw, rh) = _selToImage(_selDisplay);
-      final gray = <int>[];
-      for (var y = ry.toInt(); y < ry + rh; y++) {
-        for (var x = rx.toInt(); x < rx + rw; x++) {
-          final p = image.getPixel(x, y);
-          gray.add((p.r * 0.299 + p.g * 0.587 + p.b * 0.114).round());
-        }
-      }
-      final result = detectGrid(gray, rw.toInt(), rh.toInt());
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _detecting = false;
-        if (result != null) {
-          _colsCtrl.text = result.cols.toString();
-          _rowsCtrl.text = result.rows.toString();
-          _pitchX = result.pitchX;
-          _pitchY = result.pitchY;
-          _offX = result.offsetX;
-          _offY = result.offsetY;
-        }
-      });
-      if (result == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("未检测到网格，请框选更规整的区域或手动填行列数")),
+    // postFrameCallback 让 _detecting 提示先渲染一帧再起 isolate
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) {
+      return;
+    }
+    final det = await compute(detectGridInIsolate, image);
+    // 【临时调试】初始化检测全参数打 logcat（格距初值排查），正式版移除
+    debugPrint(
+      "【临时调试】initMiniGrid img=${image.width}x${image.height} "
+      "det=${det == null ? "null" : "px=${det.pitchX.toStringAsFixed(2)} py=${det.pitchY.toStringAsFixed(2)} ox=${det.offsetX.toStringAsFixed(1)} oy=${det.offsetY.toStringAsFixed(1)} ${det.cols}x${det.rows}"}",
+    );
+    if (!mounted) {
+      return;
+    }
+    final ds = _displaySize();
+    setState(() {
+      _detecting = false;
+      if (det != null) {
+        _pitchX = det.pitchX;
+        _pitchY = det.pitchY;
+        // 检测出的第一条格线交点（图片坐标）-> 显示坐标作锚点
+        _miniAnchor = Offset(
+          det.offsetX * ds.width / image.width,
+          det.offsetY * ds.height / image.height,
+        );
+      } else {
+        _pitchX = image.width / 20;
+        _pitchY = image.height / 20;
+        _miniAnchor = Offset(
+          ds.width / 2 - 1.5 * _pitchX * ds.width / image.width,
+          ds.height / 2 - 1.5 * _pitchY * ds.height / image.height,
         );
       }
     });
+    if (det == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("未自动检出格距，已按默认值放置九宫格，请手动调整大小对齐")),
+      );
+    }
   }
 
-  /// 行列数手改 -> 按选区均分重算网格参数（放弃自动检测结果）
-  void _recomputePitchFromField() {
-    if (_useCornerAlign) {
-      // 四角模式：pitch/off 不参与，但覆盖层 _CornerGridPainter 依赖
-      // cols/rows（经 controller 文本读取），必须 rebuild 才会重画
-      setState(() {});
-      return;
+  /// 命中九宫格标定框：1=右下角缩放把手、0=框体（拖动移动）、-1=未命中
+  ///
+  /// 框体外扩半格作移动命中区（手指按在格线上也算框内）；把手先判
+  /// （半径 26 手指友好），否则框体区域会先吞掉角上的命中
+  int _hitMiniGrid(Offset anchor, Offset p) {
+    final ds = _displaySize();
+    final image = _image!;
+    final w = 3 * _pitchX * ds.width / image.width;
+    final h = 3 * _pitchY * ds.height / image.height;
+    final handle = Offset(anchor.dx + w, anchor.dy + h);
+    if ((handle - p).distance <= 26) {
+      return 1;
     }
-    final cols = int.tryParse(_colsCtrl.text) ?? 0;
-    final rows = int.tryParse(_rowsCtrl.text) ?? 0;
-    if (cols < 1 || rows < 1 || _image == null) {
-      return;
-    }
-    final (_, _, rw, rh) = _selToImage(_selDisplay);
-    setState(() {
-      _pitchX = rw / cols;
-      _pitchY = rh / rows;
-      _offX = 0;
-      _offY = 0;
-    });
+    final area = Rect.fromLTWH(
+      anchor.dx - w / 6,
+      anchor.dy - h / 6,
+      w + w / 3,
+      h + h / 3,
+    );
+    return area.contains(p) ? 0 : -1;
   }
 
   /// 格子大小 ±（图片坐标步进 0.2，X/Y 等比缩放，网格锚点不动）
@@ -1595,15 +1656,37 @@ class _RestorePageState extends State<RestorePage> {
     });
   }
 
-  /// 微移网格（步进 = 格距 / 8）
+  /// 微移九宫格（步进 = 格距 / 8，显示坐标换算）
   void _nudge(double dx, double dy) {
-    if (_pitchX <= 0 || _pitchY <= 0) {
+    final anchor = _miniAnchor;
+    if (_pitchX <= 0 || _pitchY <= 0 || anchor == null) {
       return;
     }
+    final ds = _displaySize();
+    final image = _image!;
+    final stepX = _pitchX * ds.width / image.width / 8;
+    final stepY = _pitchY * ds.height / image.height / 8;
     setState(() {
-      _offX += dx * _pitchX / 8;
-      _offY += dy * _pitchY / 8;
+      _miniAnchor = Offset(anchor.dx + dx * stepX, anchor.dy + dy * stepY);
     });
+  }
+
+  /// 紧凑图标按钮（对齐面板格子大小/微移行专用）：默认 IconButton 48
+  /// 逻辑宽，一行 6 个加标签在窄屏溢出，压到 36 宽/22 图标
+  Widget _compactIconBtn({
+    required IconData icon,
+    VoidCallback? onPressed,
+    String? tooltip,
+  }) {
+    return IconButton(
+      visualDensity: VisualDensity.compact,
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+      iconSize: 22,
+      onPressed: onPressed,
+      tooltip: tooltip,
+      icon: Icon(icon),
+    );
   }
 
   // ==================== 四角对齐 ====================
@@ -1619,13 +1702,15 @@ class _RestorePageState extends State<RestorePage> {
     });
   }
 
-  /// 默认四角：选区四角（无选区=全图四角）
+  /// 默认四角：全图四角
   List<Offset> _defaultCorners() {
     final ds = _displaySize();
-    final sel = (_selDisplay != null && _selDisplay!.width > 8)
-        ? _selDisplay!
-        : Rect.fromLTWH(0, 0, ds.width, ds.height);
-    return [sel.topLeft, sel.topRight, sel.bottomRight, sel.bottomLeft];
+    return [
+      Offset.zero,
+      Offset(ds.width, 0),
+      Offset(ds.width, ds.height),
+      Offset(0, ds.height),
+    ];
   }
 
   /// 重置四角回默认位置
@@ -1644,26 +1729,70 @@ class _RestorePageState extends State<RestorePage> {
   // ==================== 识别 + 复核 ====================
 
   /// 限色识别：图例勾选色为候选集，逐格中心采样 -> Lab 最近色；偏色过大判空白
+  ///
+  /// 九宫格标定模式：主体选区 + 标定格距切分，格线相位锚定九宫格（锚点
+  /// 对格距取模铺进选区——九宫格不必框在选区内，它与图纸格子重叠即全图
+  /// 同相），行列数 = 选区尺寸/格距 自动算；四角模式：行列数手填，采样
+  /// 中心经四角双线性映射反求。
   void _recognize() {
     final image = _image;
     if (image == null) {
       return;
     }
-    final cols = int.tryParse(_colsCtrl.text) ?? 0;
-    final rows = int.tryParse(_rowsCtrl.text) ?? 0;
-    if (cols < 4 || rows < 4 || cols > 400 || rows > 400) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text("行列数须在 4-400 之间")));
-      return;
-    }
     final useCorner =
         _useCornerAlign && _cornerPts != null && _cornerPts!.length == 4;
-    if (!useCorner && (_pitchX <= 0 || _pitchY <= 0)) {
-      _recomputePitchFromField();
+    var cols = 0, rows = 0;
+    var rx = 0.0, ry = 0.0, offX = 0.0, offY = 0.0;
+    if (useCorner) {
+      cols = int.tryParse(_colsCtrl.text) ?? 0;
+      rows = int.tryParse(_rowsCtrl.text) ?? 0;
+      if (cols < 4 || rows < 4 || cols > 400 || rows > 400) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text("行列数须在 4-400 之间")));
+        return;
+      }
+    } else {
+      final anchor = _miniAnchor;
+      final sel = _selDisplay;
+      if (_pitchX <= 0 || _pitchY <= 0 || anchor == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("九宫格未就绪，请等自动检测完成或手动调整")),
+        );
+        return;
+      }
+      if (sel == null || sel.width <= 8 || sel.height <= 8) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("请先在图上拖框选中主体区域（拼豆格子部分，扁框无效）")),
+        );
+        return;
+      }
+      final (sx, sy, sw, sh) = _selToImage(sel);
+      rx = sx;
+      ry = sy;
+      final ds = _displaySize();
+      final ax = anchor.dx * image.width / ds.width;
+      final ay = anchor.dy * image.height / ds.height;
+      offX = (ax - rx) % _pitchX;
+      if (offX < 0) {
+        offX += _pitchX;
+      }
+      offY = (ay - ry) % _pitchY;
+      if (offY < 0) {
+        offY += _pitchY;
+      }
+      cols = ((sw - offX) / _pitchX + 0.5).floor();
+      rows = ((sh - offY) / _pitchY + 0.5).floor();
+      if (cols < 4 || rows < 4 || cols > 400 || rows > 400) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("按当前格距切分为 $cols×$rows，超出 4-400，请调整框选范围或格子大小")),
+        );
+        return;
+      }
+      _colsCtrl.text = cols.toString();
+      _rowsCtrl.text = rows.toString();
     }
     setState(() => _recognizing = true);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final (rx, ry, _, _) = _selToImage(_selDisplay);
       // 四角映射模式：角点（显示坐标）-> 图片坐标，采样中心/格宽高全部
       // 经双线性映射反求（与覆盖层网格线同源，所见即所采）
       var qImg = const <Offset>[];
@@ -1681,6 +1810,20 @@ class _RestorePageState extends State<RestorePage> {
       final candidates = <int>{
         for (final e in _legend) e.paletteIndex,
       };
+      // 候选集是否含近白色（白/米白/银白系，MARD 卡 14 色如 H1/T1 纯白）：
+      // 含则跳过近白直判空白——白是拼豆常见大用量色，直判会把该色全部
+      // 格子误灭为空白（该色计数恒 0 与图例对账必失败，2026-09-08 review
+      // 确认为回归：旧代码白豆格走 nearestWithin 正确归 H1 distSq≈0）。
+      // 候选无近白色时近白格必是图案区外白底，直判空白不受影响
+      final candNearWhite = candidates.any((i) {
+        final c = _palette.colors[i];
+        return c.r > 230 &&
+            c.g > 230 &&
+            c.b > 230 &&
+            (math.max(c.r, math.max(c.g, c.b)) -
+                    math.min(c.r, math.min(c.g, c.b))) <
+                25;
+      });
       final quantizer = Quantizer(_palette);
       final grid = List<int>.filled(cols * rows, 0);
       for (var r = 0; r < rows; r++) {
@@ -1701,20 +1844,36 @@ class _RestorePageState extends State<RestorePage> {
             cw = ((tl - tr).distance + (bl - br).distance) / 2;
             ch = ((tl - bl).distance + (tr - br).distance) / 2;
           } else {
-            cx = rx + _offX + (c + 0.5) * _pitchX;
-            cy = ry + _offY + (r + 0.5) * _pitchY;
+            cx = rx + offX + (c + 0.5) * _pitchX;
+            cy = ry + offY + (r + 0.5) * _pitchY;
             cw = _pitchX;
             ch = _pitchY;
           }
           final (sr, sg, sb) = _sampleCenter(cx, cy, cw, ch);
-          final (idx, distSq) = quantizer.nearestWithin(
-            sr,
-            sg,
-            sb,
-            candidates.isEmpty ? null : candidates,
-          );
-          grid[r * cols + c] =
-              (_blankEnable && distSq > _blankDistSq) ? -1 : idx;
+          // 近白直判空白：图案区外的白底/浅灰底到浅粉 E11 的 Lab 距离
+          // ~380，低于空白阈值 900，大片白底会被误归浅粉（pic5 实测
+          // E11 171→478 超涨 3 倍）；纯白/近白（min>230 且极差<25）直接
+          // 判空白，真浅粉豆 g/b≤218 不会命中不受影响（同款离线验证
+          // E11 478→171 与基线零差）。候选集含近白色（图纸用白豆）时
+          // 跳过——见上方 candNearWhite 注释
+          final nearWhite = sr > 230 &&
+              sg > 230 &&
+              sb > 230 &&
+              (math.max(sr, math.max(sg, sb)) -
+                      math.min(sr, math.min(sg, sb))) <
+                  25;
+          if (_blankEnable && nearWhite && !candNearWhite) {
+            grid[r * cols + c] = -1;
+          } else {
+            final (idx, distSq) = quantizer.nearestWithin(
+              sr,
+              sg,
+              sb,
+              candidates.isEmpty ? null : candidates,
+            );
+            grid[r * cols + c] =
+                (_blankEnable && distSq > _blankDistSq) ? -1 : idx;
+          }
         }
       }
       if (!mounted) {
@@ -1732,6 +1891,16 @@ class _RestorePageState extends State<RestorePage> {
         _picked.clear();
         _stage = _Stage.review;
       });
+      // 【临时调试】识别计数打 logcat（基线比对用），正式版移除
+      final dbgCnt = <int, int>{};
+      for (final g in grid) {
+        dbgCnt[g] = (dbgCnt[g] ?? 0) + 1;
+      }
+      final dbgPairs = [
+        for (final k in dbgCnt.keys.toList()..sort())
+          "${k < 0 ? "BLANK" : _palette.colors[k].id}=${dbgCnt[k]}",
+      ].join(" ");
+      debugPrint("【临时调试】识别 $cols x $rows | $dbgPairs");
     });
   }
 
@@ -1807,9 +1976,18 @@ class _RestorePageState extends State<RestorePage> {
     });
   }
 
-  /// 进入「框选主体」阶段（该阶段第一动作是重新框选）
+  /// 进入「九宫格对齐」阶段：首次进入自动初始化标定框（回对齐微调不重跑）
   void _goAlign() {
     setState(() => _stage = _Stage.align);
+    if (_miniAnchor == null) {
+      _initMiniGrid();
+    }
+  }
+
+  /// 进入「框选主体」阶段（九宫格已定每格尺寸，本步只框主体区域；
+  /// 行列数 = 选区/格距 实时算，识别时直接采用）
+  void _goFrame() {
+    setState(() => _stage = _Stage.frame);
   }
 
   // ==================== 布局 ====================
@@ -1825,8 +2003,9 @@ class _RestorePageState extends State<RestorePage> {
             Text(switch (_stage) {
               _Stage.pick => "图纸还原 · 选图",
               _Stage.legend => "图纸还原 · ① 框图例",
-              _Stage.align => "图纸还原 · ② 网格对齐",
-              _Stage.review => "图纸还原 · ③ 识别复核",
+              _Stage.align => "图纸还原 · ② 九宫格对齐",
+              _Stage.frame => "图纸还原 · ③ 框选主体",
+              _Stage.review => "图纸还原 · ④ 识别复核",
             }),
             Text(
               "构建 $appBuildLabel",
@@ -1843,6 +2022,13 @@ class _RestorePageState extends State<RestorePage> {
               icon: const Icon(Icons.undo, size: 18),
               label: const Text("回对齐"),
             ),
+          // 框选步发现格距不对：回九宫格步重新标定（选区保留，回来直接用）
+          if (_stage == _Stage.frame)
+            TextButton.icon(
+              onPressed: _goAlign,
+              icon: const Icon(Icons.undo, size: 18),
+              label: const Text("回九宫格"),
+            ),
           // 自动框选图例区（载入时已自动尝试过，这里供失败重试/重新选）
           if (_stage == _Stage.legend)
             IconButton(
@@ -1857,7 +2043,9 @@ class _RestorePageState extends State<RestorePage> {
               icon: const Icon(Icons.bug_report),
               tooltip: "OCR 调试",
             ),
-          if (_stage == _Stage.legend || _stage == _Stage.align)
+          if (_stage == _Stage.legend ||
+              _stage == _Stage.align ||
+              _stage == _Stage.frame)
             PopupMenuButton<String>(
               tooltip: "切换色卡",
               icon: const Icon(Icons.palette),
@@ -1882,6 +2070,7 @@ class _RestorePageState extends State<RestorePage> {
         _Stage.pick => _buildPick(),
         _Stage.legend => _buildLegend(),
         _Stage.align => _buildAlign(),
+        _Stage.frame => _buildFrame(),
         _Stage.review => _buildReview(),
       },
     );
@@ -1923,7 +2112,7 @@ class _RestorePageState extends State<RestorePage> {
             const Text("导入拼豆图纸，五步还原为可编辑图案", textAlign: TextAlign.center),
             const SizedBox(height: 8),
             const Text(
-              "框图例 → 核对用色 → 对齐网格 → 识别 → 手工纠错",
+              "框图例 → 核对用色 → 九宫格对齐 → 框选主体 → 识别 → 手工纠错",
               style: TextStyle(fontSize: 12, color: Colors.black45),
             ),
             const SizedBox(height: 32),
@@ -2004,18 +2193,24 @@ class _RestorePageState extends State<RestorePage> {
     return Rect.fromLTRB(l, t, r, b);
   }
 
-  /// 图片 + 统一框选手势 + 可选网格覆盖（图例/对齐阶段共用）
+  /// 图片 + 统一框选手势 + 可选网格覆盖（图例/对齐/框选阶段共用）
   ///
   /// 单指：空白处拖动 = 画新选区；选区内部拖动 = 整框平移（框完想挪位置
   /// 不必重画）；四角/四边把手 = 微调大小。双指：捏合缩放 + 拖动平移原图
   /// （InteractiveViewer 承担，查看大图不需要独立的查看模式）。
   /// [cornerPts] 非空时四角把手接管手势（拖角微调，非角区拖动不画框防误触清角）。
+  /// [miniAnchor] 非空时九宫格标定框参与手势（命中拖动/角缩放）。标定与
+  /// 框选分两步不同屏：[panFallback] 为 true（九宫格对齐步）时未命中九宫格
+  /// 的拖动 = 平移画面查看；false（框选主体步）时回落画选区。
   Widget _imageStage({
     required Rect? sel,
     required void Function(Rect) onSel,
     CustomPainter? overlay,
     List<Offset>? cornerPts,
     void Function(int, Offset)? onCornerDrag,
+    Offset? miniAnchor,
+    void Function(Offset)? onMiniAnchor,
+    bool panFallback = false,
   }) {
     final ds = _displaySize();
     return Stack(
@@ -2049,7 +2244,8 @@ class _RestorePageState extends State<RestorePage> {
             child: Builder(
               builder: (_) {
                 final ctx = _StageCtx(
-                  onSel, sel, cornerPts, onCornerDrag, cons);
+                  onSel, sel, cornerPts, onCornerDrag, cons, miniAnchor,
+                  onMiniAnchor, panFallback);
                 return Listener(
                   // 滚轮=纵向平移浏览（图例清单展开会挡住图片下部，靠滚轮看回）
                   onPointerSignal: (s) => _onImgPointerSignal(s, cons),
@@ -2166,9 +2362,30 @@ class _RestorePageState extends State<RestorePage> {
       }
       return; // 非角区拖动不画框：防误触清掉四角
     }
+    // 九宫格标定框：缩放把手/框体拖动优先；未命中按 panFallback 分派
+    // （对齐步=平移画面查看，框选步=画选区）——标定与框选两步不同屏
+    if (ctx.miniAnchor != null && _pitchX > 0) {
+      final hit = _hitMiniGrid(ctx.miniAnchor!, e.localPosition);
+      if (hit == 1) {
+        _miniScaleDrag = true;
+        // f 比例缩放基准快照：按下时的 span（max(|dx|,|dy|)，对角线长
+        // 斜向 √2 超调）与双 pitch——拖动中按比值同乘，保住非方形 pitchY
+        final d = e.localPosition - ctx.miniAnchor!;
+        _miniScaleBaseSpan = math.max(d.dx.abs(), d.dy.abs());
+        _miniScaleBasePx = _pitchX;
+        _miniScaleBasePy = _pitchY;
+        return;
+      }
+      if (hit == 0) {
+        _miniDragFrom = e.localPosition;
+        _miniDragBase = ctx.miniAnchor!;
+        return;
+      }
+    }
     // 把手 -> 拖把手调框；框内 -> 挪框；框外空白 -> 平移画面（放大观察，
-    // 不建新框）；无框 -> 拖画建框兜底。把手命中半径 10 逻辑px 内的点击
-    // 抖动同样会把框边拉走（实测 5px 即破坏选区），快照供抬手回溯
+    // 不建新框）；无框 -> 拖画建框兜底（panFallback 步无选区交互，直接
+    // 平移查看）。把手命中半径 10 逻辑px 内的点击抖动同样会把框边拉走
+    // （实测 5px 即破坏选区），快照供抬手回溯
     final sel = ctx.sel;
     _gestureStartSel = sel;
     _selHandleDrag = (sel != null && sel.width > 2)
@@ -2182,6 +2399,8 @@ class _RestorePageState extends State<RestorePage> {
         } else {
           _panViewMode = true;
         }
+      } else if (ctx.panFallback) {
+        _panViewMode = true; // 对齐步框外拖动=平移查看（不画选区）
       } else {
         _drawFrom = e.localPosition;
       }
@@ -2223,14 +2442,59 @@ class _RestorePageState extends State<RestorePage> {
       _panViewBy(e.delta, ctx.cons);
       return;
     }
+    // 九宫格缩放把手：按下时快照的 span/双格距为基准，当前 span 按比值
+    // 同乘（与 _adjustPitch 同语义）——绝对 span 直算在等比显示下
+    // py≡px 恒成立，一次拖拽就把非方形 pitchY 抹平；span 取
+    // max(|dx|,|dy|)（对角线长斜向超调，把手会脱离手指）
+    if (_miniScaleDrag && ctx.miniAnchor != null) {
+      final image = _image!;
+      final d = e.localPosition - ctx.miniAnchor!;
+      final span = math.max(d.dx.abs(), d.dy.abs());
+      if (span > 24 && _miniScaleBaseSpan > 1) {
+        final f = span / _miniScaleBaseSpan;
+        final px = _miniScaleBasePx * f;
+        final py = _miniScaleBasePy * f;
+        if (px >= 2 && px <= image.width / 4) {
+          setState(() {
+            _pitchX = px;
+            _pitchY = py;
+          });
+        }
+      }
+      return;
+    }
+    // 九宫格拖动：按起点位移移动锚点，clamp 图内防拖丢
+    if (_miniDragFrom != null && _miniDragBase != null) {
+      final delta = e.localPosition - _miniDragFrom!;
+      final base = _miniDragBase!;
+      final ds = _displaySize();
+      final image = _image!;
+      final w = 3 * _pitchX * ds.width / image.width;
+      final h = 3 * _pitchY * ds.height / image.height;
+      // 上界兜底非负：「格子大小 +」无上限，格距放大到 3 格超图宽时
+      // ds.width - w 为负，clamp 负上界直接抛 ArgumentError（手势卡死）
+      final left = (base.dx + delta.dx)
+          .clamp(0.0, math.max(0.0, ds.width - w))
+          .toDouble();
+      final top = (base.dy + delta.dy)
+          .clamp(0.0, math.max(0.0, ds.height - h))
+          .toDouble();
+      ctx.onMiniAnchor?.call(Offset(left, top));
+      return;
+    }
     final sel = ctx.sel;
     if (_selMoveFrom != null && _selMoveBase != null) {
       // 框内挪框：按起点位移移动选区，clamp 图内防拖丢
       final delta = e.localPosition - _selMoveFrom!;
       final base = _selMoveBase!;
       final dsz = _displaySize();
-      final left = (base.left + delta.dx).clamp(0.0, dsz.width - base.width);
-      final top = (base.top + delta.dy).clamp(0.0, dsz.height - base.height);
+      // 上界兜底非负（同九宫格拖动：选区宽超出图显示宽时防负上界崩溃）
+      final left = (base.left + delta.dx)
+          .clamp(0.0, math.max(0.0, dsz.width - base.width))
+          .toDouble();
+      final top = (base.top + delta.dy)
+          .clamp(0.0, math.max(0.0, dsz.height - base.height))
+          .toDouble();
       ctx.onSel(Rect.fromLTWH(left, top, base.width, base.height));
       return;
     }
@@ -2389,6 +2653,12 @@ class _RestorePageState extends State<RestorePage> {
     _panViewMode = false;
     _selMoveFrom = null;
     _selMoveBase = null;
+    _miniDragFrom = null;
+    _miniDragBase = null;
+    _miniScaleDrag = false;
+    _miniScaleBaseSpan = 0;
+    _miniScaleBasePx = 0;
+    _miniScaleBasePy = 0;
     _gestureVoided = false;
     _panStartTime = null;
     _prevMoveScreen = null;
@@ -2445,33 +2715,33 @@ class _RestorePageState extends State<RestorePage> {
     _viewerCtrl.value = m;
   }
 
-  /// 当前网格覆盖层（无有效参数返回 null）
+  /// 当前对齐覆盖层（无有效参数返回 null）
+  ///
+  /// 四角模式：四角双线性网格；九宫格模式：3×3 标定框——识别切分的格线
+  /// 相位与格距全部由它导出，所见即所采。
   CustomPainter? _mainOverlay() {
-    final cols = int.tryParse(_colsCtrl.text) ?? 0;
-    final rows = int.tryParse(_rowsCtrl.text) ?? 0;
-    if (cols < 1 || rows < 1) {
-      return null;
-    }
     if (_useCornerAlign) {
       final pts = _cornerPts;
-      if (pts == null || pts.length != 4) {
+      final cols = int.tryParse(_colsCtrl.text) ?? 0;
+      final rows = int.tryParse(_rowsCtrl.text) ?? 0;
+      if (pts == null || pts.length != 4 || cols < 1 || rows < 1) {
         return null;
       }
       return _CornerGridPainter(pts: pts, cols: cols, rows: rows);
     }
-    if (_pitchX <= 0 || _pitchY <= 0) {
+    final anchor = _miniAnchor;
+    if (anchor == null || _pitchX <= 0 || _pitchY <= 0) {
       return null;
     }
-    final (rx, ry, _, _) = _selToImage(_selDisplay);
     final ds = _displaySize();
     final image = _image!;
-    return _GridOverlayPainter(
-      cols: cols,
-      rows: rows,
-      originDx: (rx + _offX) * ds.width / image.width,
-      originDy: (ry + _offY) * ds.height / image.height,
-      pitchDx: _pitchX * ds.width / image.width,
-      pitchDy: _pitchY * ds.height / image.height,
+    return _MiniGridPainter(
+      grid: Rect.fromLTWH(
+        anchor.dx,
+        anchor.dy,
+        3 * _pitchX * ds.width / image.width,
+        3 * _pitchY * ds.height / image.height,
+      ),
     );
   }
 
@@ -2778,7 +3048,7 @@ class _RestorePageState extends State<RestorePage> {
                           onPressed: _goAlign,
                           icon: const Icon(Icons.arrow_forward),
                           label: Text(
-                            "下一步：框选主体（${_legend.length}色）",
+                            "下一步：九宫格对齐（${_legend.length}色）",
                           ),
                         ),
                       ),
@@ -2905,7 +3175,8 @@ class _RestorePageState extends State<RestorePage> {
     );
   }
 
-  /// 阶段三：框选主体 + 网格对齐（均分网格自动检测/微移 + 四角对齐透视矫正）
+  /// 阶段②：九宫格标定每格大小（本步只做标定，框选主体在下一步独立
+  /// 进行）；四角对齐作歪图透视备选（四角即区域、无独立框选步，直接识别）
   Widget _buildAlign() {
     return Column(
       children: [
@@ -2913,12 +3184,16 @@ class _RestorePageState extends State<RestorePage> {
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: _imageStage(
-              // 四角模式选区框不显示（四角即区域），手势也只认角把手
-              sel: _useCornerAlign ? null : _selDisplay,
-              onSel: (r) => setState(() => _selDisplay = r),
+              // 本步无选区交互：sel 恒 null，九宫格未命中的拖动走
+              // panFallback=平移画面查看（放大核对格线重叠情况）
+              sel: null,
+              onSel: (_) {},
               overlay: _mainOverlay(),
               cornerPts: _useCornerAlign ? _cornerPts : null,
               onCornerDrag: _onCornerDrag,
+              miniAnchor: _useCornerAlign ? null : _miniAnchor,
+              onMiniAnchor: (p) => setState(() => _miniAnchor = p),
+              panFallback: true,
             ),
           ),
         ),
@@ -2933,8 +3208,8 @@ class _RestorePageState extends State<RestorePage> {
                 segments: const [
                   ButtonSegment(
                     value: false,
-                    icon: Icon(Icons.grid_4x4, size: 18),
-                    label: Text("均分网格"),
+                    icon: Icon(Icons.grid_3x3, size: 18),
+                    label: Text("九宫格标定"),
                   ),
                   ButtonSegment(
                     value: true,
@@ -2949,113 +3224,208 @@ class _RestorePageState extends State<RestorePage> {
               Text(
                 _useCornerAlign
                     ? "把 4 个圆点拖到图案网格的四个角（斜拍/歪图用此模式，网格随四角透视贴合）"
-                    : _pitchX > 0
-                        ? "网格已覆盖（蓝线）· 不对齐就微调下方参数"
-                        : "② 框选主体图案区域，或直接自动检测",
+                    : _alignHint(),
                 style: Theme.of(context).textTheme.bodySmall,
               ),
               const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _colsCtrl,
-                      keyboardType: TextInputType.number,
-                      onChanged: (_) => _recomputePitchFromField(),
-                      decoration: const InputDecoration(
-                        labelText: "列数",
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                    ),
-                  ),
-                  const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 8),
-                    child: Text("×"),
-                  ),
-                  Expanded(
-                    child: TextField(
-                      controller: _rowsCtrl,
-                      keyboardType: TextInputType.number,
-                      onChanged: (_) => _recomputePitchFromField(),
-                      decoration: const InputDecoration(
-                        labelText: "行数",
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  OutlinedButton.icon(
-                    onPressed:
-                        (_detecting || _useCornerAlign) ? null : _autoDetect,
-                    icon: _detecting
-                        ? const SizedBox(
-                            width: 14,
-                            height: 14,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.auto_awesome, size: 18),
-                    label: const Text("自动检测"),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              if (_useCornerAlign)
+              if (_useCornerAlign) ...[
                 Row(
                   children: [
+                    SizedBox(
+                      width: 64,
+                      child: TextField(
+                        controller: _colsCtrl,
+                        keyboardType: TextInputType.number,
+                        // 四角覆盖层读 controller 文本定行列，改动即重画
+                        onChanged: (_) => setState(() {}),
+                        decoration: const InputDecoration(
+                          labelText: "列",
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                      ),
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 8),
+                      child: Text("×"),
+                    ),
+                    SizedBox(
+                      width: 64,
+                      child: TextField(
+                        controller: _rowsCtrl,
+                        keyboardType: TextInputType.number,
+                        onChanged: (_) => setState(() {}),
+                        decoration: const InputDecoration(
+                          labelText: "行",
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
                     OutlinedButton.icon(
                       onPressed: _resetCorners,
                       icon: const Icon(Icons.restart_alt, size: 18),
                       label: const Text("重置四角"),
                     ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    Expanded(
+                      child: SwitchListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text(
+                          "偏色过大识别为空白格",
+                          style: TextStyle(fontSize: 13),
+                        ),
+                        value: _blankEnable,
+                        onChanged: (v) => setState(() => _blankEnable = v),
+                      ),
+                    ),
                     const SizedBox(width: 12),
                     Expanded(
-                      child: Text(
-                        "填好行列数，拖四角压住格线后开始识别",
-                        style: Theme.of(context).textTheme.bodySmall,
+                      child: FilledButton.icon(
+                        onPressed: _recognizing ? null : _recognize,
+                        icon: _recognizing
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.document_scanner),
+                        label: Text(_recognizing ? "识别中…" : "开始识别"),
                       ),
                     ),
                   ],
-                )
-              else
+                ),
+              ] else ...[
+                // 紧凑 IconButton：默认 48 逻辑宽 ×6 个加标签在 1080p 手机上
+                // 超宽溢出，最右侧「右移」被屏幕裁掉（模拟器实测），压缩到
+                // 36 逻辑点击区 + 22 图标后整行可容纳
                 Row(
                   children: [
                     const Text("格子大小"),
-                    IconButton(
-                      onPressed: _pitchX > 0 ? () => _adjustPitch(-0.2) : null,
-                      icon: const Icon(Icons.remove_circle_outline),
+                    _compactIconBtn(
+                      onPressed:
+                          _pitchX > 0 ? () => _adjustPitch(-0.2) : null,
+                      icon: Icons.remove_circle_outline,
                     ),
                     Text(_pitchX > 0 ? _pitchX.toStringAsFixed(2) : "--"),
-                    IconButton(
+                    _compactIconBtn(
                       onPressed: _pitchX > 0 ? () => _adjustPitch(0.2) : null,
-                      icon: const Icon(Icons.add_circle_outline),
+                      icon: Icons.add_circle_outline,
                     ),
                     const VerticalDivider(width: 12),
                     const Text("微移"),
-                    IconButton(
+                    _compactIconBtn(
                       onPressed: _pitchX > 0 ? () => _nudge(-1, 0) : null,
-                      icon: const Icon(Icons.arrow_left),
+                      icon: Icons.arrow_left,
                       tooltip: "左移",
                     ),
-                    IconButton(
+                    _compactIconBtn(
                       onPressed: _pitchX > 0 ? () => _nudge(0, -1) : null,
-                      icon: const Icon(Icons.arrow_upward),
+                      icon: Icons.arrow_upward,
                       tooltip: "上移",
                     ),
-                    IconButton(
+                    _compactIconBtn(
                       onPressed: _pitchX > 0 ? () => _nudge(0, 1) : null,
-                      icon: const Icon(Icons.arrow_downward),
+                      icon: Icons.arrow_downward,
                       tooltip: "下移",
                     ),
-                    IconButton(
+                    _compactIconBtn(
                       onPressed: _pitchX > 0 ? () => _nudge(1, 0) : null,
-                      icon: const Icon(Icons.arrow_right),
+                      icon: Icons.arrow_right,
                       tooltip: "右移",
                     ),
                   ],
                 ),
-              const SizedBox(height: 4),
+                const SizedBox(height: 4),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: _pitchX > 0 && _miniAnchor != null
+                        ? _goFrame
+                        : null,
+                    icon: const Icon(Icons.arrow_forward),
+                    label: const Text("下一步：框选主体"),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 九宫格对齐步骤的引导（本步只做标定，框选主体在下一步）
+  String _alignHint() {
+    if (_detecting) {
+      return "正在自动检测格距并放置九宫格…";
+    }
+    if (_pitchX <= 0 || _miniAnchor == null) {
+      return "拖动九宫格、调格子大小，使 9 格与图纸上的格子完全重叠";
+    }
+    return "已定每格 ${_pitchX.toStringAsFixed(1)} 像素 · 对齐无误后进入下一步框选主体";
+  }
+
+  /// 按当前主体选区 + 标定格距推算切分行列数（与 _recognize 同公式，
+  /// 格线相位锚定九宫格）；不满足 4-400 返回 null
+  (int, int)? _plannedColsRows() {
+    final anchor = _miniAnchor;
+    final sel = _selDisplay;
+    final image = _image;
+    if (anchor == null ||
+        sel == null ||
+        sel.width <= 8 ||
+        sel.height <= 8 ||
+        image == null ||
+        _pitchX <= 0 ||
+        _pitchY <= 0) {
+      return null;
+    }
+    final (rx, ry, rw, rh) = _selToImage(sel);
+    final ds = _displaySize();
+    var offX = (anchor.dx * image.width / ds.width - rx) % _pitchX;
+    if (offX < 0) {
+      offX += _pitchX;
+    }
+    var offY = (anchor.dy * image.height / ds.height - ry) % _pitchY;
+    if (offY < 0) {
+      offY += _pitchY;
+    }
+    final cols = ((rw - offX) / _pitchX + 0.5).floor();
+    final rows = ((rh - offY) / _pitchY + 0.5).floor();
+    if (cols < 4 || rows < 4 || cols > 400 || rows > 400) {
+      return null;
+    }
+    return (cols, rows);
+  }
+
+  /// 阶段③：框选主体区域（九宫格已定格距，本步只做框选——拖画/挪框/
+  /// 把手调大小，行列数按格距实时预告；不再叠加九宫格图层，两步彻底分离）
+  Widget _buildFrame() {
+    return Column(
+      children: [
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: _imageStage(
+              sel: _selDisplay,
+              onSel: (r) => setState(() => _selDisplay = r),
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(_frameHint(), style: Theme.of(context).textTheme.bodySmall),
+              const SizedBox(height: 8),
               Row(
                 children: [
                   Expanded(
@@ -3091,6 +3461,18 @@ class _RestorePageState extends State<RestorePage> {
         ),
       ],
     );
+  }
+
+  /// 框选主体步骤的引导：未框选提示拖框，已框选实时预告切分行列数
+  String _frameHint() {
+    final sel = _selDisplay;
+    if (sel == null || sel.width <= 8 || sel.height <= 8) {
+      return "在图上拖框选中主体区域（拼豆格子部分），行列数将按格距自动计算";
+    }
+    final cr = _plannedColsRows();
+    return cr == null
+        ? "框选范围与格距不匹配（切分数超 4-400），请调整框选或回九宫格调格子大小"
+        : "将按 ${cr.$2} 行 × ${cr.$1} 列切分主体，点「开始识别」";
   }
 
   /// 阶段四：按色号分组复核 + 手工归类 + 图例数量对账
@@ -3296,7 +3678,7 @@ class _RestorePageState extends State<RestorePage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            "③ 点色号筛选 → 点格子选中 → 再点目标色号归类；长按拖动可缩放画布",
+            "④ 点色号筛选 → 点格子选中 → 再点目标色号归类；长按拖动可缩放画布",
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 4),
@@ -3379,6 +3761,16 @@ class _StageCtx {
   final BoxConstraints cons;
 
   ///< 图区 viewport 约束（平移/捏合 clamp 用）
+  final Offset? miniAnchor;
+
+  ///< 九宫格标定框锚点（null=非九宫格模式）
+  final void Function(Offset)? onMiniAnchor;
+
+  ///< 九宫格锚点变更回调（图坐标）
+  final bool panFallback;
+
+  ///< 未命中九宫格/无选区时的拖动=true 平移画面查看（对齐步），
+  ///false 画选区（框选步）——两步拆分后手势单一化的分派开关
 
   const _StageCtx(
     this.onSel,
@@ -3386,6 +3778,9 @@ class _StageCtx {
     this.cornerPts,
     this.onCornerDrag,
     this.cons,
+    this.miniAnchor,
+    this.onMiniAnchor,
+    this.panFallback,
   );
 }
 
@@ -3605,6 +4000,53 @@ class _CornerGridPainter extends CustomPainter {
       oldDelegate.pts != pts ||
       oldDelegate.cols != cols ||
       oldDelegate.rows != rows;
+}
+
+/// 九宫格标定覆盖层：3×3 标定框（外框 + 内部网格线 + 右下角缩放把手）
+///
+/// 识别切分的格距与格线相位全部由这个框导出（格距 = 边长/3，锚点 =
+/// 左上角即第一根格线交点），框压住图纸上哪组格子，识别就按那组格子的
+/// 尺寸切分（所见即所采）。右下角把手拖动 = 调格距（锚点不动）。
+class _MiniGridPainter extends CustomPainter {
+  final Rect grid;
+
+  ///< 3×3 框（显示坐标）
+
+  _MiniGridPainter({required this.grid});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.clipRect(Offset.zero & size);
+    final outline = Paint()
+      ..color = const Color(0xFFE65100)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+    canvas.drawRect(grid, outline);
+    // 内部网格线：2 竖 + 2 横（1/3、2/3 处），细一号与外框区分
+    final inner = Paint()
+      ..color = const Color(0xFFE65100).withValues(alpha: 0.7)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+    for (var i = 1; i <= 2; i++) {
+      final x = grid.left + grid.width * i / 3;
+      canvas.drawLine(Offset(x, grid.top), Offset(x, grid.bottom), inner);
+      final y = grid.top + grid.height * i / 3;
+      canvas.drawLine(Offset(grid.left, y), Offset(grid.right, y), inner);
+    }
+    // 右下角缩放把手：白底橙圈（与选区把手同风格，大一圈好按）
+    final handle = Offset(grid.right, grid.bottom);
+    final fill = Paint()..color = Colors.white;
+    final stroke = Paint()
+      ..color = const Color(0xFFE65100)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+    canvas.drawCircle(handle, 9, fill);
+    canvas.drawCircle(handle, 9, stroke);
+  }
+
+  @override
+  bool shouldRepaint(covariant _MiniGridPainter oldDelegate) =>
+      oldDelegate.grid != grid;
 }
 
 /// 空白复核：空白格铺淡红色
