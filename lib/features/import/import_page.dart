@@ -8,6 +8,7 @@ import '../../core/palette.dart';
 import '../../core/palette_registry.dart';
 import '../../core/pixel_engine.dart';
 import '../../core/quantizer.dart';
+import '../board/board_setup_page.dart';
 import '../editor/editor_page.dart';
 import '../restore/restore_page.dart';
 import '../works/works_page.dart';
@@ -164,6 +165,13 @@ class _ImportPageState extends State<ImportPage> {
                 .push(MaterialPageRoute(builder: (_) => const RestorePage())),
             icon: const Icon(Icons.document_scanner),
             tooltip: "图纸还原",
+          ),
+          IconButton(
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const BoardSetupPage()),
+            ),
+            icon: const Icon(Icons.grid_view_outlined),
+            tooltip: "开始拼豆",
           ),
           IconButton(
             onPressed: _openDrafts,

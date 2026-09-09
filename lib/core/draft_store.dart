@@ -9,9 +9,10 @@ import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
 
+import 'board_config.dart';
 import 'pattern_model.dart';
 
-/// 一个作品的完整条目（元数据 + 已解析的图案 + 拼装进度）
+/// 一个作品的完整条目（元数据 + 已解析的图案 + 拼装进度 + 板配置）
 class WorkEntry {
   final File file;
   final String name;
@@ -23,6 +24,9 @@ class WorkEntry {
   final Set<int> placed;
 
   ///< 拼装已放格子（扁平索引；复刻原版 assemble/progress 的本地版）
+  final BoardConfig? board;
+
+  ///< 拼豆板配置（null = 未配置过板）
 
   const WorkEntry({
     required this.file,
@@ -31,6 +35,7 @@ class WorkEntry {
     required this.updatedAt,
     required this.model,
     this.placed = const <int>{},
+    this.board,
   });
 }
 
@@ -94,6 +99,7 @@ class DraftStore {
     String folder = "";
     DateTime updatedAt = file.lastModifiedSync();
     Set<int> placed = const <int>{};
+    BoardConfig? board;
 
     final meta = json["meta"];
     if (meta is Map<String, dynamic>) {
@@ -106,6 +112,7 @@ class DraftStore {
       if (rawPlaced is List) {
         placed = rawPlaced.whereType<int>().toSet();
       }
+      board = BoardConfig.fromJson(meta["board"] as Map<String, dynamic>?);
     } else {
       model = PatternModel.fromJson(json);
     }
@@ -116,17 +123,19 @@ class DraftStore {
       updatedAt: updatedAt,
       model: model,
       placed: placed,
+      board: board,
     );
   }
 
   /// 保存作品；[overwrite] 非空时覆写该文件（保留其 name/folder），否则新建。
-  /// [placed] 拼装进度（null = 覆写时保留旧进度、新建时空）
+  /// [placed] 拼装进度 / [board] 拼豆板配置（null = 覆写时保留旧值、新建时空）
   static Future<File> saveWork(
     PatternModel model, {
     String? name,
     String? folder,
     File? overwrite,
     Set<int>? placed,
+    BoardConfig? board,
   }) async {
     final dir = await _draftDir();
     if (overwrite != null && overwrite.existsSync()) {
@@ -138,6 +147,8 @@ class DraftStore {
             "folder": folder ?? old.folder,
             "updatedAt": DateTime.now().toIso8601String(),
             "placed": (placed ?? old.placed).toList(),
+            if ((board ?? old.board) != null)
+              "board": (board ?? old.board)!.toJson(),
           },
           "pattern": model.toJson(),
         }),
@@ -155,6 +166,7 @@ class DraftStore {
           "folder": folder ?? "",
           "updatedAt": now.toIso8601String(),
           "placed": (placed ?? const <int>[]).toList(),
+          if (board != null) "board": board.toJson(),
         },
         "pattern": model.toJson(),
       }),
@@ -187,7 +199,7 @@ class DraftStore {
     return Future.value();
   }
 
-  /// 改名/移动共用的元数据重写（保留网格内容与拼装进度）
+  /// 改名/移动共用的元数据重写（保留网格内容与拼装进度/板配置）
   static Future<void> _rewriteMeta(
     File file, {
     String? name,
@@ -201,6 +213,7 @@ class DraftStore {
           "folder": folder ?? e.folder,
           "updatedAt": DateTime.now().toIso8601String(),
           "placed": e.placed.toList(),
+          if (e.board != null) "board": e.board!.toJson(),
         },
         "pattern": e.model.toJson(),
       }),

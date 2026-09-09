@@ -14,11 +14,13 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../core/app_build.dart';
 import '../../core/decode_image.dart';
+import '../../core/draft_store.dart';
 import '../../core/grid_detector.dart';
 import '../../core/palette.dart';
 import '../../core/palette_registry.dart';
 import '../../core/pattern_model.dart';
 import '../../core/quantizer.dart';
+import '../board/board_setup_page.dart';
 import '../editor/editor_page.dart';
 import '../editor/grid_painter.dart';
 
@@ -2176,6 +2178,79 @@ class _RestorePageState extends State<RestorePage> {
     );
   }
 
+  /// 保存作品：命名 -> 存作品库 -> 可选直接进入拼豆板设置
+  Future<void> _saveWork() async {
+    final model = _model;
+    if (model == null) {
+      return;
+    }
+    final now = DateTime.now();
+    final two = (int v) => v.toString().padLeft(2, "0");
+    final ctrl = TextEditingController(
+      text: "图案 ${now.month}${two(now.day)}日 ${two(now.hour)}:${two(now.minute)}",
+    );
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: const Text("保存作品"),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLength: 30,
+          decoration: const InputDecoration(
+            labelText: "作品名",
+            counterText: "",
+          ),
+          onSubmitted: (v) => Navigator.pop(dctx, v),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: const Text("取消"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dctx, ctrl.text),
+            child: const Text("保存"),
+          ),
+        ],
+      ),
+    );
+    if (name == null || name.trim().isEmpty) {
+      return;
+    }
+    final file = await DraftStore.saveWork(model, name: name.trim());
+    if (!mounted) {
+      return;
+    }
+    final goAssemble = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: const Text("保存成功"),
+        content: Text("「${name.trim()}」已存入作品库，可直接开始拼豆"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: const Text("留在本页"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dctx, true),
+            child: const Text("直接开始拼豆"),
+          ),
+        ],
+      ),
+    );
+    if (goAssemble != true || !mounted) {
+      return;
+    }
+    final entry = await DraftStore.readEntry(file);
+    if (!mounted) {
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => BoardSetupPage(initial: entry)),
+    );
+  }
+
   /// 图例标注数量（无勾选条目/未填返回 null = 不对账）
   int? _expectedOf(int paletteIndex) {
     for (final e in _legend) {
@@ -4177,13 +4252,22 @@ class _RestorePageState extends State<RestorePage> {
             ],
           ),
           const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: _openEditor,
-              icon: const Icon(Icons.edit),
-              label: const Text("进编辑器"),
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: _saveWork,
+                  icon: const Icon(Icons.save_outlined),
+                  label: const Text("保存作品"),
+                ),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: _openEditor,
+                icon: const Icon(Icons.edit),
+                label: const Text("进编辑器"),
+              ),
+            ],
           ),
         ],
       ),
