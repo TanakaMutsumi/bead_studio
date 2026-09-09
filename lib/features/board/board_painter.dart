@@ -1,4 +1,5 @@
-/// 豆板画布渲染器：板底格 + 相位加粗框线 + 作品叠加（偏移摆放）+ 拼装标记
+/// 豆板画布渲染器：板底格 + 相位加粗框线 + 多作品叠加（各带偏移）+ 拼装标记 +
+/// 格子文字层（色号文本 / 高亮色行·列分组编号）
 library;
 
 import 'package:flutter/material.dart';
@@ -7,38 +8,157 @@ import '../../core/board_config.dart';
 import '../../core/palette.dart';
 import '../../core/pattern_model.dart';
 
+/// 拼豆页格子文字层模式
+enum LabelMode {
+  /// 只显示色号（默认）
+  id,
+
+  /// 选中色号横向排列：同一板行内从左到右编号 1,2,3…（每行重数）
+  rowNumber,
+
+  /// 选中色号竖向排列：同一板列内从上到下编号 1,2,3…（每列重数）
+  colNumber,
+}
+
+/// 画布上的一件渲染项（配置页/拼豆页共用）
+class BoardPaintItem {
+  final PatternModel model;
+
+  ///< 作品图案
+  final BeadPalette palette;
+
+  ///< 渲染调色板（索引与 model.grid 对应）
+  final int ox;
+
+  ///< 左上角在板上的列偏移
+  final int oy;
+
+  ///< 左上角在板上的行偏移
+  final String? highlightId;
+
+  ///< 高亮色号（null = 关闭；其余色降饱和显示）
+  final Set<int>? placedCells;
+
+  ///< 拼装已放格（本作品格扁平索引；null = 关闭）
+  final bool showBorder;
+
+  ///< 画作品边框（配置页开 / 拼豆页关）
+  final bool selected;
+
+  ///< 选中态（边框加粗蓝；配置页）
+
+  const BoardPaintItem({
+    required this.model,
+    required this.palette,
+    required this.ox,
+    required this.oy,
+    this.highlightId,
+    this.placedCells,
+    this.showBorder = false,
+    this.selected = false,
+  });
+}
+
 class BoardPainter extends CustomPainter {
   final BoardConfig board;
 
-  ///< 板配置（尺寸/加粗间隔/相位/作品偏移全在里面）
-  final PatternModel model;
+  ///< 板配置（尺寸/加粗间隔/相位；ox/oy 由各 item 自带）
+  final List<BoardPaintItem> items;
 
-  ///< 叠加的作品
-  final BeadPalette palette;
-  final int? highlightIndex;
+  ///< 叠加的作品列表（后加入的画在上层）
+  final LabelMode labelMode;
 
-  ///< 拼装高亮色索引（null = 关闭；其余色降饱和显示）
-  final Set<int>? placedCells;
+  ///< 格子文字层模式（拼豆页用；配置页保持默认只色号）
+  final bool showLabels;
 
-  ///< 拼装已放格（作品格扁平索引；null = 关闭）
-  final bool showWorkBorder;
+  ///< 是否绘制格子文字层（拼豆页开 / 配置页关，摆放时看色块即可）
+  static final Map<String, TextPainter> _labelCache = {};
 
-  ///< 画作品边界蓝框（豆板配置页提示摆放范围；拼豆页关闭）
+  ///< 文字绘制缓存（painter 每 build 新建，缓存须跨实例共享；key 含文本+字号+颜色）
 
   BoardPainter({
     required this.board,
-    required this.model,
-    required this.palette,
-    this.highlightIndex,
-    this.placedCells,
-    this.showWorkBorder = false,
+    required this.items,
+    this.labelMode = LabelMode.id,
+    this.showLabels = false,
     super.repaint,
   });
+
+  /// 高亮色的行/列分组编号：key = itemIdx*1e7 + cellIdx
+  Map<int, int> _buildNumbers() {
+    if (items.isEmpty) {
+      return const {};
+    }
+    final hi = items.first.highlightId;
+    // 收集 (板x, 板y, key)，按模式分组编号（跨作品统一板坐标）
+    final cells = <(int, int, int)>[];
+    for (var i = 0; i < items.length; i++) {
+      final item = items[i];
+      if (item.highlightId != hi) {
+        continue; // 未开高亮（各 item 的 highlightId 一致）
+      }
+      final m = item.model;
+      for (var c = 0; c < m.grid.length; c++) {
+        final v = m.grid[c];
+        if (v < 0 || v >= item.palette.colors.length) {
+          continue;
+        }
+        if (item.palette.colors[v].id == hi) {
+          cells.add((item.ox + c % m.width, item.oy + c ~/ m.width, i * 10000000 + c));
+        }
+      }
+    }
+    final byRow = labelMode == LabelMode.rowNumber;
+    cells.sort((a, b) => byRow
+        ? (a.$2 == b.$2 ? a.$1.compareTo(b.$1) : a.$2.compareTo(b.$2))
+        : (a.$1 == b.$1 ? a.$2.compareTo(b.$2) : a.$1.compareTo(b.$1)));
+    final numbers = <int, int>{};
+    var groupKey = -1;
+    var n = 0;
+    for (final (bx, by, key) in cells) {
+      final g = byRow ? by : bx;
+      if (g != groupKey) {
+        groupKey = g;
+        n = 0;
+      }
+      n++;
+      numbers[key] = n;
+    }
+    return numbers;
+  }
+
+  /// 画格子文字（色号/编号），TextPainter 按内容+字号+颜色缓存
+  ///
+  /// 字号跟随格子尺寸（无下限）：小格子字小，画布放大后矢量渲染依然清晰
+  void _drawLabel(Canvas canvas, String text, Rect rect, bool light) {
+    if (text.isEmpty) {
+      return;
+    }
+    final px = ((rect.width * 0.58).clamp(1.0, 13.0) * 2).roundToDouble() / 2;
+    final color = light ? Colors.black87 : Colors.white;
+    final key = "$text|$px|${color.value}";
+    var tp = _labelCache[key];
+    if (tp == null) {
+      tp = TextPainter(
+        text: TextSpan(
+          text: text,
+          style: TextStyle(fontSize: px, color: color, fontWeight: FontWeight.w600),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      _labelCache[key] = tp;
+    }
+    tp.paint(canvas, Offset(rect.center.dx - tp.width / 2, rect.center.dy - tp.height / 2));
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
     final cellW = size.width / board.w;
     final cellH = size.height / board.h;
+    final numbers =
+        (labelMode != LabelMode.id && items.any((e) => e.highlightId != null))
+        ? _buildNumbers()
+        : const <int, int>{};
 
     // 板底
     canvas.drawRect(
@@ -46,33 +166,35 @@ class BoardPainter extends CustomPainter {
       Paint()..color = const Color(0xFFFAFAFA),
     );
 
-    // 作品格（板外格不画：cell() 越界已挡，但 ox/oy 保证在板内，此处直接映射）
+    // 各作品格（板外部分画布自裁；越界索引/调色板缺失跳过）
     final gridPaint = Paint()..style = PaintingStyle.fill;
-    for (var y = 0; y < model.height; y++) {
-      for (var x = 0; x < model.width; x++) {
-        final v = model.grid[y * model.width + x];
-        if (v < 0 || v >= palette.colors.length) {
-          continue;
-        }
-        final c = palette.colors[v];
-        var color = Color.fromARGB(255, c.r, c.g, c.b);
-        if (highlightIndex != null && v != highlightIndex) {
-          color = Color.lerp(
-            color,
-            const Color.fromARGB(255, 0x30, 0x30, 0x30),
-            0.65,
-          )!;
-        }
-        gridPaint.color = color;
-        canvas.drawRect(
-          Rect.fromLTWH(
-            (board.ox + x) * cellW,
-            (board.oy + y) * cellH,
+    for (var itemIdx = 0; itemIdx < items.length; itemIdx++) {
+      final item = items[itemIdx];
+      final m = item.model;
+      for (var y = 0; y < m.height; y++) {
+        for (var x = 0; x < m.width; x++) {
+          final v = m.grid[y * m.width + x];
+          if (v < 0 || v >= item.palette.colors.length) {
+            continue;
+          }
+          final c = item.palette.colors[v];
+          var color = Color.fromARGB(255, c.r, c.g, c.b);
+          if (item.highlightId != null && c.id != item.highlightId) {
+            color = Color.lerp(
+              color,
+              const Color.fromARGB(255, 0x30, 0x30, 0x30),
+              0.65,
+            )!;
+          }
+          gridPaint.color = color;
+          final rect = Rect.fromLTWH(
+            (item.ox + x) * cellW,
+            (item.oy + y) * cellH,
             cellW,
             cellH,
-          ),
-          gridPaint,
-        );
+          );
+          canvas.drawRect(rect, gridPaint);
+        }
       }
     }
 
@@ -103,9 +225,47 @@ class BoardPainter extends CustomPainter {
       );
     }
 
+    // 文字层：默认每格显示色号；高亮 + 编号模式时高亮格改为行/列分组编号
+    if (showLabels) {
+    for (var itemIdx = 0; itemIdx < items.length; itemIdx++) {
+      final item = items[itemIdx];
+      final m = item.model;
+      for (var y = 0; y < m.height; y++) {
+        for (var x = 0; x < m.width; x++) {
+          final v = m.grid[y * m.width + x];
+          if (v < 0 || v >= item.palette.colors.length) {
+            continue;
+          }
+          final c = item.palette.colors[v];
+          final isHi = item.highlightId != null && c.id == item.highlightId;
+          final key = itemIdx * 10000000 + y * m.width + x;
+          final text = (isHi && numbers.containsKey(key))
+              ? "${numbers[key]}"
+              : c.id;
+          final light = c.r * 0.299 + c.g * 0.587 + c.b * 0.114 > 150;
+          _drawLabel(
+            canvas,
+            text,
+            Rect.fromLTWH(
+              (item.ox + x) * cellW,
+              (item.oy + y) * cellH,
+              cellW,
+              cellH,
+            ),
+            light,
+          );
+        }
+      }
+    }
+    }
+
     // 拼装已放格：半透明白罩 + 绿对勾（EditorPage 拼装标记同款观感）
-    final placed = placedCells;
-    if (placed != null && placed.isNotEmpty) {
+    for (final item in items) {
+      final placed = item.placedCells;
+      final m = item.model;
+      if (placed == null || placed.isEmpty) {
+        continue;
+      }
       final veil = Paint()
         ..color = Colors.white.withValues(alpha: 0.5)
         ..style = PaintingStyle.fill;
@@ -115,13 +275,13 @@ class BoardPainter extends CustomPainter {
         ..strokeWidth = 1.8
         ..strokeCap = StrokeCap.round;
       for (final i in placed) {
-        if (i < 0 || i >= model.grid.length || model.grid[i] < 0) {
+        if (i < 0 || i >= m.grid.length || m.grid[i] < 0) {
           continue;
         }
-        final x = i % model.width, y = i ~/ model.width;
+        final x = i % m.width, y = i ~/ m.width;
         final rect = Rect.fromLTWH(
-          (board.ox + x) * cellW,
-          (board.oy + y) * cellH,
+          (item.ox + x) * cellW,
+          (item.oy + y) * cellH,
           cellW,
           cellH,
         );
@@ -140,18 +300,21 @@ class BoardPainter extends CustomPainter {
       }
     }
 
-    // 作品边界蓝框（豆板配置页）
-    if (showWorkBorder) {
+    // 作品边框（豆板配置页）：选中加粗蓝，未选中细灰
+    for (final item in items) {
+      if (!item.showBorder) {
+        continue;
+      }
       final border = Paint()
-        ..color = Colors.blue
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2;
+        ..strokeWidth = item.selected ? 3 : 1
+        ..color = item.selected ? Colors.blue : Colors.black26;
       canvas.drawRect(
         Rect.fromLTWH(
-          board.ox * cellW,
-          board.oy * cellH,
-          model.width * cellW,
-          model.height * cellH,
+          item.ox * cellW,
+          item.oy * cellH,
+          item.model.width * cellW,
+          item.model.height * cellH,
         ),
         border,
       );
@@ -161,10 +324,9 @@ class BoardPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant BoardPainter oldDelegate) {
     return oldDelegate.board != board ||
-        oldDelegate.model != model ||
-        oldDelegate.palette != palette ||
-        oldDelegate.highlightIndex != highlightIndex ||
-        oldDelegate.placedCells != placedCells ||
-        oldDelegate.showWorkBorder != showWorkBorder;
+        oldDelegate.labelMode != labelMode ||
+        oldDelegate.showLabels != showLabels ||
+        oldDelegate.items.length != items.length ||
+        oldDelegate.items != items;
   }
 }

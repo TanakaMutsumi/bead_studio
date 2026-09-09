@@ -39,6 +39,27 @@ class WorkEntry {
   });
 }
 
+/// 豆板会话中的一件作品引用（文件 + 摆放偏移）
+class BoardSessionWork {
+  final File file;
+  final int ox;
+  final int oy;
+
+  const BoardSessionWork({
+    required this.file,
+    required this.ox,
+    required this.oy,
+  });
+}
+
+/// 豆板会话：板配置 + 板上作品引用列表（多作品摆放的持久化）
+class BoardSession {
+  final BoardConfig board;
+  final List<BoardSessionWork> works;
+
+  const BoardSession({required this.board, required this.works});
+}
+
 class DraftStore {
   static const _dirName = "bead_drafts";
 
@@ -218,6 +239,64 @@ class DraftStore {
         "pattern": e.model.toJson(),
       }),
     );
+  }
+
+  // ==================== 豆板会话 API ====================
+
+  static Future<File> _sessionFile() async {
+    final root = await getApplicationDocumentsDirectory();
+    return File("${root.path}${Platform.pathSeparator}bead_board_session.json");
+  }
+
+  /// 保存豆板会话（配置页每次增删/拖动/换板后调用，幂等覆盖）
+  static Future<void> saveBoardSession(BoardSession session) async {
+    try {
+      final f = await _sessionFile();
+      await f.writeAsString(
+        jsonEncode({
+          "board": session.board.toJson(),
+          "works": [
+            for (final w in session.works)
+              {"file": w.file.path, "ox": w.ox, "oy": w.oy},
+          ],
+        }),
+      );
+    } catch (_) {
+      // 写失败不影响页面操作
+    }
+  }
+
+  /// 读取豆板会话（无文件/损坏返回 null）
+  static Future<BoardSession?> loadBoardSession() async {
+    try {
+      final f = await _sessionFile();
+      if (!f.existsSync()) {
+        return null;
+      }
+      final json = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
+      final board = BoardConfig.fromJson(json["board"] as Map<String, dynamic>?);
+      if (board == null) {
+        return null;
+      }
+      final works = <BoardSessionWork>[];
+      final raw = json["works"];
+      if (raw is List) {
+        for (final item in raw) {
+          if (item is Map<String, dynamic>) {
+            works.add(
+              BoardSessionWork(
+                file: File(item["file"] as String),
+                ox: item["ox"] as int? ?? 0,
+                oy: item["oy"] as int? ?? 0,
+              ),
+            );
+          }
+        }
+      }
+      return BoardSession(board: board, works: works);
+    } catch (_) {
+      return null;
+    }
   }
 
   static String _defaultName(DateTime t) =>
