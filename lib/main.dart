@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'features/import/import_page.dart';
+import 'features/home/home_page.dart';
 
 void main() {
   runApp(const BeadStudioApp());
@@ -20,7 +20,7 @@ class BeadStudioApp extends StatelessWidget {
         brightness: Brightness.light,
         fontFamily: "NotoSansSC", // 本地打包字体，避免 web 端从 gstatic 拉中文分片被墙
       ),
-      home: const ImportPage(),
+      home: const HomePage(),
     );
   }
 }
