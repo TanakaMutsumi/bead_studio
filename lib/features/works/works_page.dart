@@ -67,13 +67,12 @@ class _WorksPageState extends State<WorksPage> {
     });
   }
 
-  List<String> get _folders =>
-      _works
-          .map((w) => w.entry.folder)
-          .where((f) => f.isNotEmpty)
-          .toSet()
-          .toList()
-        ..sort();
+  List<String> get _folders => _works
+      .map((w) => w.entry.folder)
+      .where((f) => f.isNotEmpty)
+      .toSet()
+      .toList()
+    ..sort();
 
   List<_WorkVM> get _filtered => _folderFilter == null
       ? _works
@@ -225,15 +224,15 @@ class _WorksPageState extends State<WorksPage> {
   }
 
   void _toggleSelect(File f) => setState(() {
-    if (_selected.contains(f)) {
-      _selected.remove(f);
-    } else {
-      _selected.add(f);
-    }
-    if (_selected.isEmpty) {
-      _multiSelect = false;
-    }
-  });
+        if (_selected.contains(f)) {
+          _selected.remove(f);
+        } else {
+          _selected.add(f);
+        }
+        if (_selected.isEmpty) {
+          _multiSelect = false;
+        }
+      });
 
   // ==================== UI ====================
 
@@ -353,7 +352,7 @@ class _WorksPageState extends State<WorksPage> {
         maxCrossAxisExtent: 160,
         mainAxisSpacing: 12,
         crossAxisSpacing: 12,
-        childAspectRatio: 0.82, // 缩略图 + 名字 + 尺寸行
+        childAspectRatio: 0.72, // 缩略图 + 名字 + 尺寸行（0.82 会溢出裁底行）
       ),
       itemCount: _filtered.length,
       itemBuilder: (context, i) {
@@ -409,12 +408,26 @@ class _WorksPageState extends State<WorksPage> {
                       Positioned(
                         top: 0,
                         right: 0,
-                        child: SizedBox(
-                          width: 32,
-                          height: 32,
+                        child: Container(
+                          width: 40,
+                          height: 40,
+                          alignment: Alignment.center,
+                          decoration: const BoxDecoration(
+                            // 深底白图标：浅色缩略图上也看得清（半透明白圆叠
+                            // 亮黄缩略图完全不可见，用户找不到删除入口）
+                            color: Colors.black54,
+                            shape: BoxShape.circle,
+                          ),
                           child: PopupMenuButton<String>(
                             padding: EdgeInsets.zero,
-                            iconSize: 18,
+                            iconSize: 22,
+                            color: Colors.white,
+                            icon: const Icon(
+                              Icons.more_vert,
+                              size: 22,
+                              color: Colors.white,
+                            ),
+                            tooltip: "作品操作",
                             onSelected: (action) {
                               switch (action) {
                                 case "open":
@@ -460,7 +473,9 @@ class _WorksPageState extends State<WorksPage> {
                       ),
                       Text(
                         "${w.entry.model.width}×${w.entry.model.height} · ${_fmtTime(w.entry.updatedAt)}",
-                        style: Theme.of(context).textTheme.bodySmall
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodySmall
                             ?.copyWith(color: Colors.black45, fontSize: 10),
                       ),
                     ],
@@ -482,27 +497,25 @@ class _WorksPageState extends State<WorksPage> {
           mainAxisAlignment: MainAxisAlignment.spaceAround,
           children: [
             TextButton.icon(
-              onPressed: _selected.isEmpty
-                  ? null
-                  : () => _move(_selected.toList()),
+              onPressed:
+                  _selected.isEmpty ? null : () => _move(_selected.toList()),
               icon: const Icon(Icons.drive_file_move_outlined),
               label: const Text("移动"),
             ),
             TextButton.icon(
-              onPressed: _selected.isEmpty
-                  ? null
-                  : () => _delete(_selected.toList()),
+              onPressed:
+                  _selected.isEmpty ? null : () => _delete(_selected.toList()),
               icon: const Icon(Icons.delete_outline),
               label: const Text("删除"),
             ),
             TextButton(
               onPressed:
                   _filtered.isEmpty || _selected.length == _filtered.length
-                  ? null
-                  : () => setState(
-                      () =>
-                          _selected.addAll(_filtered.map((w) => w.entry.file)),
-                    ),
+                      ? null
+                      : () => setState(
+                            () => _selected
+                                .addAll(_filtered.map((w) => w.entry.file)),
+                          ),
               child: const Text("全选"),
             ),
           ],
