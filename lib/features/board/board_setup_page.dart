@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../../core/board_config.dart';
@@ -15,8 +17,12 @@ import 'placed_work.dart';
 /// 右上角叉移除选中作品；未选中时单指平移画布、双指缩放。
 /// 作品之间不能相交：添加时找空位（无空位拒绝），拖动贴边滑动不产生重叠
 ///
-/// [initial] 保存作品后直接开始拼豆时带入的作品；null = 从主界面进入，
-/// 恢复上次会话（板配置 + 已摆作品），页内「添加作品」继续补充
+/// 豆板管理：右上菜单「新建空板 / 打开豆板 / 另存为 / 删除当前板」；
+/// 已命名豆板随增删/拖动/换板自动覆盖保存。「开始拼豆」与 back 退出都先弹
+/// 保存确认（是=保存后继续；否=不保存继续；点外部=留在本页），未命名板
+/// 选「是」先问豆板名。不打开旧豆板进入 = 新的空板
+///
+/// [initial] 保存作品后直接开始拼豆时带入的作品；null = 从主界面进入（空板）
 class BoardSetupPage extends StatefulWidget {
   final WorkEntry? initial;
 
@@ -47,38 +53,45 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
   var _phaseY = 0;
 
   ///< 横粗线相位
+  String? _boardName;
+
+  ///< 当前豆板名（null = 未命名新板，变更不落盘）
+  File? _boardFile;
+
+  ///< 已命名豆板的目标文件（自动覆盖保存用）
   int _selected = -1;
 
   ///< 选中作品索引（-1 = 无选中；只有选中后才能拖动）
+  var _popAllowed = false;
+
+  ///< 退出确认已通过（放行本次 pop，防 PopScope 拦截自己发起的 pop）
   final _viewerCtrl = TransformationController();
 
   @override
   void initState() {
     super.initState();
     final e = widget.initial;
-    if (e != null) {
-      final b = e.board;
-      if (b != null) {
-        _bw = b.w;
-        _bh = b.h;
-        _interval = b.interval;
-        _phaseX = b.phaseX;
-        _phaseY = b.phaseY;
-      }
-      final w = PlacedWork(
-        entry: e,
-        palette: const BeadPalette([]),
-        ox: b?.ox ?? ((_bw - e.model.width) / 2).round(),
-        oy: b?.oy ?? ((_bh - e.model.height) / 2).round(),
-      );
-      w.clampTo(_bw, _bh);
-      _works.add(w);
-      _selected = 0;
-      _resolvePalette(0);
-      _persistSession();
-    } else {
-      _restoreSession();
+    if (e == null) {
+      return; // 从主页进入：新的空板（要继续旧板走「打开豆板」）
     }
+    final b = e.board;
+    if (b != null) {
+      _bw = b.w;
+      _bh = b.h;
+      _interval = b.interval;
+      _phaseX = b.phaseX;
+      _phaseY = b.phaseY;
+    }
+    final w = PlacedWork(
+      entry: e,
+      palette: const BeadPalette([]),
+      ox: b?.ox ?? ((_bw - e.model.width) / 2).round(),
+      oy: b?.oy ?? ((_bh - e.model.height) / 2).round(),
+    );
+    w.clampTo(_bw, _bh);
+    _works.add(w);
+    _selected = 0;
+    _resolvePalette(0);
   }
 
   @override
@@ -87,18 +100,93 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     super.dispose();
   }
 
-  /// 恢复上次豆板会话（板配置 + 作品引用逐个读回，失效文件跳过）
-  Future<void> _restoreSession() async {
-    final session = await DraftStore.loadBoardSession();
+  // ==================== 豆板管理（保存/打开/新建） ====================
+
+  /// 当前编辑状态打包（板配置 + 作品引用）
+  BoardSession _currentSession(String name) => BoardSession(
+        name: name,
+        board: BoardConfig(
+          w: _bw,
+          h: _bh,
+          interval: _interval,
+          phaseX: _phaseX,
+          phaseY: _phaseY,
+        ),
+        works: [
+          for (final w in _works)
+            BoardSessionWork(file: w.entry.file, ox: w.ox, oy: w.oy),
+        ],
+      );
+
+  /// 已命名豆板自动覆盖保存（增删/拖动结束/换板/换相位后调用；未命名板不落盘）
+  Future<void> _persistBoard() async {
+    final name = _boardName;
+    if (name == null) {
+      return;
+    }
+    _boardFile = await DraftStore.saveBoardFile(_currentSession(name));
+  }
+
+  /// 打开豆板列表（BottomSheet 点选载入）
+  Future<void> _openBoardPicker() async {
+    final boards = await DraftStore.listBoards();
+    if (!mounted) {
+      return;
+    }
+    if (boards.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("还没有保存过豆板，先摆好再「另存为豆板」")),
+      );
+      return;
+    }
+    final picked = await showModalBottomSheet<BoardEntry>(
+      context: context,
+      builder: (sctx) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text("打开豆板", style: Theme.of(sctx).textTheme.titleMedium),
+            ),
+            for (final b in boards)
+              ListTile(
+                leading: const Icon(Icons.grid_view_outlined),
+                title: Text(b.name),
+                subtitle: Text(
+                  "${b.workCount} 件作品 · ${b.boardLabel}"
+                  " · ${b.updatedAt.month}/${b.updatedAt.day} "
+                  "${b.updatedAt.hour.toString().padLeft(2, "0")}:"
+                  "${b.updatedAt.minute.toString().padLeft(2, "0")}",
+                ),
+                onTap: () => Navigator.pop(sctx, b),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (picked == null) {
+      return;
+    }
+    await _loadBoard(picked);
+  }
+
+  /// 载入一块豆板（板配置 + 作品引用逐个读回；失效作品文件跳过）
+  Future<void> _loadBoard(BoardEntry picked) async {
+    final session = await DraftStore.loadBoardFile(picked.file);
     if (session == null || !mounted) {
       return;
     }
     setState(() {
+      _boardName = session.name;
+      _boardFile = picked.file;
       _bw = session.board.w;
       _bh = session.board.h;
       _interval = session.board.interval;
       _phaseX = session.board.phaseX;
       _phaseY = session.board.phaseY;
+      _works.clear();
+      _selected = -1;
     });
     final selected = await PaletteRegistry.loadSelected();
     for (final sw in session.works) {
@@ -128,20 +216,199 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     }
   }
 
-  /// 会话落盘（增删/拖动结束/换板/换相位后调用）
-  Future<void> _persistSession() async {
-    await DraftStore.saveBoardSession(
-      BoardSession(
-        board: BoardConfig(
-          w: _bw,
-          h: _bh,
-          interval: _interval,
-          phaseX: _phaseX,
-          phaseY: _phaseY,
+  /// 另存为豆板（输入名字保存；保存后随编辑自动覆盖）
+  Future<void> _saveBoardAs() async {
+    final n = await _askBoardName("另存为豆板");
+    if (n == null) {
+      return;
+    }
+    _boardFile = await DraftStore.saveBoardFile(_currentSession(n));
+    setState(() => _boardName = n);
+    if (mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text("已保存豆板「$n」，继续编辑会自动保存")));
+    }
+  }
+
+  /// 询问豆板名（预填当前名；取消或空名返回 null）
+  Future<String?> _askBoardName(String title) async {
+    final ctrl = TextEditingController(text: _boardName ?? "");
+    final name = await _inputDialog(title, "豆板名", ctrl);
+    final n = name?.trim();
+    return (n == null || n.isEmpty) ? null : n;
+  }
+
+  /// 确保当前豆板已保存：已命名板直接覆盖；未命名板先问名字（取消返回 false）
+  Future<bool> _ensureSaved() async {
+    final name = _boardName;
+    if (name != null) {
+      _boardFile = await DraftStore.saveBoardFile(_currentSession(name));
+      return true;
+    }
+    final n = await _askBoardName("保存豆板");
+    if (n == null || !mounted) {
+      return false;
+    }
+    _boardFile = await DraftStore.saveBoardFile(_currentSession(n));
+    setState(() => _boardName = n);
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text("已保存豆板「$n」")));
+    return true;
+  }
+
+  /// 两键确认框：否(false) / 是(true)；点外部取消返回 null
+  Future<bool?> _confirmDialog(String title, String content) {
+    return showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: Text(title),
+        content: Text(content),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: const Text("否"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dctx, true),
+            child: const Text("是"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// back 退出确认：板上有作品时问是否保存（是=保存退出；否=直接退出；点外部=留下）
+  Future<void> _confirmExit() async {
+    if (_works.isEmpty) {
+      _doExit();
+      return;
+    }
+    final save = await _confirmDialog("保存豆板？", "「是」保存当前豆板后退出；「否」不保存直接退出");
+    if (save == null || !mounted) {
+      return;
+    }
+    if (save) {
+      final ok = await _ensureSaved();
+      if (!ok || !mounted) {
+        return; // 未命名板放弃输名字：留在本页
+      }
+    }
+    _doExit();
+  }
+
+  /// 放行并执行退出（先置 _popAllowed 再等重建完成后 pop，否则会被 PopScope 再次拦截）
+  void _doExit() {
+    setState(() => _popAllowed = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
+    });
+  }
+
+  /// 新建空板（当前摆板丢弃，确认后执行）
+  Future<void> _newBoard() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: const Text("新建空板？"),
+        content: const Text("当前摆板未保存的改动会丢弃"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: const Text("取消"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dctx, true),
+            child: const Text("新建"),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) {
+      return;
+    }
+    setState(() {
+      _boardName = null;
+      _boardFile = null;
+      _bw = 52;
+      _bh = 52;
+      _interval = 5;
+      _phaseX = 0;
+      _phaseY = 0;
+      _works.clear();
+      _selected = -1;
+    });
+  }
+
+  /// 删除当前已命名豆板（删文件并回到空板态）
+  Future<void> _deleteBoard() async {
+    final f = _boardFile;
+    final name = _boardName;
+    if (f == null || name == null) {
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: Text("删除豆板「$name」？"),
+        content: const Text("只删摆板布局，作品本身不受影响，删除后无法恢复"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: const Text("取消"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dctx, true),
+            child: const Text("删除"),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) {
+      return;
+    }
+    await DraftStore.deleteBoardFile(f);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _boardName = null;
+      _boardFile = null;
+      _works.clear();
+      _selected = -1;
+    });
+  }
+
+  /// 单行输入对话框，取消返回 null
+  Future<String?> _inputDialog(
+    String title,
+    String hint,
+    TextEditingController ctrl,
+  ) {
+    return showDialog<String>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: InputDecoration(
+            hintText: hint,
+            border: const OutlineInputBorder(),
+          ),
         ),
-        works: [
-          for (final w in _works)
-            BoardSessionWork(file: w.entry.file, ox: w.ox, oy: w.oy),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: const Text("取消"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dctx, ctrl.text),
+            child: const Text("确定"),
+          ),
         ],
       ),
     );
@@ -175,7 +442,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
         work.clampTo(w, h); // 换板保留相对布局，只把出界作品拉回板内
       }
     });
-    _persistSession();
+    _persistBoard();
   }
 
   void _setInterval(int v) {
@@ -184,7 +451,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       _phaseX = _phaseX.clamp(0, v - 1);
       _phaseY = _phaseY.clamp(0, v - 1);
     });
-    _persistSession();
+    _persistBoard();
   }
 
   // 顶点相位：phaseX 增 = 竖粗线左移，减 = 右移；phaseY 增 = 横粗线上移，减 = 下移
@@ -193,7 +460,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       _phaseX = (_phaseX + dx + _interval) % _interval;
       _phaseY = (_phaseY + dy + _interval) % _interval;
     });
-    _persistSession();
+    _persistBoard();
   }
 
   /// 自定义板尺寸
@@ -268,9 +535,8 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       return;
     }
     final onBoard = _works.map((w) => w.entry.file.path).toSet();
-    final candidates = all
-        .where((w) => !onBoard.contains(w.file.path))
-        .toList();
+    final candidates =
+        all.where((w) => !onBoard.contains(w.file.path)).toList();
     if (candidates.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("作品库的作品都已在板上，先叉掉一个再来添加")),
@@ -336,7 +602,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       _selected = _works.length - 1;
     });
     _resolvePalette(_works.length - 1);
-    _persistSession();
+    _persistBoard();
   }
 
   /// 找第一个放得下的空位（行扫描，不与已摆作品矩形相交）
@@ -390,7 +656,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       _works.removeAt(_selected);
       _selected = -1;
     });
-    _persistSession();
+    _persistBoard();
   }
 
   // ==================== 摆放交互 ===================
@@ -450,10 +716,12 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       // 原位置不重叠时，新位置逐轴回退到贴边（贴着其他作品边缘滑走）；
       // 原位置本就重叠（历史遗留/换小板收拢）则放开限制，允许直接拖出
       if (!_wouldOverlap(_selected, w.ox, w.oy, m.width, m.height)) {
-        while (nx != w.ox && _wouldOverlap(_selected, nx, ny, m.width, m.height)) {
+        while (
+            nx != w.ox && _wouldOverlap(_selected, nx, ny, m.width, m.height)) {
           nx += nx > w.ox ? -1 : 1;
         }
-        while (ny != w.oy && _wouldOverlap(_selected, nx, ny, m.width, m.height)) {
+        while (
+            ny != w.oy && _wouldOverlap(_selected, nx, ny, m.width, m.height)) {
           ny += ny > w.oy ? -1 : 1;
         }
         if (_wouldOverlap(_selected, nx, ny, m.width, m.height)) {
@@ -484,7 +752,10 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     for (var i = _works.length - 1; i >= 0; i--) {
       final w = _works[i];
       final m = w.entry.model;
-      if (bx >= w.ox && bx < w.ox + m.width && by >= w.oy && by < w.oy + m.height) {
+      if (bx >= w.ox &&
+          bx < w.ox + m.width &&
+          by >= w.oy &&
+          by < w.oy + m.height) {
         hit = i;
         break;
       }
@@ -574,9 +845,18 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
 
   // ==================== 开始拼豆 ====================
 
+  /// 开始拼豆：确认「保存并开始拼豆？」（是=保存后进入；否/点外部=留在本页）
   Future<void> _startAssemble() async {
     if (_works.isEmpty || _works.any((w) => !w.fits(_bw, _bh))) {
       return;
+    }
+    final save = await _confirmDialog("保存并开始拼豆？", "保存当前豆板后进入拼豆");
+    if (save != true || !mounted) {
+      return;
+    }
+    final ok = await _ensureSaved();
+    if (!ok || !mounted) {
+      return; // 未命名板放弃输名字：留在本页
     }
     final board = BoardConfig(
       w: _bw,
@@ -609,24 +889,59 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
   @override
   Widget build(BuildContext context) {
     final presetSelected = _presets.any((s) => s == _bw && s == _bh);
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("拼豆板设置"),
-        actions: [
-          if (_selected >= 0)
-            IconButton(
-              onPressed: _removeSelected,
-              icon: const Icon(Icons.close),
-              tooltip: "移除选中作品",
+    return PopScope(
+      // back 先问保存（是/否/取消）；空板与已确认退出直接放行
+      canPop: _popAllowed || _works.isEmpty,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) {
+          return;
+        }
+        _confirmExit();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(_boardName == null ? "拼豆板设置" : "拼豆板 · $_boardName"),
+          actions: [
+            if (_selected >= 0)
+              IconButton(
+                onPressed: _removeSelected,
+                icon: const Icon(Icons.close),
+                tooltip: "移除选中作品",
+              ),
+            PopupMenuButton<String>(
+              tooltip: "豆板菜单",
+              onSelected: (action) {
+                switch (action) {
+                  case "new":
+                    _newBoard();
+                  case "open":
+                    _openBoardPicker();
+                  case "saveas":
+                    _saveBoardAs();
+                  case "delete":
+                    _deleteBoard();
+                }
+              },
+              itemBuilder: (_) => [
+                const PopupMenuItem(value: "new", child: Text("新建空板")),
+                const PopupMenuItem(value: "open", child: Text("打开豆板…")),
+                const PopupMenuItem(value: "saveas", child: Text("另存为豆板…")),
+                if (_boardFile != null)
+                  const PopupMenuItem(
+                    value: "delete",
+                    child: Text("删除当前豆板"),
+                  ),
+              ],
             ),
-        ],
-      ),
-      body: Column(
-        children: [
-          _buildConfigRows(presetSelected),
-          Expanded(child: _buildCanvas()),
-          _buildBottomBar(),
-        ],
+          ],
+        ),
+        body: Column(
+          children: [
+            _buildConfigRows(presetSelected),
+            Expanded(child: _buildCanvas()),
+            _buildBottomBar(),
+          ],
+        ),
       ),
     );
   }
@@ -693,7 +1008,8 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
               _phaseBtn(Icons.arrow_back, "竖线左移", () => _shiftPhase(dx: 1)),
               _phaseBtn(Icons.arrow_forward, "竖线右移", () => _shiftPhase(dx: -1)),
               _phaseBtn(Icons.arrow_upward, "横线上移", () => _shiftPhase(dy: 1)),
-              _phaseBtn(Icons.arrow_downward, "横线下移", () => _shiftPhase(dy: -1)),
+              _phaseBtn(
+                  Icons.arrow_downward, "横线下移", () => _shiftPhase(dy: -1)),
             ],
           ),
           const SizedBox(height: 2),
@@ -707,8 +1023,8 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
             child: Text(
               "${_works.length} 件作品 · ${stats.length} 种色 · $total 颗豆 ›",
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Theme.of(context).colorScheme.primary,
-              ),
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
             ),
           ),
         ],
@@ -717,11 +1033,11 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
   }
 
   Widget _phaseBtn(IconData icon, String tip, VoidCallback onTap) => IconButton(
-    onPressed: onTap,
-    icon: Icon(icon, size: 18),
-    tooltip: tip,
-    visualDensity: VisualDensity.compact,
-  );
+        onPressed: onTap,
+        icon: Icon(icon, size: 18),
+        tooltip: tip,
+        visualDensity: VisualDensity.compact,
+      );
 
   Widget _buildCanvas() {
     if (_works.isEmpty) {
@@ -768,7 +1084,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
                   _accDy = 0;
                 },
                 onScaleUpdate: (d) => _onCanvasScale(d, canvasW, canvasH),
-                onScaleEnd: (_) => _persistSession(),
+                onScaleEnd: (_) => _persistBoard(),
                 child: CustomPaint(
                   size: Size.infinite,
                   painter: BoardPainter(
@@ -822,9 +1138,8 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
               const SizedBox(width: 8),
               Expanded(
                 child: FilledButton.icon(
-                  onPressed: _works.isNotEmpty && !anyOverflow
-                      ? _startAssemble
-                      : null,
+                  onPressed:
+                      _works.isNotEmpty && !anyOverflow ? _startAssemble : null,
                   icon: const Icon(Icons.play_arrow),
                   label: const Text("开始拼豆"),
                 ),

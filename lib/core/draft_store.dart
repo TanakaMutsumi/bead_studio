@@ -54,10 +54,38 @@ class BoardSessionWork {
 
 /// 豆板会话：板配置 + 板上作品引用列表（多作品摆放的持久化）
 class BoardSession {
+  final String name;
+
+  ///< 豆板名（列表显示/同名覆盖的键）
   final BoardConfig board;
   final List<BoardSessionWork> works;
+  final DateTime? savedAt;
 
-  const BoardSession({required this.board, required this.works});
+  ///< 文件里记录的保存时间（内存新建的会话为 null，列表排序兜底用文件 mtime）
+
+  const BoardSession({
+    required this.name,
+    required this.board,
+    required this.works,
+    this.savedAt,
+  });
+}
+
+/// 豆板条目（列表用：文件 + 名字 + 板尺寸 + 件数 + 更新时间）
+class BoardEntry {
+  final File file;
+  final String name;
+  final String boardLabel;
+  final int workCount;
+  final DateTime updatedAt;
+
+  const BoardEntry({
+    required this.file,
+    required this.name,
+    required this.boardLabel,
+    required this.workCount,
+    required this.updatedAt,
+  });
 }
 
 class DraftStore {
@@ -241,63 +269,121 @@ class DraftStore {
     );
   }
 
-  // ==================== 豆板会话 API ====================
+  // ==================== 豆板文件 API ====================
 
-  static Future<File> _sessionFile() async {
+  /// 命名豆板：保存/打开/删除（bead_boards/ 目录，一名一文件，同名覆盖）
+  static Future<Directory> _boardsDir() async {
     final root = await getApplicationDocumentsDirectory();
-    return File("${root.path}${Platform.pathSeparator}bead_board_session.json");
-  }
-
-  /// 保存豆板会话（配置页每次增删/拖动/换板后调用，幂等覆盖）
-  static Future<void> saveBoardSession(BoardSession session) async {
-    try {
-      final f = await _sessionFile();
-      await f.writeAsString(
-        jsonEncode({
-          "board": session.board.toJson(),
-          "works": [
-            for (final w in session.works)
-              {"file": w.file.path, "ox": w.ox, "oy": w.oy},
-          ],
-        }),
-      );
-    } catch (_) {
-      // 写失败不影响页面操作
+    final dir = Directory("${root.path}${Platform.pathSeparator}bead_boards");
+    if (!dir.existsSync()) {
+      dir.createSync(recursive: true);
     }
+    return dir;
   }
 
-  /// 读取豆板会话（无文件/损坏返回 null）
-  static Future<BoardSession?> loadBoardSession() async {
+  /// 列出全部豆板（按更新时间新→旧）
+  static Future<List<BoardEntry>> listBoards() async {
+    final dir = await _boardsDir();
+    final boards = <BoardEntry>[];
+    for (final f in dir.listSync().whereType<File>()) {
+      if (!f.path.endsWith(".json")) {
+        continue;
+      }
+      final s = await loadBoardFile(f);
+      if (s == null) {
+        continue;
+      }
+      boards.add(
+        BoardEntry(
+          file: f,
+          name: s.name,
+          boardLabel: "${s.board.w}×${s.board.h}",
+          workCount: s.works.length,
+          updatedAt: _boardUpdatedAt(f, s),
+        ),
+      );
+    }
+    boards.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    return boards;
+  }
+
+  /// 保存豆板（同名覆盖并刷新更新时间；返回目标文件）
+  static Future<File> saveBoardFile(BoardSession session) async {
+    final dir = await _boardsDir();
+    // 同名找旧文件覆盖，避免一名多文件
+    File? target;
+    for (final b in await listBoards()) {
+      if (b.name == session.name) {
+        target = b.file;
+        break;
+      }
+    }
+    target ??= File(
+      "${dir.path}${Platform.pathSeparator}board_${DateTime.now().microsecondsSinceEpoch}.json",
+    );
+    await target.writeAsString(jsonEncode(_boardToJson(session)));
+    return target;
+  }
+
+  /// 读取豆板（文件不存在/损坏返回 null）
+  static Future<BoardSession?> loadBoardFile(File file) async {
     try {
-      final f = await _sessionFile();
-      if (!f.existsSync()) {
-        return null;
-      }
-      final json = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
-      final board = BoardConfig.fromJson(json["board"] as Map<String, dynamic>?);
-      if (board == null) {
-        return null;
-      }
-      final works = <BoardSessionWork>[];
-      final raw = json["works"];
-      if (raw is List) {
-        for (final item in raw) {
-          if (item is Map<String, dynamic>) {
-            works.add(
-              BoardSessionWork(
-                file: File(item["file"] as String),
-                ox: item["ox"] as int? ?? 0,
-                oy: item["oy"] as int? ?? 0,
-              ),
-            );
-          }
-        }
-      }
-      return BoardSession(board: board, works: works);
+      return _parseBoardJson(
+        jsonDecode(await file.readAsString()) as Map<String, dynamic>,
+      );
     } catch (_) {
       return null;
     }
   }
+
+  static Future<void> deleteBoardFile(File file) async {
+    if (file.existsSync()) {
+      file.deleteSync();
+    }
+  }
+
+  static Map<String, dynamic> _boardToJson(BoardSession s) => {
+    "name": s.name,
+    "updatedAt": DateTime.now().toIso8601String(),
+    "board": s.board.toJson(),
+    "works": [
+      for (final w in s.works)
+        {"file": w.file.path, "ox": w.ox, "oy": w.oy},
+    ],
+  };
+
+  static BoardSession? _parseBoardJson(Map<String, dynamic> json) {
+    final board = BoardConfig.fromJson(
+      json["board"] as Map<String, dynamic>?,
+    );
+    if (board == null) {
+      return null;
+    }
+    final works = <BoardSessionWork>[];
+    final raw = json["works"];
+    if (raw is List) {
+      for (final item in raw) {
+        if (item is Map<String, dynamic>) {
+          works.add(
+            BoardSessionWork(
+              file: File(item["file"] as String),
+              ox: item["ox"] as int? ?? 0,
+              oy: item["oy"] as int? ?? 0,
+            ),
+          );
+        }
+      }
+    }
+    return BoardSession(
+      name: json["name"] as String? ?? "未命名豆板",
+      board: board,
+      works: works,
+      savedAt: DateTime.tryParse(json["updatedAt"] as String? ?? ""),
+    );
+  }
+
+  static DateTime _boardUpdatedAt(File f, BoardSession s) =>
+      s.savedAt ?? f.lastModifiedSync();
 
   static String _defaultName(DateTime t) =>
       "图案 ${t.month}${_two(t.day)}日 ${_two(t.hour)}:${_two(t.minute)}";
