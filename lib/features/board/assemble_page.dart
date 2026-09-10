@@ -4,6 +4,7 @@ import '../../core/app_snack_bar.dart';
 import '../../core/board_config.dart';
 import '../../core/draft_store.dart';
 import '../../core/palette.dart';
+import '../../core/zoom_controls.dart';
 import 'board_painter.dart';
 import 'placed_work.dart';
 
@@ -35,6 +36,9 @@ class _AssemblePageState extends State<AssemblePage> {
   var _labelMode = LabelMode.id;
 
   ///< 格子文字层模式（选中色号后可切横向/竖向编号；默认只色号）
+  Size _canvasSize = Size.zero;
+
+  ///< 画布内容尺寸速记（LayoutBuilder builder 内赋值供缩放边界计算用）
 
   @override
   void dispose() {
@@ -267,74 +271,69 @@ class _AssemblePageState extends State<AssemblePage> {
     return Stack(
       children: [
         Center(
-          child: InteractiveViewer(
-            transformationController: _viewerCtrl,
-            maxScale: 12,
-            panEnabled: true,
+          child: Padding(
+            // 板四周留边距：满屏形态板外框贴屏幕边看不清（与配置页同款）
+            padding: const EdgeInsets.all(8),
+            child: InteractiveViewer(
+              transformationController: _viewerCtrl,
+              maxScale: 12,
+              panEnabled: true,
 
-            ///< 本页无画布手势，平移缩放都给查看器
-            child: AspectRatio(
-              aspectRatio: widget.board.w / widget.board.h,
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  return GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTapUp: (d) => _toggleAt(
-                      d.localPosition,
+              ///< 本页无画布手势，平移缩放都给查看器
+              child: AspectRatio(
+                aspectRatio: widget.board.w / widget.board.h,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    // 速记画布内容尺寸（无 setState，build 期间赋值）——
+                    // ZoomControls 缩放边界计算用（闭包跨出本 builder）
+                    _canvasSize = Size(
                       constraints.maxWidth,
                       constraints.maxHeight,
-                    ),
-                    child: CustomPaint(
-                      size: Size.infinite,
-                      painter: BoardPainter(
-                        board: widget.board,
-                        labelMode: _labelMode,
-                        showLabels: true,
-                        items: [
-                          for (var i = 0; i < widget.works.length; i++)
-                            BoardPaintItem(
-                              model: widget.works[i].entry.model,
-                              palette: widget.works[i].palette,
-                              ox: widget.works[i].ox,
-                              oy: widget.works[i].oy,
-                              highlightId: _highlightId,
-                              placedCells: _placed[i],
-                            ),
-                        ],
+                    );
+                    return GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTapUp: (d) => _toggleAt(
+                        d.localPosition,
+                        constraints.maxWidth,
+                        constraints.maxHeight,
                       ),
-                    ),
-                  );
-                },
-              ),
-            ),
-          ),
-        ),
-        // 还原全幅悬浮钮：双指缩放/平移把板面拖丢后一键复位（与豆板
-        // 配置页同款）
-        Positioned(
-          right: 8,
-          bottom: 8,
-          child: Material(
-            color: Colors.white,
-            elevation: 3,
-            borderRadius: BorderRadius.circular(22),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(22),
-              onTap: () => _viewerCtrl.value = Matrix4.identity(),
-              child: const SizedBox(
-                width: 44,
-                height: 44,
-                child: Tooltip(
-                  message: "还原全幅（缩放/平移复位）",
-                  child: Icon(
-                    Icons.fit_screen,
-                    size: 22,
-                    color: Colors.black54,
-                  ),
+                      child: CustomPaint(
+                        size: Size.infinite,
+                        painter: BoardPainter(
+                          // darkBoard：拼豆页深底——空白格沉底、未选中豆
+                          // 压黑，选中色更突出；粗线颜色随板配置（默认橙）
+                          board: widget.board,
+                          labelMode: _labelMode,
+                          showLabels: true,
+                          darkBoard: true,
+                          items: [
+                            for (var i = 0; i < widget.works.length; i++)
+                              BoardPaintItem(
+                                model: widget.works[i].entry.model,
+                                palette: widget.works[i].palette,
+                                ox: widget.works[i].ox,
+                                oy: widget.works[i].oy,
+                                highlightId: _highlightId,
+                                placedCells: _placed[i],
+                              ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
                 ),
               ),
             ),
           ),
+        ),
+        // 缩放控制组：放大/缩小（以画面中心为锚）+ 还原全幅（双指把板面
+        // 拖丢后一键复位）；本页 painter 无 viewScale 依赖，onChanged 免。
+        // Center 内 constrained IV 的视口=画布盒（与内容同尺寸），显式传
+        ZoomControls(
+          controller: _viewerCtrl,
+          contentSize: () => _canvasSize,
+          viewportSize: () => _canvasSize,
+          maxScale: 12,
         ),
       ],
     );

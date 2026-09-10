@@ -7,6 +7,7 @@ import '../../core/board_config.dart';
 import '../../core/draft_store.dart';
 import '../../core/palette.dart';
 import '../../core/palette_registry.dart';
+import '../../core/zoom_controls.dart';
 import 'assemble_page.dart';
 import 'board_painter.dart';
 import 'placed_work.dart';
@@ -54,6 +55,12 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
   var _phaseY = 0;
 
   ///< 横粗线相位
+  int? _majorColor;
+
+  ///< 粗框线颜色 ARGB（null = 默认橙；色板入口选择，随板持久化）
+  Size _lastCanvasSize = Size.zero;
+
+  ///< 画布内容尺寸速记（LayoutBuilder builder 内赋值供缩放边界计算用）
   String? _boardName;
 
   ///< 当前豆板名（null = 未命名新板，变更不落盘）
@@ -82,6 +89,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       _interval = b.interval;
       _phaseX = b.phaseX;
       _phaseY = b.phaseY;
+      _majorColor = b.majorColor;
     }
     final w = PlacedWork(
       entry: e,
@@ -112,6 +120,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
           interval: _interval,
           phaseX: _phaseX,
           phaseY: _phaseY,
+          majorColor: _majorColor,
         ),
         works: [
           for (final w in _works)
@@ -184,6 +193,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       _interval = session.board.interval;
       _phaseX = session.board.phaseX;
       _phaseY = session.board.phaseY;
+      _majorColor = session.board.majorColor;
       _works.clear();
       _selected = -1;
     });
@@ -352,6 +362,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       _interval = 5;
       _phaseX = 0;
       _phaseY = 0;
+      _majorColor = null;
       _works.clear();
       _selected = -1;
     });
@@ -466,6 +477,109 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       _phaseY = _phaseY.clamp(0, v - 1);
     });
     _persistBoard();
+  }
+
+  /// 粗框线颜色圆钮：显示当前颜色（null = 默认橙），点开色板选择
+  Widget _majorColorDot() {
+    final c = Color(_majorColor ?? BoardConfig.defaultMajorColor);
+    return Tooltip(
+      message: "粗框线颜色",
+      child: InkWell(
+        onTap: _pickMajorColor,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            color: c,
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.black38),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 粗框线颜色色板（BottomSheet 预设色单选）：选中默认橙存 null
+  ///（与未配置旧板同语义），其余存显式 ARGB；随板持久化
+  Future<void> _pickMajorColor() async {
+    const choices = [
+      BoardConfig.defaultMajorColor, // 橙（默认）
+      0xFFFFB300, // 琥珀
+      0xFFE53935, // 红
+      0xFF43A047, // 绿
+      0xFF1E88E5, // 蓝
+      0xFF8E24AA, // 紫
+      0xFF212121, // 黑（浅底接近原始观感）
+      0xFFFFFFFF, // 白
+    ];
+    final picked = await showModalBottomSheet<int>(
+      context: context,
+      builder: (sctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text("粗框线颜色", style: Theme.of(sctx).textTheme.titleMedium),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                children: [
+                  for (final v in choices)
+                    _colorOption(
+                      sctx,
+                      Color(v),
+                      v == (_majorColor ?? BoardConfig.defaultMajorColor),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                "粗线画在豆色之上（顶层），深色豆上选亮色更醒目",
+                style: Theme.of(sctx).textTheme.bodySmall,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (picked == null || !mounted) {
+      return; // 点外部/取消不改动
+    }
+    setState(() {
+      _majorColor = picked == BoardConfig.defaultMajorColor ? null : picked;
+    });
+    _persistBoard();
+  }
+
+  /// 色板单颗圆色块：选中画蓝圈+对勾（勾色按背景亮度取黑/白）
+  Widget _colorOption(BuildContext sctx, Color c, bool selected) {
+    return GestureDetector(
+      onTap: () => Navigator.pop(sctx, c.toARGB32()),
+      child: Container(
+        width: 44,
+        height: 44,
+        decoration: BoxDecoration(
+          color: c,
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: selected ? Colors.blue : Colors.black26,
+            width: selected ? 3 : 1,
+          ),
+        ),
+        child: selected
+            ? Icon(
+                Icons.check,
+                size: 22,
+                color:
+                    c.computeLuminance() > 0.5 ? Colors.black54 : Colors.white,
+              )
+            : null,
+      ),
+    );
   }
 
   // 顶点相位：phaseX 增 = 竖粗线左移，减 = 右移；phaseY 增 = 横粗线上移，减 = 下移
@@ -912,6 +1026,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       interval: _interval,
       phaseX: _phaseX,
       phaseY: _phaseY,
+      majorColor: _majorColor,
     );
     // 板配置（含各自偏移）随各作品持久化；placed 进度不动
     for (final w in _works) {
@@ -1047,6 +1162,8 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
                   onSelectionChanged: (sel) => _setInterval(sel.first),
                 ),
               ),
+              const SizedBox(width: 8),
+              _majorColorDot(),
             ],
           ),
           const SizedBox(height: 4),
@@ -1107,97 +1224,88 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     return Stack(
       children: [
         Center(
-          child: InteractiveViewer(
-            transformationController: _viewerCtrl,
-            maxScale: 10,
-            panEnabled: false,
-            scaleEnabled: false,
+          child: Padding(
+            // 板四周留边距：板外框（加粗黑边）撑满宽时贴屏幕边，粗线被
+            // 屏幕边吃掉看不清——原始效果板不顶到屏幕边
+            padding: const EdgeInsets.all(8),
+            child: InteractiveViewer(
+              transformationController: _viewerCtrl,
+              maxScale: 10,
+              panEnabled: false,
+              scaleEnabled: false,
 
-            ///< 平移/缩放由子层 onScaleUpdate 分发（未选中平移/选中拖作品/双指缩放）
-            boundaryMargin: const EdgeInsets.all(300),
-            child: AspectRatio(
-              aspectRatio: _bw / _bh,
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final canvasW = constraints.maxWidth;
-                  final canvasH = constraints.maxHeight;
-                  return GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTapUp: (d) => _onCanvasTap(
-                      d.localPosition,
-                      canvasW,
-                      canvasH,
-                    ),
-                    onScaleStart: (_) {
-                      _lastScale = 1.0;
-                      _accDx = 0;
-                      _accDy = 0;
-                    },
-                    onScaleUpdate: (d) => _onCanvasScale(d, canvasW, canvasH),
-                    onScaleEnd: (_) => _persistBoard(),
-                    child: CustomPaint(
-                      size: Size.infinite,
-                      painter: BoardPainter(
-                        board: BoardConfig(
-                          w: _bw,
-                          h: _bh,
-                          interval: _interval,
-                          phaseX: _phaseX,
-                          phaseY: _phaseY,
-                        ),
-                        // viewScale：删除叉尺寸/线宽补偿（缩放中视觉恒定）；
-                        // showClose：仅选中作品画右上角删除叉（先点选中、
-                        // 再点叉删，未选中不显示也不可点，防误触）
-                        viewScale: _viewerCtrl.value.getMaxScaleOnAxis(),
-                        items: [
-                          for (var i = 0; i < _works.length; i++)
-                            BoardPaintItem(
-                              model: _works[i].entry.model,
-                              palette: _works[i].palette,
-                              ox: _works[i].ox,
-                              oy: _works[i].oy,
-                              showBorder: true,
-                              selected: i == _selected,
-                              showClose: i == _selected,
-                            ),
-                        ],
+              ///< 平移/缩放由子层 onScaleUpdate 分发（未选中平移/选中拖作品/双指缩放）
+              boundaryMargin: const EdgeInsets.all(300),
+              child: AspectRatio(
+                aspectRatio: _bw / _bh,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final canvasW = constraints.maxWidth;
+                    final canvasH = constraints.maxHeight;
+                    // 速记画布内容尺寸（无 setState，build 期间赋值）——
+                    // ZoomControls 缩放边界计算用（闭包跨出本 builder）
+                    _lastCanvasSize = Size(canvasW, canvasH);
+                    return GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTapUp: (d) => _onCanvasTap(
+                        d.localPosition,
+                        canvasW,
+                        canvasH,
                       ),
-                    ),
-                  );
-                },
-              ),
-            ),
-          ),
-        ),
-        // 还原全幅悬浮钮：双指缩放/平移把板面拖丢后一键复位（与还原页
-        // 同款观感）
-        Positioned(
-          right: 8,
-          bottom: 8,
-          child: Material(
-            color: Colors.white,
-            elevation: 3,
-            borderRadius: BorderRadius.circular(22),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(22),
-              // setState 同步重建：viewScale（叉尺寸补偿）须随矩阵复位刷新，
-              // 否则放大后点还原、叉仍按旧倍数画（偏小）
-              onTap: () =>
-                  setState(() => _viewerCtrl.value = Matrix4.identity()),
-              child: const SizedBox(
-                width: 44,
-                height: 44,
-                child: Tooltip(
-                  message: "还原全幅（缩放/平移复位）",
-                  child: Icon(
-                    Icons.fit_screen,
-                    size: 22,
-                    color: Colors.black54,
-                  ),
+                      onScaleStart: (_) {
+                        _lastScale = 1.0;
+                        _accDx = 0;
+                        _accDy = 0;
+                      },
+                      onScaleUpdate: (d) => _onCanvasScale(d, canvasW, canvasH),
+                      onScaleEnd: (_) => _persistBoard(),
+                      child: CustomPaint(
+                        size: Size.infinite,
+                        painter: BoardPainter(
+                          board: BoardConfig(
+                            w: _bw,
+                            h: _bh,
+                            interval: _interval,
+                            phaseX: _phaseX,
+                            phaseY: _phaseY,
+                            // 本页预览也要带粗线色（否则色板选色只在拼豆
+                            // 页生效，本页恒默认橙、状态已变视图不反映）
+                            majorColor: _majorColor,
+                          ),
+                          // viewScale：删除叉尺寸/线宽补偿（缩放中视觉恒定）；
+                          // showClose：仅选中作品画右上角删除叉（先点选中、
+                          // 再点叉删，未选中不显示也不可点，防误触）
+                          viewScale: _viewerCtrl.value.getMaxScaleOnAxis(),
+                          items: [
+                            for (var i = 0; i < _works.length; i++)
+                              BoardPaintItem(
+                                model: _works[i].entry.model,
+                                palette: _works[i].palette,
+                                ox: _works[i].ox,
+                                oy: _works[i].oy,
+                                showBorder: true,
+                                selected: i == _selected,
+                                showClose: i == _selected,
+                              ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
                 ),
               ),
             ),
           ),
+        ),
+        // 缩放控制组：放大/缩小（以画面中心为锚）+ 还原全幅。onChanged
+        // 里 setState——viewScale（叉尺寸补偿）须随矩阵变化刷新。
+        // Center 内 constrained IV 的视口=画布盒（与内容同尺寸），显式传
+        ZoomControls(
+          controller: _viewerCtrl,
+          contentSize: () => _lastCanvasSize,
+          viewportSize: () => _lastCanvasSize,
+          maxScale: 10,
+          onChanged: () => setState(() {}),
         ),
       ],
     );

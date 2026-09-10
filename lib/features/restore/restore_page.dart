@@ -21,6 +21,7 @@ import '../../core/palette.dart';
 import '../../core/palette_registry.dart';
 import '../../core/pattern_model.dart';
 import '../../core/quantizer.dart';
+import '../../core/zoom_controls.dart';
 import '../board/board_setup_page.dart';
 import '../editor/editor_page.dart';
 import '../editor/grid_painter.dart';
@@ -341,8 +342,8 @@ class _RestorePageState extends State<RestorePage> {
 
   DateTime? _panStartTime;
 
-  ///< 本次 pan 按下时刻（onPanDown 记）：手势总时长参与误触判定——
-  ///滑动点击 300ms 内完成，有意拖画对准位置必然 400ms+
+  ///< 本次 pan 按下时刻（onPanDown 记）：手势总时长参与轻扫判定——
+  ///与末速组合使用（短时长+高末速=轻扫），单独时长短不回溯
 
   int _ptrCount = 0;
 
@@ -371,6 +372,9 @@ class _RestorePageState extends State<RestorePage> {
 
   ///< 图区变换（滚轮平移 / 自实现双指捏合缩放 / 双击复位）
   final TransformationController _reviewCtrl = TransformationController();
+  Size _reviewCanvasSize = Size.zero;
+
+  ///< 复核总览画布内容尺寸速记（builder 内赋值，缩放边界计算用）
 
   ///< 复核总览变换（还原全幅按钮复位用）
   final GlobalKey _viewerKey = GlobalKey();
@@ -1789,29 +1793,23 @@ class _RestorePageState extends State<RestorePage> {
     );
   }
 
-  /// 画布「还原全幅」悬浮钮：缩放/平移把画面拖丢后一键复位到全幅视角
-  /// （所有可缩放画布统一入口——手势缩放可发现性差，屏幕上要有显式按钮）
-  Widget _fitAllBtn(TransformationController ctrl) {
-    return Positioned(
-      right: 8,
-      bottom: 8,
-      child: Material(
-        color: Colors.white,
-        elevation: 3,
-        borderRadius: BorderRadius.circular(22),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(22),
-          onTap: () => ctrl.value = Matrix4.identity(),
-          child: const SizedBox(
-            width: 44,
-            height: 44,
-            child: Tooltip(
-              message: "还原全幅（缩放/平移复位）",
-              child: Icon(Icons.fit_screen, size: 22, color: Colors.black54),
-            ),
-          ),
-        ),
-      ),
+  /// 画布缩放控制组：放大/缩小（以画面中心为锚）+ 还原全幅（所有可缩放
+  /// 画布统一入口——手势缩放可发现性差，屏幕上要有显式按钮）。
+  /// [viewportIsContent]：Center 内 constrained InteractiveViewer 的真实
+  /// 视口=画布盒（与内容同尺寸），须显式传视口——探外层 Stack 会把锚点
+  /// 偏移、letterbox 轴平移夹限算错（图区 constrained:false 铺满 Stack
+  /// 的接入保持默认探取）
+  Widget _zoomCtrls(
+    TransformationController ctrl,
+    Size Function() contentSize, {
+    double maxScale = 8,
+    bool viewportIsContent = false,
+  }) {
+    return ZoomControls(
+      controller: ctrl,
+      contentSize: contentSize,
+      viewportSize: viewportIsContent ? contentSize : null,
+      maxScale: maxScale,
     );
   }
 
@@ -2574,16 +2572,11 @@ class _RestorePageState extends State<RestorePage> {
             ],
           ),
           actions: [
-            // 显式「上一步」按钮（非第一步）：与系统 back 同款确认弹窗——
-            // 只靠 back 键不可发现，屏幕上要有显式返回入口
-            if (_stage != _Stage.pick)
-              IconButton(
-                onPressed: _confirmBack,
-                icon: const Icon(Icons.navigate_before),
-                tooltip: "返回上一步",
-              ),
+            // 回退入口只留两处：系统 back（同款确认弹窗）+ 各步具名快捷
+            // 钮（框选步「回九宫格」/复核步「回对齐」，直达不弹确认）——
+            // 再放通用「上一步」会与之重复（框选步两个按钮同为回对齐）
             // 显式「退出」按钮：完全退出图纸还原。第一步无可丢内容直接退；
-            // 中间步弹确认——与「上一步」相对：上一步保留现场只回退阶段，
+            // 中间步弹确认——与回退相对：回退保留现场只回退阶段，
             // 退出丢弃已调的图例/标定/识别结果（已保存进作品库的不受影响）
             IconButton(
               onPressed: _stage == _Stage.pick
@@ -2884,8 +2877,8 @@ class _RestorePageState extends State<RestorePage> {
             ),
           ),
         ),
-        // 还原全幅悬浮钮：捏合/滚轮把画面拖丢后一键复位（三步共用图区）
-        _fitAllBtn(_viewerCtrl),
+        // 缩放控制组（放大/缩小/还原全幅）：三步共用图区
+        _zoomCtrls(_viewerCtrl, _displaySize),
         if (_decoding)
           Positioned.fill(
             child: Container(
@@ -2982,8 +2975,10 @@ class _RestorePageState extends State<RestorePage> {
     }
     // 把手 -> 拖把手调框；框内 -> 挪框；框外空白 -> 平移画面（放大观察，
     // 不建新框）；无框 -> 拖画建框兜底（panFallback 步无选区交互，直接
-    // 平移查看）。把手命中半径 10 逻辑px 内的点击抖动同样会把框边拉走
-    // （实测 5px 即破坏选区），快照供抬手回溯
+    // 平移查看）。快照供画框误触回溯与手势取消恢复；把手/挪框抬手不回
+    // 溯（见 _onStagePointerUp）——把手按下须先命中命圈=明确调框意图，
+    // 且微调正是小位移快松手，回溯会误杀；把手跨格误拖不自动恢复，需
+    // 手动拖回或框外重画
     final sel = ctx.sel;
     _gestureStartSel = sel;
     _selHandleDrag = (sel != null && sel.width > 2)
@@ -3140,20 +3135,23 @@ class _RestorePageState extends State<RestorePage> {
     if (!_gestureVoided && startSel != null && start != null) {
       final end = _lastPanPos ?? start;
       final dist = (end - start).distance;
-      // 误触回溯三重判定：真实"滑动点击"整个手势 300ms 内完成（快速划
-      // 过抬手）；有意拖画/拖把手要对准位置，按住 400ms+。时长+
-      //（位移 或 速度）组合判定，中慢速真拖画不误伤。
-      // 挪框不回溯（所见即所得）：挪框有实时视觉反馈、误挪一眼可见可
-      // 再挪回来；回溯只拦画框（覆盖旧框）与把手（拉变形）两类破坏性
-      // 误触——否则 <60 逻辑px 的微调挪框必被弹回，等于不可用
+      // 误触回溯判定：点击抖动（位移<_tapRecoverDist）或轻扫（时长短
+      // 且末速高）恢复手势前快照。吸附格线后小拖快松即可得整格框——
+      // 曾按「时长<260ms 也判轻扫」回溯，把这类精确框选整批误杀（框选
+      // 主体步松手必弹回的主因），现只认末速。
+      // 挪框/把手不回溯（所见即所得）：挪框有实时视觉反馈、误挪一眼
+      // 可见可再挪回来；把手按下点须先命中命圈，本身是明确调框意图，
+      // 且微调正是小位移+快松手——回溯只拦画框（覆盖旧框）的破坏性误触
       final v = _releaseVelocity();
       final elapsed = _panStartTime == null
           ? 9999
           : DateTime.now().difference(_panStartTime!).inMilliseconds;
       final quickSlide = dist < _flingRecoverDist &&
           elapsed < _flingMaxElapsed &&
-          (elapsed < 260 || v > _flingVelocity);
-      if (_selMoveFrom == null && (dist < _tapRecoverDist || quickSlide)) {
+          v > _flingVelocity;
+      if (_selHandleDrag < 0 &&
+          _selMoveFrom == null &&
+          (dist < _tapRecoverDist || quickSlide)) {
         ctx.onSel(startSel);
       }
     }
@@ -4233,6 +4231,12 @@ class _RestorePageState extends State<RestorePage> {
                 builder: (context, constraints) {
                   final cellW = constraints.maxWidth / model.width;
                   final cellH = constraints.maxHeight / model.height;
+                  // 速记画布内容尺寸（无 setState，build 期间赋值）——
+                  // ZoomControls 缩放边界计算用
+                  _reviewCanvasSize = Size(
+                    constraints.maxWidth,
+                    constraints.maxHeight,
+                  );
                   return GestureDetector(
                     onTapUp: (d) {
                       if (_reviewColor == -2) {
@@ -4288,7 +4292,12 @@ class _RestorePageState extends State<RestorePage> {
             ),
           ),
         ),
-        _fitAllBtn(_reviewCtrl),
+        _zoomCtrls(
+          _reviewCtrl,
+          () => _reviewCanvasSize,
+          maxScale: 12,
+          viewportIsContent: true,
+        ),
       ],
     );
   }

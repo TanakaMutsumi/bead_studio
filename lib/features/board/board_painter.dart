@@ -66,7 +66,7 @@ class BoardPaintItem {
 class BoardPainter extends CustomPainter {
   final BoardConfig board;
 
-  ///< 板配置（尺寸/加粗间隔/相位；ox/oy 由各 item 自带）
+  ///< 板配置（尺寸/加粗间隔/相位/粗线颜色；ox/oy 由各 item 自带）
   final List<BoardPaintItem> items;
 
   ///< 叠加的作品列表（后加入的画在上层）
@@ -76,6 +76,10 @@ class BoardPainter extends CustomPainter {
   final bool showLabels;
 
   ///< 是否绘制格子文字层（拼豆页开 / 配置页关，摆放时看色块即可）
+  final bool darkBoard;
+
+  ///< 深底模式（拼豆页开 / 配置页关）：板底深色、细线浅色、板外框跟
+  ///< 粗线色——高亮豆与粗参考线在深底上更醒目，空白格沉底不抢视线
   final double viewScale;
 
   ///< 当前视图缩放倍数（删除叉尺寸/线宽补偿用：画布放大后视觉恒定）
@@ -88,6 +92,7 @@ class BoardPainter extends CustomPainter {
     required this.items,
     this.labelMode = LabelMode.id,
     this.showLabels = false,
+    this.darkBoard = false,
     this.viewScale = 1.0,
     super.repaint,
   });
@@ -174,14 +179,16 @@ class BoardPainter extends CustomPainter {
             ? _buildNumbers()
             : const <int, int>{};
 
-    // 板底
+    // 板底（深底模式：空白格沉底变黑，高亮豆更突出）
     canvas.drawRect(
       Offset.zero & size,
-      Paint()..color = const Color(0xFFFAFAFA),
+      Paint()
+        ..color = darkBoard ? const Color(0xFF1E1E1E) : const Color(0xFFFAFAFA),
     );
 
     // 各作品格（板外部分画布自裁；越界索引/调色板缺失跳过）
     final gridPaint = Paint()..style = PaintingStyle.fill;
+    final dimmedCells = <int>{};
     for (var itemIdx = 0; itemIdx < items.length; itemIdx++) {
       final item = items[itemIdx];
       final m = item.model;
@@ -194,11 +201,10 @@ class BoardPainter extends CustomPainter {
           final c = item.palette.colors[v];
           var color = Color.fromARGB(255, c.r, c.g, c.b);
           if (item.highlightId != null && c.id != item.highlightId) {
-            color = Color.lerp(
-              color,
-              const Color.fromARGB(255, 0x30, 0x30, 0x30),
-              0.65,
-            )!;
+            // 未选中豆整体压黑（拼豆页高亮模式）：色相残留可见但足够暗，
+            // 与深板底一起把选中色衬出来；记下被压暗格，文字层换浅色字
+            color = Color.lerp(color, Colors.black, 0.78)!;
+            dimmedCells.add(itemIdx * 10000000 + y * m.width + x);
           }
           gridPaint.color = color;
           final rect = Rect.fromLTWH(
@@ -212,40 +218,20 @@ class BoardPainter extends CustomPainter {
       }
     }
 
-    // 格线：细线全长；(x+phaseX)%interval==0 的竖线 / (y+phaseY)%interval==0 的横线加粗
+    // 细格线全长（深底上换浅色才可见）；interval 加粗线单独挪到豆色块/
+    // 文字层之后画（见下），避免被豆的颜色压掉
     final linePaint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 0.5
-      ..color = Colors.black12;
-    final majorPaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2
-      ..color = Colors.black54;
-    final iv = board.interval;
+      ..color = darkBoard ? Colors.white12 : Colors.black12;
     for (var x = 0; x <= board.w; x++) {
       final p = x * cellW;
-      canvas.drawLine(
-        Offset(p, 0),
-        Offset(p, size.height),
-        ((x + board.phaseX) % iv == 0) ? majorPaint : linePaint,
-      );
+      canvas.drawLine(Offset(p, 0), Offset(p, size.height), linePaint);
     }
     for (var y = 0; y <= board.h; y++) {
       final p = y * cellH;
-      canvas.drawLine(
-        Offset(0, p),
-        Offset(size.width, p),
-        ((y + board.phaseY) % iv == 0) ? majorPaint : linePaint,
-      );
+      canvas.drawLine(Offset(0, p), Offset(size.width, p), linePaint);
     }
-
-    // 板最外边框：加粗深线描一圈，与普通格线/interval 加粗线区分——
-    // 豆板的物理边界一眼可辨（配置页拖作品摆放、拼豆页对照放豆都以它为界）
-    final boardBorder = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.2
-      ..color = Colors.black87;
-    canvas.drawRect(Offset.zero & size, boardBorder);
 
     // 文字层：默认每格显示色号；高亮 + 编号模式时高亮格改为行/列分组编号
     if (showLabels) {
@@ -263,7 +249,9 @@ class BoardPainter extends CustomPainter {
             final key = itemIdx * 10000000 + y * m.width + x;
             final text =
                 (isHi && numbers.containsKey(key)) ? "${numbers[key]}" : c.id;
-            final light = c.r * 0.299 + c.g * 0.587 + c.b * 0.114 > 150;
+            // 被压暗的格子豆色已近黑，原色深浅判定失效——强制浅色字
+            final light = !dimmedCells.contains(key) &&
+                c.r * 0.299 + c.g * 0.587 + c.b * 0.114 > 150;
             _drawLabel(
               canvas,
               text,
@@ -320,6 +308,34 @@ class BoardPainter extends CustomPainter {
         );
       }
     }
+
+    // interval 加粗线 + 板最外边框（顶层：豆色块/文字/已放标记之后画，
+    // 不被豆的颜色压掉）。粗线颜色可配（板配置页色板入口，随板持久化），
+    // 默认橙一类亮色——深色豆上压得住；深底模式板外框跟粗线色（黑线在
+    // 深底不可见），浅底配置页外框保持深黑
+    final majorColor = Color(board.majorColor ?? BoardConfig.defaultMajorColor);
+    final majorPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..color = majorColor;
+    final iv = board.interval;
+    for (var x = 0; x <= board.w; x++) {
+      if ((x + board.phaseX) % iv == 0) {
+        final p = x * cellW;
+        canvas.drawLine(Offset(p, 0), Offset(p, size.height), majorPaint);
+      }
+    }
+    for (var y = 0; y <= board.h; y++) {
+      if ((y + board.phaseY) % iv == 0) {
+        final p = y * cellH;
+        canvas.drawLine(Offset(0, p), Offset(size.width, p), majorPaint);
+      }
+    }
+    final boardBorder = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.2
+      ..color = darkBoard ? majorColor : Colors.black87;
+    canvas.drawRect(Offset.zero & size, boardBorder);
 
     // 作品边框（豆板配置页）：选中加粗蓝，未选中细灰
     for (final item in items) {
@@ -382,6 +398,7 @@ class BoardPainter extends CustomPainter {
     return oldDelegate.board != board ||
         oldDelegate.labelMode != labelMode ||
         oldDelegate.showLabels != showLabels ||
+        oldDelegate.darkBoard != darkBoard ||
         oldDelegate.viewScale != viewScale ||
         oldDelegate.items.length != items.length ||
         oldDelegate.items != items;
