@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/app_snack_bar.dart';
 import '../../core/board_config.dart';
 import '../../core/draft_store.dart';
 import '../../core/palette.dart';
@@ -48,7 +49,10 @@ class _AssemblePageState extends State<AssemblePage> {
     for (var i = widget.works.length - 1; i >= 0; i--) {
       final w = widget.works[i];
       final m = w.entry.model;
-      if (bx >= w.ox && bx < w.ox + m.width && by >= w.oy && by < w.oy + m.height) {
+      if (bx >= w.ox &&
+          bx < w.ox + m.width &&
+          by >= w.oy &&
+          by < w.oy + m.height) {
         return i;
       }
     }
@@ -59,9 +63,7 @@ class _AssemblePageState extends State<AssemblePage> {
   void _toggleAt(Offset local, double canvasW, double canvasH) {
     final hi = _highlightId;
     if (hi == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("先点下方颜色选择要拼的色，再点格子标记已放")),
-      );
+      AppSnackBar.show(context, "先点下方颜色选择要拼的色，再点格子标记已放");
       return;
     }
     final b = widget.board;
@@ -164,9 +166,7 @@ class _AssemblePageState extends State<AssemblePage> {
   Future<void> _saveProgress() async {
     await _saveAll();
     if (mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("拼豆进度已保存")));
+      AppSnackBar.show(context, "拼豆进度已保存");
     }
   }
 
@@ -328,10 +328,10 @@ class _AssemblePageState extends State<AssemblePage> {
           final borderColor = selected
               ? Colors.blue
               : (count > 0 && remain == 0)
-              ? const Color(0xFF2E7D32)
-              : Colors.black26;
-          final light = c != null &&
-              (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) > 150;
+                  ? const Color(0xFF2E7D32)
+                  : Colors.black26;
+          final light =
+              c != null && (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) > 150;
           return GestureDetector(
             onTap: () => setState(() {
               _highlightId = _highlightId == id ? null : id;

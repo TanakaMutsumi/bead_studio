@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../core/app_build.dart';
+import '../../core/app_snack_bar.dart';
 import '../../core/decode_image.dart';
 import '../../core/palette.dart';
 import '../../core/palette_registry.dart';
@@ -99,8 +100,7 @@ class _ImportPageState extends State<ImportPage> {
         });
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text("无法解码图片: $e")));
+          AppSnackBar.show(context, "无法解码图片: $e");
         }
       } finally {
         if (mounted) {
@@ -131,8 +131,7 @@ class _ImportPageState extends State<ImportPage> {
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text("转换失败: $e")));
+        AppSnackBar.show(context, "转换失败: $e");
       }
     } finally {
       if (mounted) {

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../../core/app_snack_bar.dart';
 import '../../core/draft_store.dart';
 import '../../core/file_saver.dart';
 import '../../core/grid_ops.dart';
@@ -209,15 +210,15 @@ class _EditorPageState extends State<EditorPage> {
   /// 局部坐标 -> 格子坐标
   int _cellX(Offset local, double canvasSide) =>
       (local.dx / (canvasSide / _model.width)).floor().clamp(
-        0,
-        _model.width - 1,
-      );
+            0,
+            _model.width - 1,
+          );
 
   int _cellY(Offset local, double canvasSide) =>
       (local.dy / (canvasSide / _model.height)).floor().clamp(
-        0,
-        _model.height - 1,
-      );
+            0,
+            _model.height - 1,
+          );
 
   void _applyAt(Offset local, double canvasSide, {required bool isStart}) {
     final x = _cellX(local, canvasSide);
@@ -293,9 +294,7 @@ class _EditorPageState extends State<EditorPage> {
     final i = y * _model.width + x;
     final hi = _highlightIndex;
     if (hi == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("先点下方颜色选择要拼的色，再点格子标记已放")),
-      );
+      AppSnackBar.show(context, "先点下方颜色选择要拼的色，再点格子标记已放");
       return;
     }
     if (_model.grid[i] != hi) {
@@ -365,11 +364,11 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   void _clearSelection() => setState(() {
-    _selX0 = null;
-    _selY0 = null;
-    _selX1 = null;
-    _selY1 = null;
-  });
+        _selX0 = null;
+        _selY0 = null;
+        _selX1 = null;
+        _selY1 = null;
+      });
 
   /// 选区另存为新的图案
   void _saveSelectionAsNew() {
@@ -496,8 +495,7 @@ class _EditorPageState extends State<EditorPage> {
         _revision.value++;
         setState(() {});
         if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text("已替换 $count 格")));
+          AppSnackBar.show(context, "已替换 $count 格");
         }
       },
     );
@@ -507,8 +505,7 @@ class _EditorPageState extends State<EditorPage> {
 
   Future<void> _saveDraft() async {
     if (kIsWeb) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text("网页版暂不支持本地草稿")));
+      AppSnackBar.show(context, "网页版暂不支持本地草稿");
       return;
     }
     // 从作品库打开的：覆写原文件（保留名字/分组），否则另存新作品；
@@ -519,14 +516,11 @@ class _EditorPageState extends State<EditorPage> {
       placed: _placed,
     );
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            widget.sourceFile != null
-                ? "作品已更新"
-                : "已保存到作品库：${file.path.split(Platform.pathSeparator).last}",
-          ),
-        ),
+      AppSnackBar.show(
+        context,
+        widget.sourceFile != null
+            ? "作品已更新"
+            : "已保存到作品库：${file.path.split(Platform.pathSeparator).last}",
       );
     }
   }
@@ -539,8 +533,7 @@ class _EditorPageState extends State<EditorPage> {
         "pattern_${DateTime.now().millisecondsSinceEpoch}.png",
       );
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text("已触发浏览器下载")));
+        AppSnackBar.show(context, "已触发浏览器下载");
       }
       return;
     }
@@ -552,8 +545,7 @@ class _EditorPageState extends State<EditorPage> {
     );
     await file.writeAsBytes(bytes);
     if (mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text("已导出：${file.path}")));
+      AppSnackBar.show(context, "已导出：${file.path}");
     }
   }
 
@@ -905,9 +897,8 @@ class _EditorPageState extends State<EditorPage> {
             style: Theme.of(context).textTheme.labelMedium,
           ),
           IconButton(
-            onPressed: _boardIndex < _boardCount - 1
-                ? () => _stepBoard(1)
-                : null,
+            onPressed:
+                _boardIndex < _boardCount - 1 ? () => _stepBoard(1) : null,
             icon: const Icon(Icons.chevron_right),
           ),
           const SizedBox(width: 4),
@@ -935,15 +926,14 @@ class _EditorPageState extends State<EditorPage> {
           final c = widget.palette.colors[i];
           final count = counts[i] ?? 0;
           final remain = _assembleMode ? _remainOf(i, counts) : 0;
-          final selected = _assembleMode
-              ? i == _highlightIndex
-              : i == _currentColor;
+          final selected =
+              _assembleMode ? i == _highlightIndex : i == _currentColor;
           // 拼装模式：该色放完 = 绿框（一眼看出哪色收工）；选中蓝框优先
           final borderColor = selected
               ? Colors.blue
               : (_assembleMode && count > 0 && remain == 0)
-              ? const Color(0xFF2E7D32)
-              : Colors.black26;
+                  ? const Color(0xFF2E7D32)
+                  : Colors.black26;
           return GestureDetector(
             onTap: () => setState(() {
               if (_assembleMode) {

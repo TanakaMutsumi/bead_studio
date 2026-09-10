@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../../core/app_snack_bar.dart';
 import '../../core/file_saver.dart';
 import '../../core/iron_image.dart';
 import '../../core/palette.dart';
@@ -103,17 +104,16 @@ class _PreviewPageState extends State<PreviewPage>
 
   /// 亮度色矩阵（对任意模式实时生效，无需重建图像）
   ColorFilter get _brightnessFilter => ColorFilter.matrix([
-    _brightness, 0, 0, 0, 0, //
-    0, _brightness, 0, 0, 0,
-    0, 0, _brightness, 0, 0,
-    0, 0, 0, 1, 0,
-  ]);
+        _brightness, 0, 0, 0, 0, //
+        0, _brightness, 0, 0, 0,
+        0, 0, _brightness, 0, 0,
+        0, 0, 0, 1, 0,
+      ]);
 
   /// 导出当前预览（RepaintBoundary 截图，所见即所得）
   Future<void> _exportCurrent() async {
-    final boundary =
-        _boundaryKey.currentContext?.findRenderObject()
-            as RenderRepaintBoundary?;
+    final boundary = _boundaryKey.currentContext?.findRenderObject()
+        as RenderRepaintBoundary?;
     if (boundary == null) {
       return;
     }
@@ -126,8 +126,7 @@ class _PreviewPageState extends State<PreviewPage>
     if (kIsWeb) {
       await downloadBytes(bytes, name);
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text("已触发浏览器下载")));
+        AppSnackBar.show(context, "已触发浏览器下载");
       }
       return;
     }
@@ -137,8 +136,7 @@ class _PreviewPageState extends State<PreviewPage>
     final file = File("${dir.path}${Platform.pathSeparator}$name");
     await file.writeAsBytes(bytes);
     if (mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text("已导出：${file.path}")));
+      AppSnackBar.show(context, "已导出：${file.path}");
     }
   }
 
@@ -229,12 +227,12 @@ class _PreviewPageState extends State<PreviewPage>
         colorFilter: _brightnessFilter,
         child: switch (_mode) {
           _PreviewMode.flat => CustomPaint(
-            painter: BeadFlatPainter(
-              model: widget.model,
-              palette: widget.palette,
+              painter: BeadFlatPainter(
+                model: widget.model,
+                palette: widget.palette,
+              ),
+              size: Size.infinite,
             ),
-            size: Size.infinite,
-          ),
           _PreviewMode.ironed => _buildIroned(),
           _PreviewMode.scene => _buildScene(),
         },

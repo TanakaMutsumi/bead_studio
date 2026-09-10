@@ -5,6 +5,7 @@ library;
 
 import 'package:flutter/material.dart';
 
+import '../../core/app_snack_bar.dart';
 import '../../core/palette.dart';
 
 /// 通用弹窗外壳
@@ -103,9 +104,7 @@ Future<void> showResizeSheet(
                   final w = int.tryParse(ctrlW.text) ?? 0;
                   final h = int.tryParse(ctrlH.text) ?? 0;
                   if (w < 4 || h < 4 || w > 400 || h > 400) {
-                    ScaffoldMessenger.of(sheetContext).showSnackBar(
-                      const SnackBar(content: Text("宽高须在 4-400 之间")),
-                    );
+                    AppSnackBar.show(sheetContext, "宽高须在 4-400 之间");
                     return;
                   }
                   Navigator.of(sheetContext).pop();
@@ -266,8 +265,7 @@ class _PaletteRow extends StatelessWidget {
                             c!.id.replaceFirst("P", ""),
                             style: TextStyle(
                               fontSize: 10,
-                              color:
-                                  (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) >
+                              color: (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) >
                                       150
                                   ? Colors.black54
                                   : Colors.white70,

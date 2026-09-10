@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../../core/app_snack_bar.dart';
 import '../../core/file_saver.dart';
 import '../../core/inventory_store.dart';
 import '../../core/palette.dart';
@@ -33,8 +34,7 @@ class _StatsPageState extends State<StatsPage> {
   /// 读取库存进入校验模式（web 不可用）
   Future<void> _toggleCheck() async {
     if (kIsWeb) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text("网页版暂不支持本地库存")));
+      AppSnackBar.show(context, "网页版暂不支持本地库存");
       return;
     }
     if (_checkMode) {
@@ -50,12 +50,10 @@ class _StatsPageState extends State<StatsPage> {
 
   /// 导出缺料采购单 CSV（仅校验模式下有缺口时可用）
   Future<void> _exportShoppingList(List<_StatRow> rows) async {
-    final shortages = rows
-        .where((r) => r.color != null && r.shortage > 0)
-        .toList();
+    final shortages =
+        rows.where((r) => r.color != null && r.shortage > 0).toList();
     if (shortages.isEmpty) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text("库存充足，无需采购")));
+      AppSnackBar.show(context, "库存充足，无需采购");
       return;
     }
     final buf = StringBuffer("色号,名称,需要,库存,缺口\n");
@@ -71,8 +69,7 @@ class _StatsPageState extends State<StatsPage> {
     if (kIsWeb) {
       await downloadBytes(bytes, name);
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text("已导出采购单")));
+        AppSnackBar.show(context, "已导出采购单");
       }
       return;
     }
@@ -82,8 +79,7 @@ class _StatsPageState extends State<StatsPage> {
     final file = File("${dir.path}${Platform.pathSeparator}$name");
     await file.writeAsBytes(bytes);
     if (mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text("采购单已导出：${file.path}")));
+      AppSnackBar.show(context, "采购单已导出：${file.path}");
     }
   }
 
@@ -102,8 +98,7 @@ class _StatsPageState extends State<StatsPage> {
               : null,
           index: e.key,
           needed: e.value,
-          stocked:
-              inv?[(e.key < widget.palette.colors.length
+          stocked: inv?[(e.key < widget.palette.colors.length
                   ? widget.palette.colors[e.key].id
                   : "")] ??
               0,
@@ -202,34 +197,34 @@ class _StatsPageState extends State<StatsPage> {
       title: Text(c != null ? "${c.id} ${c.name}" : "#${r.index}"),
       trailing: _checkMode
           ? (invLoaded
-                ? Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text(
-                        "需 ${r.needed} / 存 ${r.stocked}",
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: r.shortage > 0 ? Colors.red : Colors.black87,
-                          fontWeight: r.shortage > 0
-                              ? FontWeight.bold
-                              : FontWeight.normal,
-                        ),
+              ? Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      "需 ${r.needed} / 存 ${r.stocked}",
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: r.shortage > 0 ? Colors.red : Colors.black87,
+                        fontWeight: r.shortage > 0
+                            ? FontWeight.bold
+                            : FontWeight.normal,
                       ),
-                      Text(
-                        r.shortage > 0 ? "缺 ${r.shortage} 颗" : "充足",
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: r.shortage > 0 ? Colors.red : Colors.green,
-                        ),
+                    ),
+                    Text(
+                      r.shortage > 0 ? "缺 ${r.shortage} 颗" : "充足",
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: r.shortage > 0 ? Colors.red : Colors.green,
                       ),
-                    ],
-                  )
-                : const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ))
+                    ),
+                  ],
+                )
+              : const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ))
           : Text(
               "${r.needed} 颗",
               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
@@ -278,9 +273,9 @@ class _SummaryCell extends StatelessWidget {
         Text(
           value,
           style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-            color: highlight ? Colors.red : null,
-            fontWeight: highlight ? FontWeight.bold : null,
-          ),
+                color: highlight ? Colors.red : null,
+                fontWeight: highlight ? FontWeight.bold : null,
+              ),
         ),
         Text(label, style: Theme.of(context).textTheme.bodySmall),
       ],
