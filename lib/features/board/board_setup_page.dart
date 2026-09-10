@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import '../../core/app_snack_bar.dart';
 import '../../core/board_config.dart';
 import '../../core/draft_store.dart';
 import '../../core/palette.dart';
@@ -134,9 +135,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       return;
     }
     if (boards.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("还没有保存过豆板，先摆好再「另存为豆板」")),
-      );
+      AppSnackBar.show(context, "还没有保存过豆板，先摆好再「另存为豆板」");
       return;
     }
     final picked = await showModalBottomSheet<BoardEntry>(
@@ -223,12 +222,11 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       return;
     }
     _boardFile = await DraftStore.saveBoardFile(_currentSession(n));
-    setState(() => _boardName = n);
-    if (mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text("已保存豆板「$n」，继续编辑会自动保存")));
+    if (!mounted) {
+      return; // 保存已完成，页面销毁只跳过 UI 更新
     }
+    setState(() => _boardName = n);
+    AppSnackBar.show(context, "已保存豆板「$n」，继续编辑会自动保存");
   }
 
   /// 询问豆板名（预填当前名；取消或空名返回 null）
@@ -251,10 +249,11 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       return false;
     }
     _boardFile = await DraftStore.saveBoardFile(_currentSession(n));
+    if (!mounted) {
+      return true; // 保存已完成，页面销毁只跳过 UI 更新（调用方另查 mounted）
+    }
     setState(() => _boardName = n);
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text("已保存豆板「$n」")));
+    AppSnackBar.show(context, "已保存豆板「$n」");
     return true;
   }
 
@@ -512,9 +511,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     final h = int.tryParse(hCtrl.text.trim()) ?? 0;
     if (w < 8 || h < 8 || w > 400 || h > 400) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("尺寸须在 8~400 之间")),
-        );
+        AppSnackBar.show(context, "尺寸须在 8~400 之间");
       }
       return;
     }
@@ -529,18 +526,14 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       return;
     }
     if (all.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("作品库为空，先去保存一个作品")));
+      AppSnackBar.show(context, "作品库为空，先去保存一个作品");
       return;
     }
     final onBoard = _works.map((w) => w.entry.file.path).toSet();
     final candidates =
         all.where((w) => !onBoard.contains(w.file.path)).toList();
     if (candidates.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("作品库的作品都已在板上，先叉掉一个再来添加")),
-      );
+      AppSnackBar.show(context, "作品库的作品都已在板上，先叉掉一个再来添加");
       return;
     }
     final picked = await showModalBottomSheet<WorkEntry>(
@@ -578,13 +571,10 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     final spot = _findSpot(picked.model.width, picked.model.height);
     if (spot == null) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              "放不下了：${picked.model.width}×${picked.model.height} 的作品在 "
-              "$_bw×$_bh 板上找不到不与其他作品相交的空位（或超出板面）",
-            ),
-          ),
+        AppSnackBar.show(
+          context,
+          "放不下了：${picked.model.width}×${picked.model.height} 的作品在 "
+          "$_bw×$_bh 板上找不到不与其他作品相交的空位（或超出板面）",
         );
       }
       return;
@@ -792,9 +782,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
   /// 豆数统计明细（BottomSheet：色块 + 色号/名 + 颗数，按颗数降序）
   Future<void> _showBeadStats() async {
     if (_works.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("板上还没有作品")));
+      AppSnackBar.show(context, "板上还没有作品");
       return;
     }
     final stats = _beadStats();
