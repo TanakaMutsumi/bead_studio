@@ -471,6 +471,11 @@ class _RestorePageState extends State<RestorePage> {
   ui.Image? _cellSrc;
 
   ///< 复核截图数据源（_displayBytes 限幅版解码的 ui.Image）
+  Set<int> _reviewSeenColors = {};
+
+  ///< 进复核时识别出现过的色快照（「归类到…」候选之一，识别完成时
+  ///定格——若按实时 countByColor 重算，跳过图例场景下某色格子全部
+  ///归走后该色会从弹窗与 chips 永久消失，归错想归回无入口）
 
   @override
   void initState() {
@@ -536,6 +541,7 @@ class _RestorePageState extends State<RestorePage> {
         _pitchX = 0;
         _model = null;
         _cellRects = const [];
+        _reviewSeenColors = {};
         _cellSrc?.dispose();
         _cellSrc = null;
         _decoding = false;
@@ -1468,19 +1474,33 @@ class _RestorePageState extends State<RestorePage> {
     return (v == null || v <= 0 || v > 100000) ? null : v;
   }
 
-  /// 弹全色卡选色器（修正图例色号 / 添加颜色两用）
-  Future<int?> _pickColorIndex() {
+  /// 弹色卡选色器（修正图例色号 / 添加颜色 / 复核归类共用）
+  ///
+  /// [allowed] 非空时只显示集合内的色号（复核归类限定图例色 + 识别结果
+  /// 中出现过的色——识别候选本就来自图例，归到图例外的色会让图例对账
+  /// 口径混入外色）；[withBlank] 为 true 时首格是「空白」（归类到空白
+  /// 用，点中返回 -1；返回 null 一律表示取消）。
+  Future<int?> _pickColorIndex({
+    Set<int>? allowed,
+    bool withBlank = false,
+    String title = "选择色号",
+  }) {
+    final indices = <int>[
+      if (withBlank) -1,
+      for (var i = 0; i < _palette.colors.length; i++)
+        if (allowed == null || allowed.contains(i)) i,
+    ];
     return showDialog<int>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text("选择色号"),
+        title: Text(title),
         content: SizedBox(
           width: double.maxFinite,
           height: 420,
           child: GridView.count(
             crossAxisCount: 6,
             children: [
-              for (var i = 0; i < _palette.colors.length; i++)
+              for (final i in indices)
                 InkWell(
                   onTap: () => Navigator.pop(ctx, i),
                   // FittedBox 防格子竖向溢出：大色卡(291 色)行高较矮 + 系统字体
@@ -1491,18 +1511,32 @@ class _RestorePageState extends State<RestorePage> {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Container(
-                          width: 34,
-                          height: 34,
-                          color: Color.fromARGB(
-                            255,
-                            _palette.colors[i].r,
-                            _palette.colors[i].g,
-                            _palette.colors[i].b,
+                        if (i < 0)
+                          Container(
+                            width: 34,
+                            height: 34,
+                            decoration: BoxDecoration(
+                              border: Border.all(color: Colors.black38),
+                            ),
+                            child: const Icon(
+                              Icons.close,
+                              size: 20,
+                              color: Colors.black45,
+                            ),
+                          )
+                        else
+                          Container(
+                            width: 34,
+                            height: 34,
+                            color: Color.fromARGB(
+                              255,
+                              _palette.colors[i].r,
+                              _palette.colors[i].g,
+                              _palette.colors[i].b,
+                            ),
                           ),
-                        ),
                         Text(
-                          _palette.colors[i].id,
+                          i < 0 ? "空白" : _palette.colors[i].id,
                           style: const TextStyle(fontSize: 10),
                         ),
                       ],
@@ -1968,6 +2002,11 @@ class _RestorePageState extends State<RestorePage> {
         _recognizing = false;
         _reviewColor = -2;
         _picked.clear();
+        // 出现色快照定格：归类候选不随后续归类动态缩水（见字段注释）
+        _reviewSeenColors = {
+          for (var i = 0; i < grid.length; i++)
+            if (grid[i] >= 0) grid[i],
+        };
         _stage = _Stage.review;
       });
       // 复核截图数据源异步解码，不阻塞进复核页（_displayBytes 是长边
@@ -2320,12 +2359,35 @@ class _RestorePageState extends State<RestorePage> {
     );
   }
 
-  /// 「归类到…」按钮：弹全色卡选色器后归类选中格（归空白走点空白 chip）
+  /// 「归类到…」是否还有有效目标：图例色或出现色快照非空（可归色），
+  /// 或当前筛选色不是空白（可归空白）。两者皆无 = 图例空 + 识别全空白
+  /// 的病态态：唯一可选项「空白」与选中格同色，归类是静默无效操作，
+  /// 禁用按钮防无效点击
+  bool _hasClassifyTarget() {
+    if (_legend.isNotEmpty || _reviewSeenColors.isNotEmpty) {
+      return true;
+    }
+    return _reviewColor != -1;
+  }
+
+  /// 「归类到…」按钮：弹受限选色器后归类选中格。候选 = 图例清单色号 ∪
+  /// 识别出现色快照（「跳过图例」直接识别时图例为空，靠快照兜底；快照
+  /// 在识别完成时定格，不随归类缩水）+ 首格「空白」——复核归类是把错认
+  /// 格子拨回正确用色，开放全色卡会归出图例外的色，图例对账口径混入
+  /// 外色（用户反馈：只应能归到图例色号和空白）
   Future<void> _reassignPicked() async {
     if (_picked.isEmpty) {
       return;
     }
-    final target = await _pickColorIndex();
+    final allowed = <int>{
+      for (final e in _legend) e.paletteIndex,
+      ..._reviewSeenColors,
+    };
+    final target = await _pickColorIndex(
+      allowed: allowed,
+      withBlank: true,
+      title: "归类到",
+    );
     if (target == null || !mounted) {
       return;
     }
@@ -4341,7 +4403,7 @@ class _RestorePageState extends State<RestorePage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            "④ 点色号筛选看该色格子截图 → 点截图选中 → 归类到其他色号；再点同一色号回总览",
+            "④ 点色号筛选看该色格子截图 → 点截图选中 → 归类到图例色号或空白；再点同一色号回总览",
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 4),
@@ -4369,7 +4431,9 @@ class _RestorePageState extends State<RestorePage> {
               ),
               const SizedBox(width: 8),
               OutlinedButton.icon(
-                onPressed: _picked.isEmpty ? null : _reassignPicked,
+                onPressed: _picked.isEmpty || !_hasClassifyTarget()
+                    ? null
+                    : _reassignPicked,
                 icon: const Icon(Icons.drive_file_move_outline, size: 18),
                 label: const Text("归类到…"),
               ),
