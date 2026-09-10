@@ -257,14 +257,24 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     return true;
   }
 
-  /// 两键确认框：否(false) / 是(true)；点外部取消返回 null
-  Future<bool?> _confirmDialog(String title, String content) {
+  /// 确认框：否(false) / 是(true)；[cancelLabel] 非空时首个按钮是显式
+  /// 「取消」（返回 null，与点外部同义）——是/否/取消三键场景用
+  Future<bool?> _confirmDialog(
+    String title,
+    String content, {
+    String? cancelLabel,
+  }) {
     return showDialog<bool>(
       context: context,
       builder: (dctx) => AlertDialog(
         title: Text(title),
         content: Text(content),
         actions: [
+          if (cancelLabel != null)
+            TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(cancelLabel),
+            ),
           TextButton(
             onPressed: () => Navigator.pop(dctx, false),
             child: const Text("否"),
@@ -278,13 +288,18 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     );
   }
 
-  /// back 退出确认：板上有作品时问是否保存（是=保存退出；否=直接退出；点外部=留下）
+  /// back 退出确认：板上有作品时问是否保存——显式三键（是=保存退出 /
+  /// 否=不保存直接退出 / 取消=留在本页；点外部同取消）
   Future<void> _confirmExit() async {
     if (_works.isEmpty) {
       _doExit();
       return;
     }
-    final save = await _confirmDialog("保存豆板？", "「是」保存当前豆板后退出；「否」不保存直接退出");
+    final save = await _confirmDialog(
+      "保存豆板？",
+      "「是」保存当前豆板后退出；「否」不保存直接退出；「取消」留在本页",
+      cancelLabel: "取消",
+    );
     if (save == null || !mounted) {
       return;
     }
@@ -529,13 +544,8 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       AppSnackBar.show(context, "作品库为空，先去保存一个作品");
       return;
     }
-    final onBoard = _works.map((w) => w.entry.file.path).toSet();
-    final candidates =
-        all.where((w) => !onBoard.contains(w.file.path)).toList();
-    if (candidates.isEmpty) {
-      AppSnackBar.show(context, "作品库的作品都已在板上，先叉掉一个再来添加");
-      return;
-    }
+    // 不按「已在板上」过滤：同一作品可重复添加多件（拼两幅同款等场景），
+    // 重复件各占一块板位、可单独叉掉
     final picked = await showModalBottomSheet<WorkEntry>(
       context: context,
       builder: (sctx) => SafeArea(
@@ -549,7 +559,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
                 style: Theme.of(sctx).textTheme.titleMedium,
               ),
             ),
-            for (final w in candidates)
+            for (final w in all)
               ListTile(
                 leading: const Icon(Icons.grid_on_outlined),
                 title: Text(w.name),
@@ -677,6 +687,10 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
           ..scale(next / cur)
           ..translate(-focal.dx, -focal.dy);
         _viewerCtrl.value = m * _viewerCtrl.value;
+        // 矩阵更新本身无需 setState（InteractiveViewer 应用变换），但
+        // BoardPainter 的 viewScale（删除叉尺寸补偿）依赖重建取新值，
+        // 缩放中跟随刷新——shouldRepaint 挡住非缩放场景的重画
+        setState(() {});
       }
       _lastScale = d.scale;
       return;
@@ -736,6 +750,23 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
 
   /// 点按命中测试：点中作品选中（上层优先），点空白取消选中
   void _onCanvasTap(Offset local, double canvasW, double canvasH) {
+    // 删除叉命中检测（仅选中作品，与 painter 画叉同款几何）：圆心=作品
+    // 右上角顶点，半径按视图缩放补偿（放大后命中区视觉恒定）
+    final cellW = canvasW / _bw;
+    final cellH = canvasH / _bh;
+    final hitR = 26 / _viewerCtrl.value.getMaxScaleOnAxis();
+    for (var i = _works.length - 1; i >= 0; i--) {
+      if (i != _selected) {
+        continue; // 只有选中作品的叉可点（与 painter 只给选中作品画叉一致）
+      }
+      final w = _works[i];
+      final m = w.entry.model;
+      final center = Offset((w.ox + m.width) * cellW, w.oy * cellH);
+      if ((local - center).distance <= hitR) {
+        _confirmRemoveAt(i);
+        return;
+      }
+    }
     final bx = (local.dx / (canvasW / _bw)).floor();
     final by = (local.dy / (canvasH / _bh)).floor();
     var hit = -1;
@@ -751,6 +782,35 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       }
     }
     setState(() => _selected = hit);
+  }
+
+  /// 删除板上作品确认（作品右上角小叉入口）：确认文案带作品名；从板上
+  /// 移除不影响作品库原作品。await 弹窗期间列表可能被并发改动，回来后
+  /// 索引越界复查再动手
+  Future<void> _confirmRemoveAt(int index) async {
+    if (index < 0 || index >= _works.length) {
+      return;
+    }
+    final name = _works[index].entry.name;
+    final ok = await _confirmDialog(
+      "删除作品？",
+      "把「$name」从板上移除？（作品库里的原作品不受影响）",
+    );
+    if (ok != true || !mounted) {
+      return;
+    }
+    if (index >= _works.length) {
+      return; // 弹窗期间列表已变，索引失效放弃本次删除
+    }
+    setState(() {
+      _works.removeAt(index);
+      if (_selected == index) {
+        _selected = -1;
+      } else if (_selected > index) {
+        _selected--;
+      }
+    });
+    _persistBoard();
   }
 
   // ==================== 豆数统计 ====================
@@ -1044,63 +1104,102 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
         ),
       );
     }
-    return Center(
-      child: InteractiveViewer(
-        transformationController: _viewerCtrl,
-        maxScale: 10,
-        panEnabled: false,
-        scaleEnabled: false,
+    return Stack(
+      children: [
+        Center(
+          child: InteractiveViewer(
+            transformationController: _viewerCtrl,
+            maxScale: 10,
+            panEnabled: false,
+            scaleEnabled: false,
 
-        ///< 平移/缩放由子层 onScaleUpdate 分发（未选中平移/选中拖作品/双指缩放）
-        boundaryMargin: const EdgeInsets.all(300),
-        child: AspectRatio(
-          aspectRatio: _bw / _bh,
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final canvasW = constraints.maxWidth;
-              final canvasH = constraints.maxHeight;
-              return GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTapUp: (d) => _onCanvasTap(
-                  d.localPosition,
-                  canvasW,
-                  canvasH,
-                ),
-                onScaleStart: (_) {
-                  _lastScale = 1.0;
-                  _accDx = 0;
-                  _accDy = 0;
-                },
-                onScaleUpdate: (d) => _onCanvasScale(d, canvasW, canvasH),
-                onScaleEnd: (_) => _persistBoard(),
-                child: CustomPaint(
-                  size: Size.infinite,
-                  painter: BoardPainter(
-                    board: BoardConfig(
-                      w: _bw,
-                      h: _bh,
-                      interval: _interval,
-                      phaseX: _phaseX,
-                      phaseY: _phaseY,
+            ///< 平移/缩放由子层 onScaleUpdate 分发（未选中平移/选中拖作品/双指缩放）
+            boundaryMargin: const EdgeInsets.all(300),
+            child: AspectRatio(
+              aspectRatio: _bw / _bh,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final canvasW = constraints.maxWidth;
+                  final canvasH = constraints.maxHeight;
+                  return GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTapUp: (d) => _onCanvasTap(
+                      d.localPosition,
+                      canvasW,
+                      canvasH,
                     ),
-                    items: [
-                      for (var i = 0; i < _works.length; i++)
-                        BoardPaintItem(
-                          model: _works[i].entry.model,
-                          palette: _works[i].palette,
-                          ox: _works[i].ox,
-                          oy: _works[i].oy,
-                          showBorder: true,
-                          selected: i == _selected,
+                    onScaleStart: (_) {
+                      _lastScale = 1.0;
+                      _accDx = 0;
+                      _accDy = 0;
+                    },
+                    onScaleUpdate: (d) => _onCanvasScale(d, canvasW, canvasH),
+                    onScaleEnd: (_) => _persistBoard(),
+                    child: CustomPaint(
+                      size: Size.infinite,
+                      painter: BoardPainter(
+                        board: BoardConfig(
+                          w: _bw,
+                          h: _bh,
+                          interval: _interval,
+                          phaseX: _phaseX,
+                          phaseY: _phaseY,
                         ),
-                    ],
-                  ),
-                ),
-              );
-            },
+                        // viewScale：删除叉尺寸/线宽补偿（缩放中视觉恒定）；
+                        // showClose：仅选中作品画右上角删除叉（先点选中、
+                        // 再点叉删，未选中不显示也不可点，防误触）
+                        viewScale: _viewerCtrl.value.getMaxScaleOnAxis(),
+                        items: [
+                          for (var i = 0; i < _works.length; i++)
+                            BoardPaintItem(
+                              model: _works[i].entry.model,
+                              palette: _works[i].palette,
+                              ox: _works[i].ox,
+                              oy: _works[i].oy,
+                              showBorder: true,
+                              selected: i == _selected,
+                              showClose: i == _selected,
+                            ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
           ),
         ),
-      ),
+        // 还原全幅悬浮钮：双指缩放/平移把板面拖丢后一键复位（与还原页
+        // 同款观感）
+        Positioned(
+          right: 8,
+          bottom: 8,
+          child: Material(
+            color: Colors.white,
+            elevation: 3,
+            borderRadius: BorderRadius.circular(22),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(22),
+              // setState 同步重建：viewScale（叉尺寸补偿）须随矩阵复位刷新，
+              // 否则放大后点还原、叉仍按旧倍数画（偏小）
+              onTap: () =>
+                  setState(() => _viewerCtrl.value = Matrix4.identity()),
+              child: const SizedBox(
+                width: 44,
+                height: 44,
+                child: Tooltip(
+                  message: "还原全幅（缩放/平移复位）",
+                  child: Icon(
+                    Icons.fit_screen,
+                    size: 22,
+                    color: Colors.black54,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 

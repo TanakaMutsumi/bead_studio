@@ -370,6 +370,9 @@ class _RestorePageState extends State<RestorePage> {
   final TransformationController _viewerCtrl = TransformationController();
 
   ///< 图区变换（滚轮平移 / 自实现双指捏合缩放 / 双击复位）
+  final TransformationController _reviewCtrl = TransformationController();
+
+  ///< 复核总览变换（还原全幅按钮复位用）
   final GlobalKey _viewerKey = GlobalKey();
 
   ///< InteractiveViewer 的 RenderBox key：捏合锚点需要 global→viewport
@@ -507,6 +510,7 @@ class _RestorePageState extends State<RestorePage> {
       e.countCtrl.dispose();
     }
     _viewerCtrl.dispose();
+    _reviewCtrl.dispose();
     _cellSrc?.dispose();
     super.dispose();
   }
@@ -1639,9 +1643,12 @@ class _RestorePageState extends State<RestorePage> {
 
   // ==================== 步骤 3/4：九宫格标定 ====================
 
-  /// 初始化九宫格标定：全图投影自动检测取格距与第一条格线交点（锚点
-  /// 直接落在真实格线上，用户只需微调）；检测不到用全图宽/20 兜底、
-  /// 锚点放图中央。进入对齐阶段时调一次，回对齐微调不重跑。
+  /// 初始化九宫格标定：全图投影自动检测取格距，锚点取「不越过图中心
+  /// 的最近格线交点」（图纸主体多居中，标定框放正中一眼可核，不必从图
+  /// 边缘拖回；floor 恒不越过中心 → 3×3 框必覆盖图中心；相位沿用检测
+  /// 值整数格对齐，虚线延伸格仍与图纸格线同相）；
+  /// 检测不到用全图宽/20 兜底、锚点放图中央。进入对齐阶段时调一次，
+  /// 回对齐微调不重跑。
   /// 灰度构建 + 自相关检测走 compute isolate：全图逐像素同步扫描
   /// （12MP 手机照片百万次 getPixel）在 UI 线程会冻结秒级（与
   /// encodeDisplayJpg 同理），期间动画/触摸全无响应。
@@ -1671,10 +1678,26 @@ class _RestorePageState extends State<RestorePage> {
       if (det != null) {
         _pitchX = det.pitchX;
         _pitchY = det.pitchY;
-        // 检测出的第一条格线交点（图片坐标）-> 显示坐标作锚点
+        // 锚点取不越过图中心的最近格线交点（floor 恒不越过中心 → 3×3
+        // 框必覆盖图中心；相位沿用检测值 offsetX/Y + 整数格，虚线延伸格
+        // 与图纸格线保持同相）。界内约束对整数格数 k 做（粗格距下 3×3
+        // 框从中心交点放不下时按格回退），而非对最终显示坐标截断——截
+        // 断会把锚点推离格线交点、虚线整体离相；k=0（首条格线）必在界
+        // 内（检测通过时 offset ≤ 宽-3.5×格距），区间非空
+        final kxMax =
+            ((image.width - 3 * det.pitchX - det.offsetX) / det.pitchX).floor();
+        final kyMax =
+            ((image.height - 3 * det.pitchY - det.offsetY) / det.pitchY)
+                .floor();
+        final kx = ((image.width / 2 - det.offsetX) / det.pitchX)
+            .floor()
+            .clamp(0, math.max(0, kxMax));
+        final ky = ((image.height / 2 - det.offsetY) / det.pitchY)
+            .floor()
+            .clamp(0, math.max(0, kyMax));
         _miniAnchor = Offset(
-          det.offsetX * ds.width / image.width,
-          det.offsetY * ds.height / image.height,
+          (det.offsetX + kx * det.pitchX) * ds.width / image.width,
+          (det.offsetY + ky * det.pitchY) * ds.height / image.height,
         );
       } else {
         _pitchX = image.width / 20;
@@ -1763,6 +1786,32 @@ class _RestorePageState extends State<RestorePage> {
       onPressed: onPressed,
       tooltip: tooltip,
       icon: Icon(icon),
+    );
+  }
+
+  /// 画布「还原全幅」悬浮钮：缩放/平移把画面拖丢后一键复位到全幅视角
+  /// （所有可缩放画布统一入口——手势缩放可发现性差，屏幕上要有显式按钮）
+  Widget _fitAllBtn(TransformationController ctrl) {
+    return Positioned(
+      right: 8,
+      bottom: 8,
+      child: Material(
+        color: Colors.white,
+        elevation: 3,
+        borderRadius: BorderRadius.circular(22),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(22),
+          onTap: () => ctrl.value = Matrix4.identity(),
+          child: const SizedBox(
+            width: 44,
+            height: 44,
+            child: Tooltip(
+              message: "还原全幅（缩放/平移复位）",
+              child: Icon(Icons.fit_screen, size: 22, color: Colors.black54),
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -2466,6 +2515,33 @@ class _RestorePageState extends State<RestorePage> {
     setState(() => _stage = prev);
   }
 
+  /// 「退出」按钮确认：完全退出图纸还原（选的图/图例框/九宫格标定/识别
+  /// 结果全部丢弃；已单独保存进作品库的作品不受影响）。与「上一步」
+  /// 相对：上一步保留现场只回退阶段。识别完成回调处处有 mounted 守卫，
+  /// 识别中退出页面安全（后台 compute 跑完即弃），不拦
+  Future<void> _confirmExitRestore() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: const Text("退出图纸还原？"),
+        content: const Text("已识别、已调整的内容将全部丢弃（已保存进作品库的作品不受影响）"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: const Text("取消"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dctx, true),
+            child: const Text("退出"),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && mounted) {
+      Navigator.of(context).pop();
+    }
+  }
+
   // ==================== 布局 ====================
 
   @override
@@ -2498,6 +2574,24 @@ class _RestorePageState extends State<RestorePage> {
             ],
           ),
           actions: [
+            // 显式「上一步」按钮（非第一步）：与系统 back 同款确认弹窗——
+            // 只靠 back 键不可发现，屏幕上要有显式返回入口
+            if (_stage != _Stage.pick)
+              IconButton(
+                onPressed: _confirmBack,
+                icon: const Icon(Icons.navigate_before),
+                tooltip: "返回上一步",
+              ),
+            // 显式「退出」按钮：完全退出图纸还原。第一步无可丢内容直接退；
+            // 中间步弹确认——与「上一步」相对：上一步保留现场只回退阶段，
+            // 退出丢弃已调的图例/标定/识别结果（已保存进作品库的不受影响）
+            IconButton(
+              onPressed: _stage == _Stage.pick
+                  ? () => Navigator.of(context).pop()
+                  : _confirmExitRestore,
+              icon: const Icon(Icons.logout),
+              tooltip: "退出图纸还原",
+            ),
             // 复核发现问题多半是网格没对齐：一键回对齐阶段微调后重识别
             // （网格参数/选区/图例都保留，直接可调）
             if (_stage == _Stage.review)
@@ -2790,6 +2884,8 @@ class _RestorePageState extends State<RestorePage> {
             ),
           ),
         ),
+        // 还原全幅悬浮钮：捏合/滚轮把画面拖丢后一键复位（三步共用图区）
+        _fitAllBtn(_viewerCtrl),
         if (_decoding)
           Positioned.fill(
             child: Container(
@@ -4125,66 +4221,75 @@ class _RestorePageState extends State<RestorePage> {
   /// 总览：整幅豆图（长按拖动缩放、点选格子）
   Widget _buildReviewOverview() {
     final model = _model!;
-    return Center(
-      child: InteractiveViewer(
-        maxScale: 12,
-        child: AspectRatio(
-          aspectRatio: model.width / model.height,
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final cellW = constraints.maxWidth / model.width;
-              final cellH = constraints.maxHeight / model.height;
-              return GestureDetector(
-                onTapUp: (d) {
-                  if (_reviewColor == -2) {
-                    return;
-                  }
-                  final cx = (d.localPosition.dx / cellW).floor();
-                  final cy = (d.localPosition.dy / cellH).floor();
-                  if (cx < 0 ||
-                      cx >= model.width ||
-                      cy < 0 ||
-                      cy >= model.height) {
-                    return;
-                  }
-                  setState(() {
-                    final i = cy * model.width + cx;
-                    _picked.contains(i) ? _picked.remove(i) : _picked.add(i);
-                  });
-                },
-                child: Stack(
-                  children: [
-                    CustomPaint(
-                      size: Size.infinite,
-                      painter: GridPainter(
-                        model: model,
-                        palette: _palette,
-                        selectedColorIndex: -1,
-                        highlightIndex: _reviewColor >= 0 ? _reviewColor : null,
-                      ),
-                    ),
-                    if (_reviewColor == -1)
-                      Positioned.fill(
-                        child: CustomPaint(
-                          painter: _BlankMarksPainter(model: model),
-                        ),
-                      ),
-                    if (_picked.isNotEmpty)
-                      Positioned.fill(
-                        child: CustomPaint(
-                          painter: _ReviewMarksPainter(
+    return Stack(
+      children: [
+        Center(
+          child: InteractiveViewer(
+            maxScale: 12,
+            transformationController: _reviewCtrl,
+            child: AspectRatio(
+              aspectRatio: model.width / model.height,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final cellW = constraints.maxWidth / model.width;
+                  final cellH = constraints.maxHeight / model.height;
+                  return GestureDetector(
+                    onTapUp: (d) {
+                      if (_reviewColor == -2) {
+                        return;
+                      }
+                      final cx = (d.localPosition.dx / cellW).floor();
+                      final cy = (d.localPosition.dy / cellH).floor();
+                      if (cx < 0 ||
+                          cx >= model.width ||
+                          cy < 0 ||
+                          cy >= model.height) {
+                        return;
+                      }
+                      setState(() {
+                        final i = cy * model.width + cx;
+                        _picked.contains(i)
+                            ? _picked.remove(i)
+                            : _picked.add(i);
+                      });
+                    },
+                    child: Stack(
+                      children: [
+                        CustomPaint(
+                          size: Size.infinite,
+                          painter: GridPainter(
                             model: model,
-                            picked: _picked,
+                            palette: _palette,
+                            selectedColorIndex: -1,
+                            highlightIndex:
+                                _reviewColor >= 0 ? _reviewColor : null,
                           ),
                         ),
-                      ),
-                  ],
-                ),
-              );
-            },
+                        if (_reviewColor == -1)
+                          Positioned.fill(
+                            child: CustomPaint(
+                              painter: _BlankMarksPainter(model: model),
+                            ),
+                          ),
+                        if (_picked.isNotEmpty)
+                          Positioned.fill(
+                            child: CustomPaint(
+                              painter: _ReviewMarksPainter(
+                                model: model,
+                                picked: _picked,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
           ),
         ),
-      ),
+        _fitAllBtn(_reviewCtrl),
+      ],
     );
   }
 

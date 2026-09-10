@@ -264,48 +264,79 @@ class _AssemblePageState extends State<AssemblePage> {
   }
 
   Widget _buildCanvas() {
-    return Center(
-      child: InteractiveViewer(
-        transformationController: _viewerCtrl,
-        maxScale: 12,
-        panEnabled: true,
+    return Stack(
+      children: [
+        Center(
+          child: InteractiveViewer(
+            transformationController: _viewerCtrl,
+            maxScale: 12,
+            panEnabled: true,
 
-        ///< 本页无画布手势，平移缩放都给查看器
-        child: AspectRatio(
-          aspectRatio: widget.board.w / widget.board.h,
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              return GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTapUp: (d) => _toggleAt(
-                  d.localPosition,
-                  constraints.maxWidth,
-                  constraints.maxHeight,
-                ),
-                child: CustomPaint(
-                  size: Size.infinite,
-                  painter: BoardPainter(
-                    board: widget.board,
-                    labelMode: _labelMode,
-                    showLabels: true,
-                    items: [
-                      for (var i = 0; i < widget.works.length; i++)
-                        BoardPaintItem(
-                          model: widget.works[i].entry.model,
-                          palette: widget.works[i].palette,
-                          ox: widget.works[i].ox,
-                          oy: widget.works[i].oy,
-                          highlightId: _highlightId,
-                          placedCells: _placed[i],
-                        ),
-                    ],
-                  ),
-                ),
-              );
-            },
+            ///< 本页无画布手势，平移缩放都给查看器
+            child: AspectRatio(
+              aspectRatio: widget.board.w / widget.board.h,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  return GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTapUp: (d) => _toggleAt(
+                      d.localPosition,
+                      constraints.maxWidth,
+                      constraints.maxHeight,
+                    ),
+                    child: CustomPaint(
+                      size: Size.infinite,
+                      painter: BoardPainter(
+                        board: widget.board,
+                        labelMode: _labelMode,
+                        showLabels: true,
+                        items: [
+                          for (var i = 0; i < widget.works.length; i++)
+                            BoardPaintItem(
+                              model: widget.works[i].entry.model,
+                              palette: widget.works[i].palette,
+                              ox: widget.works[i].ox,
+                              oy: widget.works[i].oy,
+                              highlightId: _highlightId,
+                              placedCells: _placed[i],
+                            ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
           ),
         ),
-      ),
+        // 还原全幅悬浮钮：双指缩放/平移把板面拖丢后一键复位（与豆板
+        // 配置页同款）
+        Positioned(
+          right: 8,
+          bottom: 8,
+          child: Material(
+            color: Colors.white,
+            elevation: 3,
+            borderRadius: BorderRadius.circular(22),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(22),
+              onTap: () => _viewerCtrl.value = Matrix4.identity(),
+              child: const SizedBox(
+                width: 44,
+                height: 44,
+                child: Tooltip(
+                  message: "还原全幅（缩放/平移复位）",
+                  child: Icon(
+                    Icons.fit_screen,
+                    size: 22,
+                    color: Colors.black54,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 

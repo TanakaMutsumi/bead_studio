@@ -46,6 +46,9 @@ class BoardPaintItem {
   final bool selected;
 
   ///< 选中态（边框加粗蓝；配置页）
+  final bool showClose;
+
+  ///< 画右上角删除叉（仅配置页选中作品开 / 拼豆页关）
 
   const BoardPaintItem({
     required this.model,
@@ -56,6 +59,7 @@ class BoardPaintItem {
     this.placedCells,
     this.showBorder = false,
     this.selected = false,
+    this.showClose = false,
   });
 }
 
@@ -72,6 +76,9 @@ class BoardPainter extends CustomPainter {
   final bool showLabels;
 
   ///< 是否绘制格子文字层（拼豆页开 / 配置页关，摆放时看色块即可）
+  final double viewScale;
+
+  ///< 当前视图缩放倍数（删除叉尺寸/线宽补偿用：画布放大后视觉恒定）
   static final Map<String, TextPainter> _labelCache = {};
 
   ///< 文字绘制缓存（painter 每 build 新建，缓存须跨实例共享；key 含文本+字号+颜色）
@@ -81,6 +88,7 @@ class BoardPainter extends CustomPainter {
     required this.items,
     this.labelMode = LabelMode.id,
     this.showLabels = false,
+    this.viewScale = 1.0,
     super.repaint,
   });
 
@@ -104,7 +112,11 @@ class BoardPainter extends CustomPainter {
           continue;
         }
         if (item.palette.colors[v].id == hi) {
-          cells.add((item.ox + c % m.width, item.oy + c ~/ m.width, i * 10000000 + c));
+          cells.add((
+            item.ox + c % m.width,
+            item.oy + c ~/ m.width,
+            i * 10000000 + c
+          ));
         }
       }
     }
@@ -142,13 +154,15 @@ class BoardPainter extends CustomPainter {
       tp = TextPainter(
         text: TextSpan(
           text: text,
-          style: TextStyle(fontSize: px, color: color, fontWeight: FontWeight.w600),
+          style: TextStyle(
+              fontSize: px, color: color, fontWeight: FontWeight.w600),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
       _labelCache[key] = tp;
     }
-    tp.paint(canvas, Offset(rect.center.dx - tp.width / 2, rect.center.dy - tp.height / 2));
+    tp.paint(canvas,
+        Offset(rect.center.dx - tp.width / 2, rect.center.dy - tp.height / 2));
   }
 
   @override
@@ -157,8 +171,8 @@ class BoardPainter extends CustomPainter {
     final cellH = size.height / board.h;
     final numbers =
         (labelMode != LabelMode.id && items.any((e) => e.highlightId != null))
-        ? _buildNumbers()
-        : const <int, int>{};
+            ? _buildNumbers()
+            : const <int, int>{};
 
     // 板底
     canvas.drawRect(
@@ -225,38 +239,45 @@ class BoardPainter extends CustomPainter {
       );
     }
 
+    // 板最外边框：加粗深线描一圈，与普通格线/interval 加粗线区分——
+    // 豆板的物理边界一眼可辨（配置页拖作品摆放、拼豆页对照放豆都以它为界）
+    final boardBorder = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.2
+      ..color = Colors.black87;
+    canvas.drawRect(Offset.zero & size, boardBorder);
+
     // 文字层：默认每格显示色号；高亮 + 编号模式时高亮格改为行/列分组编号
     if (showLabels) {
-    for (var itemIdx = 0; itemIdx < items.length; itemIdx++) {
-      final item = items[itemIdx];
-      final m = item.model;
-      for (var y = 0; y < m.height; y++) {
-        for (var x = 0; x < m.width; x++) {
-          final v = m.grid[y * m.width + x];
-          if (v < 0 || v >= item.palette.colors.length) {
-            continue;
+      for (var itemIdx = 0; itemIdx < items.length; itemIdx++) {
+        final item = items[itemIdx];
+        final m = item.model;
+        for (var y = 0; y < m.height; y++) {
+          for (var x = 0; x < m.width; x++) {
+            final v = m.grid[y * m.width + x];
+            if (v < 0 || v >= item.palette.colors.length) {
+              continue;
+            }
+            final c = item.palette.colors[v];
+            final isHi = item.highlightId != null && c.id == item.highlightId;
+            final key = itemIdx * 10000000 + y * m.width + x;
+            final text =
+                (isHi && numbers.containsKey(key)) ? "${numbers[key]}" : c.id;
+            final light = c.r * 0.299 + c.g * 0.587 + c.b * 0.114 > 150;
+            _drawLabel(
+              canvas,
+              text,
+              Rect.fromLTWH(
+                (item.ox + x) * cellW,
+                (item.oy + y) * cellH,
+                cellW,
+                cellH,
+              ),
+              light,
+            );
           }
-          final c = item.palette.colors[v];
-          final isHi = item.highlightId != null && c.id == item.highlightId;
-          final key = itemIdx * 10000000 + y * m.width + x;
-          final text = (isHi && numbers.containsKey(key))
-              ? "${numbers[key]}"
-              : c.id;
-          final light = c.r * 0.299 + c.g * 0.587 + c.b * 0.114 > 150;
-          _drawLabel(
-            canvas,
-            text,
-            Rect.fromLTWH(
-              (item.ox + x) * cellW,
-              (item.oy + y) * cellH,
-              cellW,
-              cellH,
-            ),
-            light,
-          );
         }
       }
-    }
     }
 
     // 拼装已放格：半透明白罩 + 绿对勾（EditorPage 拼装标记同款观感）
@@ -319,6 +340,41 @@ class BoardPainter extends CustomPainter {
         border,
       );
     }
+
+    // 作品右上角删除叉（豆板配置页，仅选中作品）：白底红圈圆钮压在作品
+    // 右上角顶点上，所有作品层画完后统一画保证浮在最上层；
+    // 尺寸/线宽按视图缩放补偿（放大后视觉恒定），命中检测在页层同款换算
+    for (final item in items) {
+      if (!item.showClose) {
+        continue;
+      }
+      final center = Offset(
+        (item.ox + item.model.width) * cellW,
+        item.oy * cellH,
+      );
+      final r = 13.0 / viewScale;
+      final ring = Paint()
+        ..color = const Color(0xFFC62828)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.8 / viewScale;
+      canvas.drawCircle(center, r, Paint()..color = Colors.white);
+      canvas.drawCircle(center, r, ring);
+      final s = r * 0.5;
+      final cross = Paint()
+        ..color = const Color(0xFFC62828)
+        ..strokeWidth = 2.2 / viewScale
+        ..strokeCap = StrokeCap.round;
+      canvas.drawLine(
+        Offset(center.dx - s, center.dy - s),
+        Offset(center.dx + s, center.dy + s),
+        cross,
+      );
+      canvas.drawLine(
+        Offset(center.dx - s, center.dy + s),
+        Offset(center.dx + s, center.dy - s),
+        cross,
+      );
+    }
   }
 
   @override
@@ -326,6 +382,7 @@ class BoardPainter extends CustomPainter {
     return oldDelegate.board != board ||
         oldDelegate.labelMode != labelMode ||
         oldDelegate.showLabels != showLabels ||
+        oldDelegate.viewScale != viewScale ||
         oldDelegate.items.length != items.length ||
         oldDelegate.items != items;
   }
