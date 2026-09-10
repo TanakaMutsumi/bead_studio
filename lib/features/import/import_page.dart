@@ -1,4 +1,5 @@
-import 'package:flutter/foundation.dart';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -8,12 +9,9 @@ import '../../core/palette.dart';
 import '../../core/palette_registry.dart';
 import '../../core/pixel_engine.dart';
 import '../../core/quantizer.dart';
-import '../board/board_setup_page.dart';
 import '../editor/editor_page.dart';
-import '../restore/restore_page.dart';
-import '../works/works_page.dart';
 
-/// 导入页：选图 -> 选色卡/板尺寸/抖动 -> 转换进编辑器；支持打开历史草稿
+/// 图片转换页（主页「图片转换」进入）：选图 -> 选色卡/板尺寸/抖动 -> 转换进编辑器
 class ImportPage extends StatefulWidget {
   const ImportPage({super.key});
 
@@ -145,41 +143,10 @@ class _ImportPageState extends State<ImportPage> {
     }
   }
 
-  Future<void> _openDrafts() async {
-    if (kIsWeb) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text("网页版暂不支持本地作品库")));
-      return;
-    }
-    await Navigator.of(context)
-        .push(MaterialPageRoute(builder: (_) => WorksPage(palette: _palette)));
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        actions: [
-          IconButton(
-            onPressed: () => Navigator.of(context)
-                .push(MaterialPageRoute(builder: (_) => const RestorePage())),
-            icon: const Icon(Icons.document_scanner),
-            tooltip: "图纸还原",
-          ),
-          IconButton(
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const BoardSetupPage()),
-            ),
-            icon: const Icon(Icons.grid_view_outlined),
-            tooltip: "开始拼豆",
-          ),
-          IconButton(
-            onPressed: _openDrafts,
-            icon: const Icon(Icons.folder_open),
-            tooltip: "打开草稿",
-          ),
-        ],
-      ),
+      appBar: AppBar(title: const Text("图片转换")),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
