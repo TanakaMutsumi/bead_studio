@@ -13,6 +13,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../../core/app_build.dart';
+import '../../core/app_snack_bar.dart';
 import '../../core/decode_image.dart';
 import '../../core/draft_store.dart';
 import '../../core/grid_detector.dart';
@@ -66,9 +67,15 @@ GridDetectResult? detectGridInIsolate(img.Image image) {
 
 /// 格子 OCR 裁剪参数（encodeCellOcrPng 的 compute 入参）
 class _CellOcrArgs {
-  final img.Image image; ///< 原图（isolate 内裁剪）
-  final int x, y, w, h; ///< 裁剪区（图片坐标）
-  final double scale; ///< 放大倍率（1.0=不缩放）
+  final img.Image image;
+
+  ///< 原图（isolate 内裁剪）
+  final int x, y, w, h;
+
+  ///< 裁剪区（图片坐标）
+  final double scale;
+
+  ///< 放大倍率（1.0=不缩放）
   const _CellOcrArgs(this.image, this.x, this.y, this.w, this.h, this.scale);
 }
 
@@ -549,8 +556,7 @@ class _RestorePageState extends State<RestorePage> {
       // 解码失败必须弹提示（曾经异常被吞表现为"选图无反应"）
       if (mounted) {
         setState(() => _decoding = false);
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text("无法解码图片: $e")));
+        AppSnackBar.show(context, "无法解码图片: $e");
       }
     }
   }
@@ -726,15 +732,11 @@ class _RestorePageState extends State<RestorePage> {
   void _autoSelectLegend() {
     final rect = _autoDetectLegend();
     if (rect == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("未识别到图例区，请手动框选")),
-      );
+      AppSnackBar.show(context, "未识别到图例区，请手动框选");
       return;
     }
     setState(() => _legendSel = rect);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("已自动框选图例区，可拖动调整")),
-    );
+    AppSnackBar.show(context, "已自动框选图例区，可拖动调整");
   }
 
   /// 选区（显示坐标）-> 图片坐标矩形；空选区返回全图
@@ -869,21 +871,17 @@ class _RestorePageState extends State<RestorePage> {
       });
       // 自动滚动定位已随滚动视口移除（双指捏合缩放 + 双指拖动平移可达图例区）
       if (ocrHit > 0) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text("已按图例印刷色号识别 $ocrHit 色，颗数自动读取 $ocrHit 条，请对照原图核对"),
-          ),
+        AppSnackBar.show(
+          context,
+          "已按图例印刷色号识别 $ocrHit 色，颗数自动读取 $ocrHit 条，请对照原图核对",
         );
       } else if (pairs != null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("框选区域未读到图例文字，以下按色块识别仅作参考；请只框选图纸底部的色块+色号+数字区域"),
-          ),
+        AppSnackBar.show(
+          context,
+          "框选区域未读到图例文字，以下按色块识别仅作参考；请只框选图纸底部的色块+色号+数字区域",
         );
       } else if (det == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("未检出图例网格，按 8×1 均分识别；不准可改行列数后重新识别")),
-        );
+        AppSnackBar.show(context, "未检出图例网格，按 8×1 均分识别；不准可改行列数后重新识别");
       }
     });
   }
@@ -1092,12 +1090,9 @@ class _RestorePageState extends State<RestorePage> {
       // 色卡外色号（如 MARD 卡没有的 H7）：无法入清单，明确提示用户手工补
       if (orphanNotes.isNotEmpty && mounted) {
         final names = orphanNotes.toSet().join("、");
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              "识别到色卡外色号：$names（不在当前色卡，未入清单；如有需要请用\"添加颜色\"手工补）",
-            ),
-          ),
+        AppSnackBar.show(
+          context,
+          "识别到色卡外色号：$names（不在当前色卡，未入清单；如有需要请用\"添加颜色\"手工补）",
         );
       }
       return paired;
@@ -1534,9 +1529,7 @@ class _RestorePageState extends State<RestorePage> {
       return;
     }
     if (_legend.any((e) => e.paletteIndex == idx)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("${_palette.colors[idx].id} 已在清单中")),
-      );
+      AppSnackBar.show(context, "${_palette.colors[idx].id} 已在清单中");
       return;
     }
     setState(() => _legend.add(_LegendEntry(idx)));
@@ -1659,9 +1652,7 @@ class _RestorePageState extends State<RestorePage> {
       }
     });
     if (det == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("未自动检出格距，已按默认值放置九宫格，请手动调整大小对齐")),
-      );
+      AppSnackBar.show(context, "未自动检出格距，已按默认值放置九宫格，请手动调整大小对齐");
     }
   }
 
@@ -1800,8 +1791,7 @@ class _RestorePageState extends State<RestorePage> {
       cols = int.tryParse(_colsCtrl.text) ?? 0;
       rows = int.tryParse(_rowsCtrl.text) ?? 0;
       if (cols < 4 || rows < 4 || cols > 400 || rows > 400) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text("行列数须在 4-400 之间")));
+        AppSnackBar.show(context, "行列数须在 4-400 之间");
         return;
       }
     } else {
@@ -1812,15 +1802,11 @@ class _RestorePageState extends State<RestorePage> {
       final anchor = _miniAnchor;
       final sel = _selDisplay;
       if (_pitchX <= 0 || _pitchY <= 0 || anchor == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("九宫格未就绪，请等自动检测完成或手动调整")),
-        );
+        AppSnackBar.show(context, "九宫格未就绪，请等自动检测完成或手动调整");
         return;
       }
       if (sel == null || sel.width <= 8 || sel.height <= 8) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("请先在图上拖框选中主体区域（拼豆格子部分，扁框无效）")),
-        );
+        AppSnackBar.show(context, "请先在图上拖框选中主体区域（拼豆格子部分，扁框无效）");
         return;
       }
       final (sx, sy, sw, sh) = _selToImage(sel);
@@ -1837,12 +1823,21 @@ class _RestorePageState extends State<RestorePage> {
       if (offY < 0) {
         offY += pitchY;
       }
+      // 相位残差钳制：框选步选区四边已吸附格线，(锚点-选区左缘) 数学上
+      // 是格距整数倍，但吸附在显示坐标、相位在图片坐标，两次换算的浮点
+      // 求值顺序不同，残差 ±1e-12 落负侧时 % 回绕成 pitchX-ε，切分数比
+      // 框上徽标少 1 且首列整列右移一格。真实相位偏移不可能在百万分之
+      // 一像素量级，钳回 0 无误伤（_plannedColsRows 同款）
+      if (offX < 1e-6 || pitchX - offX < 1e-6) {
+        offX = 0;
+      }
+      if (offY < 1e-6 || pitchY - offY < 1e-6) {
+        offY = 0;
+      }
       cols = ((sw - offX) / pitchX + 0.5).floor();
       rows = ((sh - offY) / pitchY + 0.5).floor();
       if (cols < 4 || rows < 4 || cols > 400 || rows > 400) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("按当前格距切分为 $cols×$rows，超出 4-400，请调整框选范围或格子大小")),
-        );
+        AppSnackBar.show(context, "按当前格距切分为 $cols×$rows，超出 4-400，请调整框选范围或格子大小");
         return;
       }
       _colsCtrl.text = cols.toString();
@@ -1945,8 +1940,7 @@ class _RestorePageState extends State<RestorePage> {
         final nearWhite = sr > 230 &&
             sg > 230 &&
             sb > 230 &&
-            (math.max(sr, math.max(sg, sb)) -
-                    math.min(sr, math.min(sg, sb))) <
+            (math.max(sr, math.max(sg, sb)) - math.min(sr, math.min(sg, sb))) <
                 25;
         if (_blankEnable && nearWhite && !candNearWhite) {
           grid[i] = -1;
@@ -2043,8 +2037,8 @@ class _RestorePageState extends State<RestorePage> {
       final cx0 = (bLeft - avgW / 2).clamp(0.0, image.width - 4.0);
       final cy0 = (bTop - avgH / 2).clamp(0.0, image.height - 4.0);
       final cx1 = (bRight + avgW / 2).clamp(cx0 + 4.0, image.width.toDouble());
-      final cy1 = (bBottom + avgH / 2)
-          .clamp(cy0 + 4.0, image.height.toDouble());
+      final cy1 =
+          (bBottom + avgH / 2).clamp(cy0 + 4.0, image.height.toDouble());
       final cropW = (cx1 - cx0).toInt();
       final cropH = (cy1 - cy0).toInt();
       // 放大策略：目标宽 3600（格内色号字小，格距 ~31px 时字高 ~10px，
@@ -2107,7 +2101,9 @@ class _RestorePageState extends State<RestorePage> {
               // 图例杂文）——裁剪外扩半格会把它读进 OCR，若被收进边缘格
               // 会与格内色号按 x 拼接成 "F2"+"1"→"F21" 型错串（撞上混淆
               // 变体即按 OCR 权威错认上色），直接丢弃
-              if (p.dx < bLeft || p.dx > bRight || p.dy < bTop ||
+              if (p.dx < bLeft ||
+                  p.dx > bRight ||
+                  p.dy < bTop ||
                   p.dy > bBottom) {
                 continue;
               }
@@ -2187,7 +2183,8 @@ class _RestorePageState extends State<RestorePage> {
     final now = DateTime.now();
     final two = (int v) => v.toString().padLeft(2, "0");
     final ctrl = TextEditingController(
-      text: "图案 ${now.month}${two(now.day)}日 ${two(now.hour)}:${two(now.minute)}",
+      text:
+          "图案 ${now.month}${two(now.day)}日 ${two(now.hour)}:${two(now.minute)}",
     );
     final name = await showDialog<String>(
       context: context,
@@ -2339,9 +2336,7 @@ class _RestorePageState extends State<RestorePage> {
   void _goAlign() {
     if (_recognizing) {
       // 识别进行中回对齐：识别完成会写结果并跳复核，中途调格距白调
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("识别进行中，请等待完成")),
-      );
+      AppSnackBar.show(context, "识别进行中，请等待完成");
       return;
     }
     setState(() => _stage = _Stage.align);
@@ -2351,94 +2346,156 @@ class _RestorePageState extends State<RestorePage> {
   }
 
   /// 进入「框选主体」阶段（九宫格已定每格尺寸，本步只框主体区域；
-  /// 行列数 = 选区/格距 实时算，识别时直接采用）
+  /// 行列数 = 选区/格距 实时算，识别时直接采用）。已有选区按当前格距
+  /// 重新吸附（回九宫格调过格子大小再进来，旧框立即归位整格）
   void _goFrame() {
-    setState(() => _stage = _Stage.frame);
+    setState(() {
+      _stage = _Stage.frame;
+      final sel = _selDisplay;
+      if (sel != null) {
+        _selDisplay = _snapSelToGrid(sel);
+      }
+    });
+  }
+
+  /// back 退出确认：中间步骤的 back 不直接退页（那样整个还原流程——
+  /// 选的图/图例框/九宫格标定——全丢），先问是否只返回上一步；
+  /// 已调内容全部保留，第一步（选图）back 才直接退出
+  Future<void> _confirmBack() async {
+    if (_recognizing) {
+      // 与 _goAlign 同款守卫：识别完成回调会无条件写结果并跳复核（见
+      // _recognize 末尾 setState），识别中返回上一步是白调且用户会被
+      // 强行拽回复核
+      AppSnackBar.show(context, "识别进行中，请等待完成");
+      return;
+    }
+    // 四角对齐流程无独立框选步（②四角直接识别，见 _buildAlign），从复核
+    // 返回应回②对齐，而不是落入本流程不存在的③框选主体
+    final prev = _stage == _Stage.review && _useCornerAlign
+        ? _Stage.align
+        : _Stage.values[_stage.index - 1];
+    final prevName = switch (prev) {
+      _Stage.pick => "选图",
+      _Stage.legend => "① 框图例",
+      _Stage.align => "② 九宫格对齐",
+      _Stage.frame => "③ 框选主体",
+      _Stage.review => "④ 识别复核",
+    };
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: const Text("返回上一步？"),
+        content: Text("回到「$prevName」。已选的图、图例框、九宫格标定都保留，不会丢失"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: const Text("取消"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dctx, true),
+            child: const Text("返回上一步"),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) {
+      return;
+    }
+    setState(() => _stage = prev);
   }
 
   // ==================== 布局 ====================
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(switch (_stage) {
-              _Stage.pick => "图纸还原 · 选图",
-              _Stage.legend => "图纸还原 · ① 框图例",
-              _Stage.align => "图纸还原 · ② 九宫格对齐",
-              _Stage.frame => "图纸还原 · ③ 框选主体",
-              _Stage.review => "图纸还原 · ④ 识别复核",
-            }),
-            Text(
-              "构建 $appBuildLabel",
-              style: const TextStyle(fontSize: 10, color: Colors.black38),
-            ),
+    return PopScope(
+      // 选图步（第一步）back 直接退出；中间步骤先确认返回上一步
+      canPop: _stage == _Stage.pick,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) {
+          _confirmBack();
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(switch (_stage) {
+                _Stage.pick => "图纸还原 · 选图",
+                _Stage.legend => "图纸还原 · ① 框图例",
+                _Stage.align => "图纸还原 · ② 九宫格对齐",
+                _Stage.frame => "图纸还原 · ③ 框选主体",
+                _Stage.review => "图纸还原 · ④ 识别复核",
+              }),
+              Text(
+                "构建 $appBuildLabel",
+                style: const TextStyle(fontSize: 10, color: Colors.black38),
+              ),
+            ],
+          ),
+          actions: [
+            // 复核发现问题多半是网格没对齐：一键回对齐阶段微调后重识别
+            // （网格参数/选区/图例都保留，直接可调）
+            if (_stage == _Stage.review)
+              TextButton.icon(
+                onPressed: _goAlign,
+                icon: const Icon(Icons.undo, size: 18),
+                label: const Text("回对齐"),
+              ),
+            // 框选步发现格距不对：回九宫格步重新标定（选区保留，回来直接用）
+            if (_stage == _Stage.frame)
+              TextButton.icon(
+                onPressed: _goAlign,
+                icon: const Icon(Icons.undo, size: 18),
+                label: const Text("回九宫格"),
+              ),
+            // 自动框选图例区（载入时已自动尝试过，这里供失败重试/重新选）
+            if (_stage == _Stage.legend)
+              IconButton(
+                onPressed: _autoSelectLegend,
+                icon: const Icon(Icons.auto_awesome),
+                tooltip: "自动框选图例",
+              ),
+            // 【临时调试】图例 OCR 调试入口：识别后即可查看放大图/元素/配对，正式版移除
+            if (_stage == _Stage.legend && _ocrDebug != null)
+              IconButton(
+                onPressed: _showOcrDebug,
+                icon: const Icon(Icons.bug_report),
+                tooltip: "OCR 调试",
+              ),
+            if (_stage == _Stage.legend ||
+                _stage == _Stage.align ||
+                _stage == _Stage.frame)
+              PopupMenuButton<String>(
+                tooltip: "切换色卡",
+                icon: const Icon(Icons.palette),
+                onSelected: (id) => _switchPalette(id),
+                itemBuilder: (_) => [
+                  for (final p in _palettes)
+                    PopupMenuItem(
+                      value: p.id,
+                      child: Row(
+                        children: [
+                          if (p.id == _paletteId)
+                            const Icon(Icons.check, size: 18),
+                          Text(p.label),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
           ],
         ),
-        actions: [
-          // 复核发现问题多半是网格没对齐：一键回对齐阶段微调后重识别
-          // （网格参数/选区/图例都保留，直接可调）
-          if (_stage == _Stage.review)
-            TextButton.icon(
-              onPressed: _goAlign,
-              icon: const Icon(Icons.undo, size: 18),
-              label: const Text("回对齐"),
-            ),
-          // 框选步发现格距不对：回九宫格步重新标定（选区保留，回来直接用）
-          if (_stage == _Stage.frame)
-            TextButton.icon(
-              onPressed: _goAlign,
-              icon: const Icon(Icons.undo, size: 18),
-              label: const Text("回九宫格"),
-            ),
-          // 自动框选图例区（载入时已自动尝试过，这里供失败重试/重新选）
-          if (_stage == _Stage.legend)
-            IconButton(
-              onPressed: _autoSelectLegend,
-              icon: const Icon(Icons.auto_awesome),
-              tooltip: "自动框选图例",
-            ),
-          // 【临时调试】图例 OCR 调试入口：识别后即可查看放大图/元素/配对，正式版移除
-          if (_stage == _Stage.legend && _ocrDebug != null)
-            IconButton(
-              onPressed: _showOcrDebug,
-              icon: const Icon(Icons.bug_report),
-              tooltip: "OCR 调试",
-            ),
-          if (_stage == _Stage.legend ||
-              _stage == _Stage.align ||
-              _stage == _Stage.frame)
-            PopupMenuButton<String>(
-              tooltip: "切换色卡",
-              icon: const Icon(Icons.palette),
-              onSelected: (id) => _switchPalette(id),
-              itemBuilder: (_) => [
-                for (final p in _palettes)
-                  PopupMenuItem(
-                    value: p.id,
-                    child: Row(
-                      children: [
-                        if (p.id == _paletteId)
-                          const Icon(Icons.check, size: 18),
-                        Text(p.label),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
-        ],
+        body: switch (_stage) {
+          _Stage.pick => _buildPick(),
+          _Stage.legend => _buildLegend(),
+          _Stage.align => _buildAlign(),
+          _Stage.frame => _buildFrame(),
+          _Stage.review => _buildReview(),
+        },
       ),
-      body: switch (_stage) {
-        _Stage.pick => _buildPick(),
-        _Stage.legend => _buildLegend(),
-        _Stage.align => _buildAlign(),
-        _Stage.frame => _buildFrame(),
-        _Stage.review => _buildReview(),
-      },
     );
   }
 
@@ -2451,9 +2508,7 @@ class _RestorePageState extends State<RestorePage> {
       // 识别进行中换色卡：await 前后建的候选集（旧卡）与色号查找表（新
       // 卡）混判错认，拒绝——识别结束（进复核或回失败）后再切
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("识别进行中，请等识别完成后再切换色卡")),
-        );
+        AppSnackBar.show(context, "识别进行中，请等识别完成后再切换色卡");
       }
       return;
     }
@@ -2471,8 +2526,7 @@ class _RestorePageState extends State<RestorePage> {
       _legend = [];
       _legendByOcr = false;
     });
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text("已切换到${target.label}，图例需重新识别")));
+    AppSnackBar.show(context, "已切换到${target.label}，图例需重新识别");
   }
 
   /// 阶段一：选图入口
@@ -2619,9 +2673,8 @@ class _RestorePageState extends State<RestorePage> {
             key: _viewerKey,
             child: Builder(
               builder: (_) {
-                final ctx = _StageCtx(
-                  onSel, sel, cornerPts, onCornerDrag, cons, miniAnchor,
-                  onMiniAnchor, panFallback);
+                final ctx = _StageCtx(onSel, sel, cornerPts, onCornerDrag, cons,
+                    miniAnchor, onMiniAnchor, panFallback);
                 return Listener(
                   // 滚轮=纵向平移浏览（图例清单展开会挡住图片下部，靠滚轮看回）
                   onPointerSignal: (s) => _onImgPointerSignal(s, cons),
@@ -2631,46 +2684,45 @@ class _RestorePageState extends State<RestorePage> {
                   onPointerCancel: (e) => _onStagePointerCancel(e, ctx),
                   // 桌面触控板捏合/双指滚动走独立的 PointerPanZoom 事件流：
                   // 缩放暂不支持，只作废进行中的单指手势防误框
-                  onPointerPanZoomStart: (_) =>
-                      _onStagePanZoomStart(onSel),
+                  onPointerPanZoomStart: (_) => _onStagePanZoomStart(onSel),
                   child: GestureDetector(
-                // 双击复位视角：滚轮平移把图（连同选区框）滚出视口后，
-                // 框没被删只是看不见——双击立即回到全图视角找回
-                onDoubleTap: () {
-                  _viewerCtrl.value = Matrix4.identity();
-                },
-                child: Stack(
-                  children: [
-                    Image.memory(
-                      _displayBytes ?? _bytes!,
-                      width: ds.width,
-                      height: ds.height,
-                      fit: BoxFit.fill,
-                      // 解码失败必须可见（红底提示），不能静默白屏让用户"不知发生了什么"
-                      errorBuilder: (ctx, error, stack) {
-                        return ColoredBox(
-                          color: Colors.redAccent,
-                          child: Center(
-                            child: Text(
-                              "显示解码失败: $error",
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(color: Colors.white),
-                            ),
+                    // 双击复位视角：滚轮平移把图（连同选区框）滚出视口后，
+                    // 框没被删只是看不见——双击立即回到全图视角找回
+                    onDoubleTap: () {
+                      _viewerCtrl.value = Matrix4.identity();
+                    },
+                    child: Stack(
+                      children: [
+                        Image.memory(
+                          _displayBytes ?? _bytes!,
+                          width: ds.width,
+                          height: ds.height,
+                          fit: BoxFit.fill,
+                          // 解码失败必须可见（红底提示），不能静默白屏让用户"不知发生了什么"
+                          errorBuilder: (ctx, error, stack) {
+                            return ColoredBox(
+                              color: Colors.redAccent,
+                              child: Center(
+                                child: Text(
+                                  "显示解码失败: $error",
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(color: Colors.white),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                        if (sel != null && sel.width > 2)
+                          Positioned.fill(
+                            child: CustomPaint(painter: _SelPainter(sel)),
                           ),
-                        );
-                      },
+                        if (overlay != null)
+                          Positioned.fill(
+                            child: CustomPaint(painter: overlay, size: ds),
+                          ),
+                      ],
                     ),
-                    if (sel != null && sel.width > 2)
-                      Positioned.fill(
-                        child: CustomPaint(painter: _SelPainter(sel)),
-                      ),
-                    if (overlay != null)
-                      Positioned.fill(
-                        child: CustomPaint(painter: overlay, size: ds),
-                      ),
-                  ],
-                ),
-              ),
+                  ),
                 );
               },
             ),
@@ -2754,10 +2806,10 @@ class _RestorePageState extends State<RestorePage> {
         _miniScaleOpp = hit == 1
             ? ctx.miniAnchor!
             : ctx.miniAnchor! +
-                  Offset(
-                    3 * _pitchX * ds.width / image.width,
-                    3 * _pitchY * ds.height / image.height,
-                  );
+                Offset(
+                  3 * _pitchX * ds.width / image.width,
+                  3 * _pitchY * ds.height / image.height,
+                );
         final d = e.localPosition - _miniScaleOpp!;
         _miniScaleBaseSpan = math.max(d.dx.abs(), d.dy.abs());
         _miniScaleBasePx = _pitchX;
@@ -2994,7 +3046,8 @@ class _RestorePageState extends State<RestorePage> {
   /// 双指捏合：由起始矩阵+当前 span/center 非增量式推算新矩阵——锚点=
   /// 起始两指中心（该处内容跟手移到当前中心），span 比例定缩放倍率，
   /// scale 与平移均 clamp（同滚轮平移边界），避免逐帧增量累积误差
-  void _applyPinch(Matrix4 base, double span, Offset center, BoxConstraints cons) {
+  void _applyPinch(
+      Matrix4 base, double span, Offset center, BoxConstraints cons) {
     final s0 = base.storage[0];
     if (s0 <= 0 || _pinchStartSpan <= 1) {
       return;
@@ -3082,10 +3135,8 @@ class _RestorePageState extends State<RestorePage> {
     final ds = _displaySize();
     final minX = math.min(0.0, cons.maxWidth - ds.width * scale);
     final minY = math.min(0.0, cons.maxHeight - ds.height * scale);
-    final dx =
-        (cur.getTranslation().x + delta.dx).clamp(minX, 0.0).toDouble();
-    final dy =
-        (cur.getTranslation().y + delta.dy).clamp(minY, 0.0).toDouble();
+    final dx = (cur.getTranslation().x + delta.dx).clamp(minX, 0.0).toDouble();
+    final dy = (cur.getTranslation().y + delta.dy).clamp(minY, 0.0).toDouble();
     // 直设矩阵元（translate/scale 已废弃）：纯平移 + 等比缩放，无旋转
     final m = Matrix4.identity();
     m.setEntry(0, 0, scale);
@@ -3700,7 +3751,8 @@ class _RestorePageState extends State<RestorePage> {
                             ? const SizedBox(
                                 width: 18,
                                 height: 18,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
                               )
                             : const Icon(Icons.document_scanner),
                         label: Text(_recognizing ? "识别中…" : "开始识别"),
@@ -3709,15 +3761,14 @@ class _RestorePageState extends State<RestorePage> {
                   ],
                 ),
               ] else ...[
-                // 紧凑 IconButton：默认 48 逻辑宽 ×6 个加标签在 1080p 手机上
-                // 超宽溢出，最右侧「右移」被屏幕裁掉（模拟器实测），压缩到
-                // 36 逻辑点击区 + 22 图标后整行可容纳
+                // 紧凑 IconButton（36 逻辑点击区 + 22 图标）+ 格子大小/微移
+                // 拆两行：单行放 6 个按钮加标签在窄屏/大字体下仍会溢出
+                // （用户实测微移控件被裁出屏错误显示）
                 Row(
                   children: [
                     const Text("格子大小"),
                     _compactIconBtn(
-                      onPressed:
-                          _pitchX > 0 ? () => _adjustPitch(-0.2) : null,
+                      onPressed: _pitchX > 0 ? () => _adjustPitch(-0.2) : null,
                       icon: Icons.remove_circle_outline,
                     ),
                     Text(_pitchX > 0 ? _pitchX.toStringAsFixed(2) : "--"),
@@ -3725,7 +3776,10 @@ class _RestorePageState extends State<RestorePage> {
                       onPressed: _pitchX > 0 ? () => _adjustPitch(0.2) : null,
                       icon: Icons.add_circle_outline,
                     ),
-                    const VerticalDivider(width: 12),
+                  ],
+                ),
+                Row(
+                  children: [
                     const Text("微移"),
                     _compactIconBtn(
                       onPressed: _pitchX > 0 ? () => _nudge(-1, 0) : null,
@@ -3753,9 +3807,8 @@ class _RestorePageState extends State<RestorePage> {
                 SizedBox(
                   width: double.infinity,
                   child: FilledButton.icon(
-                    onPressed: _pitchX > 0 && _miniAnchor != null
-                        ? _goFrame
-                        : null,
+                    onPressed:
+                        _pitchX > 0 && _miniAnchor != null ? _goFrame : null,
                     icon: const Icon(Icons.arrow_forward),
                     label: const Text("下一步：框选主体"),
                   ),
@@ -3804,6 +3857,14 @@ class _RestorePageState extends State<RestorePage> {
     if (offY < 0) {
       offY += _pitchY;
     }
+    // 吸附选区的相位残差钳制（同 _recognize：防 % 回绕成 pitch-ε 少切
+    // 一列/行，与框上徽标数不一致）
+    if (offX < 1e-6 || _pitchX - offX < 1e-6) {
+      offX = 0;
+    }
+    if (offY < 1e-6 || _pitchY - offY < 1e-6) {
+      offY = 0;
+    }
     final cols = ((rw - offX) / _pitchX + 0.5).floor();
     final rows = ((rh - offY) / _pitchY + 0.5).floor();
     if (cols < 4 || rows < 4 || cols > 400 || rows > 400) {
@@ -3812,10 +3873,72 @@ class _RestorePageState extends State<RestorePage> {
     return (cols, rows);
   }
 
+  /// 选区吸附到九宫格格线（框选主体步）：四边各吸附最近格线（相位锚定
+  /// 标定锚点），框的任何变化都是整格增减；两边吸到同一条格线（输入框
+  /// 小于半格：微拖抖动/把手收过头压扁）时不吸附保持原框，不保底膨胀
+  /// 成 1×1 格——那会锁死重画路径且收框时保底推错边整框跳格（见下方
+  /// 退化分支注释）；不出图（出图按整格调回，框比图还大等极端态放弃
+  /// 吸附保持原框）
+  Rect _snapSelToGrid(Rect r) {
+    final anchor = _miniAnchor;
+    final image = _image;
+    if (anchor == null || image == null || _pitchX <= 0 || _pitchY <= 0) {
+      return r;
+    }
+    final ds = _displaySize();
+    final pitchDx = _pitchX * ds.width / image.width;
+    final pitchDy = _pitchY * ds.height / image.height;
+    if (pitchDx < 2 || pitchDy < 2) {
+      return r; // 格距显示 <2px（与 _FrameGridPainter 绘制阈值一致：该区间
+      // 格线/行列徽标都不画），吸附步进低于触摸精度，保持自由框选
+    }
+    double snap(double v, double origin, double pitch) =>
+        origin + ((v - origin) / pitch).round() * pitch;
+    var l = snap(r.left, anchor.dx, pitchDx);
+    var t = snap(r.top, anchor.dy, pitchDy);
+    var rt = snap(r.right, anchor.dx, pitchDx);
+    var b = snap(r.bottom, anchor.dy, pitchDy);
+    if (rt - l < pitchDx || b - t < pitchDy) {
+      // 两边吸附到同一条格线（输入框小于半格：点击抖动的微拖、把手收
+      // 过头压扁成细条）→ 放弃吸附保持原框。原「保底膨胀成 1×1 格」有
+      // 两个坑：① 微拖抖动膨胀出 width>2 的死格选区后，框外拖动被分派
+      // 为平移画面、「另起新框」路径锁死（改动前 ≤2px 微拖按无框自愈）；
+      // ② 拖左/上把手收框压扁时保底推进右/下边，未拖动的对边整格跳走、
+      // 框跟着手指跑。保持小框让调用方按无框/细条处理即可自愈重画
+      return r;
+    }
+    // 出图整格调回（平移量为整数格，保持格线对齐）
+    if (l < 0) {
+      final s = (-l / pitchDx).ceil() * pitchDx;
+      l += s;
+      rt += s;
+    }
+    if (t < 0) {
+      final s = (-t / pitchDy).ceil() * pitchDy;
+      t += s;
+      b += s;
+    }
+    if (rt > ds.width) {
+      final s = ((rt - ds.width) / pitchDx).ceil() * pitchDx;
+      l -= s;
+      rt -= s;
+    }
+    if (b > ds.height) {
+      final s = ((b - ds.height) / pitchDy).ceil() * pitchDy;
+      t -= s;
+      b -= s;
+    }
+    if (l < 0 || t < 0 || rt > ds.width || b > ds.height) {
+      return r;
+    }
+    return Rect.fromLTRB(l, t, rt, b);
+  }
+
   /// 阶段③：框选主体区域（九宫格已定格距，本步只做框选——拖画/挪框/
-  /// 把手调大小，行列数按格距实时预告；叠加全图同相位虚线格（纯显示，
-  /// 不接九宫格手势）：格线相位可见，边缘贴虚线=整格切分，图纸外侧的
-  /// 行列编号在格外一目了然不会误框）
+  /// 把手调大小）。选区四边吸附格线（相位锚定九宫格锚点）：框的一切
+  /// 变化都是整格增减，框到哪格就是哪格；覆盖层只在选区内铺格线并在
+  /// 框上方实时显示行列数（不再全图画虚线格——标定只用来约束框选，
+  /// 图面保持干净）
   Widget _buildFrame() {
     return Column(
       children: [
@@ -3824,7 +3947,7 @@ class _RestorePageState extends State<RestorePage> {
             padding: const EdgeInsets.all(12),
             child: _imageStage(
               sel: _selDisplay,
-              onSel: (r) => setState(() => _selDisplay = r),
+              onSel: (r) => setState(() => _selDisplay = _snapSelToGrid(r)),
               overlay: _frameOverlay(),
             ),
           ),
@@ -3873,24 +3996,28 @@ class _RestorePageState extends State<RestorePage> {
     );
   }
 
-  /// 框选步覆盖层：全图同相位虚线格（dashesOnly——不画九宫格框/把手，
-  /// 框选步的选区手势才是主角，画交互式把手会误导可拖）
+  /// 框选步覆盖层：选区内格线（相位锚定九宫格锚点，选区四边已吸附格线
+  /// ——所见格数即切分格数）+ 框上方行列数徽标实时跟手；未框选时不画
+  /// 任何东西（标定结果只约束框选，不整图铺虚线）
   CustomPainter? _frameOverlay() {
     final anchor = _miniAnchor;
     final image = _image;
-    if (anchor == null || image == null || _pitchX <= 0 || _pitchY <= 0) {
+    final sel = _selDisplay;
+    if (anchor == null ||
+        image == null ||
+        _pitchX <= 0 ||
+        _pitchY <= 0 ||
+        sel == null ||
+        sel.width < 2 ||
+        sel.height < 2) {
       return null;
     }
     final ds = _displaySize();
-    return _MiniGridPainter(
-      grid: Rect.fromLTWH(
-        anchor.dx,
-        anchor.dy,
-        3 * _pitchX * ds.width / image.width,
-        3 * _pitchY * ds.height / image.height,
-      ),
+    return _FrameGridPainter(
+      sel: sel,
+      pitchDx: _pitchX * ds.width / image.width,
+      pitchDy: _pitchY * ds.height / image.height,
       scale: _viewerCtrl.value.storage[0],
-      dashesOnly: true,
     );
   }
 
@@ -3898,7 +4025,7 @@ class _RestorePageState extends State<RestorePage> {
   String _frameHint() {
     final sel = _selDisplay;
     if (sel == null || sel.width <= 8 || sel.height <= 8) {
-      return "在图上拖框选中主体区域（拼豆格子部分），行列数将按格距自动计算；图纸边缘的行列编号不要框入，不满一格的边缘会自动舍去";
+      return "在图上拖框选中主体区域（拼豆格子部分）；框边自动吸附格线、按整格增减，行列数实时显示在框上方";
     }
     final cr = _plannedColsRows();
     return cr == null
@@ -3960,9 +4087,7 @@ class _RestorePageState extends State<RestorePage> {
                   }
                   setState(() {
                     final i = cy * model.width + cx;
-                    _picked.contains(i)
-                        ? _picked.remove(i)
-                        : _picked.add(i);
+                    _picked.contains(i) ? _picked.remove(i) : _picked.add(i);
                   });
                 },
                 child: Stack(
@@ -3973,8 +4098,7 @@ class _RestorePageState extends State<RestorePage> {
                         model: model,
                         palette: _palette,
                         selectedColorIndex: -1,
-                        highlightIndex:
-                            _reviewColor >= 0 ? _reviewColor : null,
+                        highlightIndex: _reviewColor >= 0 ? _reviewColor : null,
                       ),
                     ),
                     if (_reviewColor == -1)
@@ -4560,7 +4684,8 @@ class _CornerGridPainter extends CustomPainter {
 }
 
 /// 九宫格标定覆盖层：3×3 标定框（细线）+ 全图同相位虚线延伸格 +
-/// 左上/右下双缩放把手
+/// 左上/右下双缩放把手（仅「② 九宫格对齐」步使用；框选主体步的
+/// 选区内格线见 _FrameGridPainter）
 ///
 /// 识别切分的格距与格线相位全部由这个框导出（格距 = 边长/3，锚点 =
 /// 左上角即第一根格线交点）。虚线延伸格从锚点按格距铺满全图、与九宫格
@@ -4574,16 +4699,8 @@ class _MiniGridPainter extends CustomPainter {
   final double scale;
 
   ///< 当前视图缩放倍数（InteractiveViewer 矩阵，尺寸补偿用）
-  final bool dashesOnly;
 
-  ///< true=只画全图同相位虚线格（框选步叠加：格线相位可见，不含
-  ///九宫格框/十字/把手——框选步的选区手势才是主角，画把手会误导可拖）
-
-  _MiniGridPainter({
-    required this.grid,
-    required this.scale,
-    this.dashesOnly = false,
-  });
+  _MiniGridPainter({required this.grid, required this.scale});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -4595,11 +4712,12 @@ class _MiniGridPainter extends CustomPainter {
     }
     // 全图同相位虚线格：x/y 起点取锚点对格距取模（与九宫格共用原点），
     // 段长 = 格距/3、空隙 = 格距/6（视觉密度随格距自适应），全部收进
-    // 一个 Path 一次 stroke
+    // 一个 Path 一次 stroke。alpha/线宽加强（用户实测原 0.35/0.8 在
+    // 彩色图纸上几乎看不见，对齐无从核对）
     final dashP = Paint()
-      ..color = const Color(0xFFE65100).withValues(alpha: 0.35)
+      ..color = const Color(0xFFE65100).withValues(alpha: 0.75)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.8 / scale;
+      ..strokeWidth = 1.2 / scale;
     final path = Path();
     var x0 = grid.left % pitchDx;
     if (x0 < 0) {
@@ -4628,9 +4746,6 @@ class _MiniGridPainter extends CustomPainter {
       }
     }
     canvas.drawPath(path, dashP);
-    if (dashesOnly) {
-      return; // 框选步叠加只到虚线格为止
-    }
     // 3×3 实线框（细）：粗线在格距 ~22 显示px 时占格边 9%，压住图纸
     // 格线没法比对是否重叠（用户实测反馈），细到 1.4/scale 视觉恒定
     final outline = Paint()
@@ -4664,9 +4779,107 @@ class _MiniGridPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _MiniGridPainter oldDelegate) =>
-      oldDelegate.grid != grid ||
-      oldDelegate.scale != scale ||
-      oldDelegate.dashesOnly != dashesOnly;
+      oldDelegate.grid != grid || oldDelegate.scale != scale;
+}
+
+/// 框选主体覆盖层：选区内格线（相位锚定九宫格锚点，选区四边已吸附
+/// 格线——所见格数 = 识别切分格数）+ 选区上缘行列数徽标（拖框/缩放
+/// 实时跟手，格数超识别范围 4-400 转红提醒）
+///
+/// 九宫格标定只负责定格距与相位（对齐步完成），本层不再全图画虚线
+/// 格——框外区域保持干净，格线只铺在选区内。徽标/字号按当前视图缩放
+/// 补偿（除以 scale）：放大后视觉尺寸恒定。
+class _FrameGridPainter extends CustomPainter {
+  final Rect sel;
+
+  ///< 选区（显示坐标，四边已吸附格线）
+  final double pitchDx;
+
+  ///< 横向格距（显示坐标）
+  final double pitchDy;
+
+  ///< 纵向格距（显示坐标）
+  final double scale;
+
+  ///< 当前视图缩放倍数（尺寸补偿用）
+
+  _FrameGridPainter({
+    required this.sel,
+    required this.pitchDx,
+    required this.pitchDy,
+    required this.scale,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.clipRect(Offset.zero & size);
+    if (pitchDx < 2 || pitchDy < 2) {
+      return;
+    }
+    final cols = (sel.width / pitchDx).round();
+    final rows = (sel.height / pitchDy).round();
+    // 选区内格线：选区四边本身就是格线（吸附），从左上铺 cols+1 竖线、
+    // rows+1 横线（计数循环防浮点漂移多画/漏画边缘线）
+    final line = Paint()
+      ..color = const Color(0xFFE65100).withValues(alpha: 0.55)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.0 / scale;
+    final path = Path();
+    for (var i = 0; i <= cols; i++) {
+      final x = sel.left + i * pitchDx;
+      path.moveTo(x, sel.top);
+      path.lineTo(x, sel.bottom);
+    }
+    for (var j = 0; j <= rows; j++) {
+      final y = sel.top + j * pitchDy;
+      path.moveTo(sel.left, y);
+      path.lineTo(sel.right, y);
+    }
+    canvas.drawPath(path, line);
+    // 行列数徽标：选区上缘外居中，出屏（框贴画布顶）收进框内；格数超
+    // 识别范围转红（底部引导文案同时说明原因）
+    final outOfRange = cols < 4 || rows < 4 || cols > 400 || rows > 400;
+    final tp = TextPainter(
+      text: TextSpan(
+        text: "$rows行 × $cols列",
+        style: TextStyle(
+          color: Colors.white,
+          fontSize: 12 / scale,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final padH = 8 / scale;
+    final padV = 4 / scale;
+    final bw = tp.width + padH * 2;
+    final bh = tp.height + padV * 2;
+    final bx = (sel.center.dx - bw / 2)
+        .clamp(0.0, math.max(0.0, size.width - bw))
+        .toDouble();
+    final gap = 6 / scale;
+    final by = sel.top - bh - gap >= 0
+        ? sel.top - bh - gap
+        : math.min(sel.top + gap, math.max(0.0, size.height - bh));
+    final badge = RRect.fromRectAndRadius(
+      Rect.fromLTWH(bx, by, bw, bh),
+      Radius.circular(bh / 2),
+    );
+    canvas.drawRRect(
+      badge,
+      Paint()
+        ..color =
+            outOfRange ? const Color(0xFFC62828) : const Color(0xFFE65100),
+    );
+    tp.paint(canvas, Offset(bx + padH, by + padV));
+  }
+
+  @override
+  bool shouldRepaint(covariant _FrameGridPainter oldDelegate) =>
+      oldDelegate.sel != sel ||
+      oldDelegate.pitchDx != pitchDx ||
+      oldDelegate.pitchDy != pitchDy ||
+      oldDelegate.scale != scale;
 }
 
 /// 空白复核：空白格铺淡红色
