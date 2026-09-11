@@ -2462,15 +2462,26 @@ class _RestorePageState extends State<RestorePage> {
 
   /// 进入「框选主体」阶段（九宫格已定每格尺寸，本步只框主体区域；
   /// 行列数 = 选区/格距 实时算，识别时直接采用）。已有选区按当前格距
-  /// 重新吸附（回九宫格调过格子大小再进来，旧框立即归位整格）
+  /// 重新吸附（回九宫格调过格子大小再进来，旧框立即归位整格）；无选区
+  /// 先自动框选主体（与载入图自动预框图例同范式——排图例带后找豆行豆列
+  /// 密集区，省一次手动拖框）
   void _goFrame() {
+    Rect? auto;
+    if (_selDisplay == null) {
+      auto = _autoDetectSubject();
+    }
     setState(() {
       _stage = _Stage.frame;
       final sel = _selDisplay;
       if (sel != null) {
         _selDisplay = _snapSelToGrid(sel);
+      } else if (auto != null) {
+        _selDisplay = auto;
       }
     });
+    if (auto != null) {
+      AppSnackBar.show(context, "已自动框选主体，可拖动调整");
+    }
   }
 
   /// back 退出确认：中间步骤的 back 不直接退页（那样整个还原流程——
@@ -2519,6 +2530,41 @@ class _RestorePageState extends State<RestorePage> {
     setState(() => _stage = prev);
   }
 
+  /// 完全退出图纸还原确认：整个还原页出栈——选的图/图例清单/九宫格标定/
+  /// 识别结果全部丢弃。与逐级「返回上一步」相对（那个保现场），AppBar
+  /// 右上角 ✕ 入口（用户 2026-09-11 定稿：左上=上一步，右上=完全退出）
+  Future<void> _confirmExitRestore() async {
+    if (_recognizing) {
+      // 与 _confirmBack 同款守卫：识别完成回调会无条件写结果并跳复核，
+      // 识别中退出是白跑且用户会被强行拽回（mounted 守卫吞掉 setState）
+      AppSnackBar.show(context, "识别进行中，请等待完成");
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: const Text("退出图纸还原？"),
+        content: const Text("整个页面将关闭，已选的图、图例清单、九宫格标定、识别结果全部丢失"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: const Text("取消"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dctx, true),
+            child: const Text("退出"),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) {
+      return;
+    }
+    // pop() 直接退出整页：无条件 pop，不查询 PopScope 的 canPop（maybePop
+    // 才会查询被拦截）——_saveWork「回到主页」分支同款既有范式
+    Navigator.of(context).pop();
+  }
+
   // ==================== 布局 ====================
 
   @override
@@ -2533,9 +2579,18 @@ class _RestorePageState extends State<RestorePage> {
       },
       child: Scaffold(
         appBar: AppBar(
-          // 系统自动 leading Back 关掉：屏上只留 actions 里唯一的左箭头
-          // 返回入口（见 actions 首块注释），避免两个箭头两个入口
+          // 双返回入口（2026-09-11 用户定稿，取代此前「唯一箭头」方案）：
+          // 左上角=返回上一步（弹确认、已调内容全保留）；右上角 ✕=完全
+          // 退出图纸还原（弹确认后整页出栈）。系统自动 leading Back 关掉
+          // 由自己的 leading 接管，系统 back 手势仍走 PopScope 同款确认
           automaticallyImplyLeading: false,
+          leading: _stage != _Stage.pick
+              ? IconButton(
+                  onPressed: _confirmBack,
+                  icon: const Icon(Icons.arrow_back),
+                  tooltip: "返回上一步",
+                )
+              : null,
           title: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
@@ -2554,18 +2609,6 @@ class _RestorePageState extends State<RestorePage> {
             ],
           ),
           actions: [
-            // 返回上一步唯一入口：右上角左箭头（弹确认、已调内容全保留）。
-            // 曾同时存在 退出/回对齐/回九宫格 三钮与之重复（用户实测反馈
-            // 入口冗余），全删；系统自动 leading Back 也关掉
-            // （automaticallyImplyLeading:false，避免屏上两个箭头两个入口，
-            // 系统 back 手势仍走 PopScope 同款确认）。完全退出 = 连续返回
-            // 到选图步后再系统 back（第一步无可丢内容直接退出）
-            if (_stage != _Stage.pick)
-              IconButton(
-                onPressed: _confirmBack,
-                icon: const Icon(Icons.arrow_back),
-                tooltip: "返回上一步",
-              ),
             // 自动框选图例区（载入时已自动尝试过，这里供失败重试/重新选）
             if (_stage == _Stage.legend)
               IconButton(
@@ -2600,6 +2643,14 @@ class _RestorePageState extends State<RestorePage> {
                       ),
                     ),
                 ],
+              ),
+            // 完全退出图纸还原：右上角 ✕（弹确认后整页出栈，与左上角
+            // 「返回上一步」相对——一个保现场逐级退、一个整页丢弃退）
+            if (_stage != _Stage.pick)
+              IconButton(
+                onPressed: _confirmExitRestore,
+                icon: const Icon(Icons.close),
+                tooltip: "退出图纸还原",
               ),
           ],
         ),
@@ -3956,9 +4007,12 @@ class _RestorePageState extends State<RestorePage> {
 
   /// 按当前主体选区 + 标定格距推算切分行列数（与 _recognize 同公式，
   /// 格线相位锚定九宫格）；不满足 4-400 返回 null
-  (int, int)? _plannedColsRows() {
+  ///
+  /// [selOverride] 供自动框选校验候选选区（先验行列数再决定是否落
+  /// _selDisplay），默认读当前选区（现有调用点零改动）
+  (int, int)? _plannedColsRows([Rect? selOverride]) {
     final anchor = _miniAnchor;
-    final sel = _selDisplay;
+    final sel = selOverride ?? _selDisplay;
     final image = _image;
     if (anchor == null ||
         sel == null ||
@@ -4056,6 +4110,176 @@ class _RestorePageState extends State<RestorePage> {
     return Rect.fromLTRB(l, t, rt, b);
   }
 
+  /// 自动检测主体区域：排除图例带 -> 行扫描密集行聚簇（内容桥接）->
+  /// 带内列扫描 -> 包围盒（含主体周围一圈豆行豆列）
+  ///
+  /// 主体 = 图例带上方非白像素密集的豆行豆列区（每行非白占比 >= dense）。
+  /// 聚簇行间的 gap 行只要有内容（nonWhite >= bridge）仍桥接——图案内
+  /// 的白豆行被格线打断仍残留内容，而图例与主体间的纯白隔离带不满足
+  /// 桥接条件被天然隔断（防把图例框进主体）。图例带取图例选区（或载入
+  /// 时自动检测的带），无图例则整图视为候选区。返回吸附格线后的选区
+  /// （显示坐标）；吸附后行列数不在 4-400 返回 null（调用方提示手动框选）。
+  Rect? _autoDetectSubject() {
+    final image = _image;
+    if (image == null || _pitchX <= 0 || _pitchY <= 0) {
+      return null;
+    }
+    const step = 2, dense = 0.22, bridge = 0.03, maxGap = 60;
+    final w = image.width, h = image.height;
+    // 图例带顶（图片坐标）：优先图例选区，其次自动检测的图例带；两皆无
+    // 不排除（整图候选）
+    var legendTop = h.toDouble();
+    final legendSel = _legendSel;
+    if (legendSel != null && legendSel.width > 8 && legendSel.height > 8) {
+      legendTop = _selToImage(legendSel).$2;
+    } else {
+      final autoLegend = _autoDetectLegend();
+      if (autoLegend != null) {
+        legendTop = autoLegend.top * h / _displaySize().height;
+      }
+    }
+    final scanBottom = math.min(h, legendTop.round());
+    // 行扫描：每行非白占比（RGB>>4 量化，与图例检测同款白判定）
+    final rowNw = <int, double>{};
+    for (var y = 0; y < scanBottom; y += step) {
+      var nw = 0;
+      for (var x = 0; x < w; x++) {
+        final p = image.getPixel(x, y);
+        final q = ((p.r.toInt() >> 4) << 8) |
+            ((p.g.toInt() >> 4) << 4) |
+            (p.b.toInt() >> 4);
+        if (!_qWhite(q)) {
+          nw++;
+        }
+      }
+      rowNw[y] = nw / w;
+    }
+    // 密集行聚簇：相邻直连；gap 行全部有内容才桥接（隔断纯白带），桥接
+    // 距离上限 maxGap 防跨大空白误并；取内容量和最大的簇为主体
+    final denseYs = [
+      for (final e in rowNw.entries)
+        if (e.value >= dense) e.key,
+    ]..sort();
+    if (denseYs.isEmpty) {
+      return null;
+    }
+    final rowClusters = <List<int>>[
+      [denseYs.first, denseYs.first]
+    ];
+    for (final y in denseYs.skip(1)) {
+      var bridged = true;
+      for (var gy = rowClusters.last[1] + step; gy < y; gy += step) {
+        if ((rowNw[gy] ?? 0) < bridge) {
+          bridged = false;
+          break;
+        }
+      }
+      if (y - rowClusters.last[1] <= 2 * step ||
+          (y - rowClusters.last[1] <= maxGap && bridged)) {
+        rowClusters.last[1] = y;
+      } else {
+        rowClusters.add([y, y]);
+      }
+    }
+    List<int> main = rowClusters.first;
+    var bestMass = -1.0;
+    for (final c in rowClusters) {
+      var mass = 0.0;
+      for (var y = c[0]; y <= c[1]; y += step) {
+        mass += rowNw[y] ?? 0;
+      }
+      if (mass > bestMass) {
+        bestMass = mass;
+        main = c;
+      }
+    }
+    final yTop = main[0].toDouble(), yBot = main[1].toDouble();
+    // 带内列扫描同法（外圈豆行豆列的左右边界）
+    final colNw = <int, double>{};
+    final nRows = ((yBot - yTop) / step).floor() + 1;
+    for (var x = 0; x < w; x += step) {
+      var nw = 0;
+      for (var y = yTop.toInt(); y <= yBot.toInt(); y += step) {
+        final p = image.getPixel(x, y);
+        final q = ((p.r.toInt() >> 4) << 8) |
+            ((p.g.toInt() >> 4) << 4) |
+            (p.b.toInt() >> 4);
+        if (!_qWhite(q)) {
+          nw++;
+        }
+      }
+      colNw[x] = nw / nRows;
+    }
+    final denseXs = [
+      for (final e in colNw.entries)
+        if (e.value >= dense) e.key,
+    ]..sort();
+    if (denseXs.isEmpty) {
+      return null;
+    }
+    final colClusters = <List<int>>[
+      [denseXs.first, denseXs.first]
+    ];
+    for (final x in denseXs.skip(1)) {
+      var bridged = true;
+      for (var gx = colClusters.last[1] + step; gx < x; gx += step) {
+        if ((colNw[gx] ?? 0) < bridge) {
+          bridged = false;
+          break;
+        }
+      }
+      if (x - colClusters.last[1] <= 2 * step ||
+          (x - colClusters.last[1] <= maxGap && bridged)) {
+        colClusters.last[1] = x;
+      } else {
+        colClusters.add([x, x]);
+      }
+    }
+    List<int> mainX = colClusters.first;
+    var bestMassX = -1.0;
+    for (final c in colClusters) {
+      var mass = 0.0;
+      for (var x = c[0]; x <= c[1]; x += step) {
+        mass += colNw[x] ?? 0;
+      }
+      if (mass > bestMassX) {
+        bestMassX = mass;
+        mainX = c;
+      }
+    }
+    // 图片坐标包围盒 -> 显示坐标 -> 吸附格线 -> 行列数校验
+    final ds = _displaySize();
+    var sel = Rect.fromLTRB(
+      mainX[0] * ds.width / w,
+      yTop * ds.height / h,
+      mainX[1] * ds.width / w,
+      yBot * ds.height / h,
+    );
+    sel = _snapSelToGrid(sel);
+    final cr = _plannedColsRows(sel);
+    // 【临时调试】自动框选结果打 logcat（对拍 sim/排查吸附偏移），正式版移除
+    debugPrint(
+      "【临时调试】autoDetectSubject img=$w x $h legendTop=${legendTop.toStringAsFixed(0)} "
+      "bbox=[${mainX[0]},${yTop.toInt()} ${mainX[1]},${yBot.toInt()}] "
+      "rowsCols=${cr == null ? "null" : "${cr.$2}x${cr.$1}"}",
+    );
+    if (cr == null) {
+      return null;
+    }
+    return sel;
+  }
+
+  /// 触发自动框选主体（按钮）：成功设选区并提示，失败提示手动框选
+  void _autoSelectSubject() {
+    final rect = _autoDetectSubject();
+    if (rect == null) {
+      AppSnackBar.show(context, "未识别到主体区，请手动框选");
+      return;
+    }
+    setState(() => _selDisplay = rect);
+    AppSnackBar.show(context, "已自动框选主体，可拖动调整");
+  }
+
   /// 阶段③：框选主体区域（九宫格已定格距，本步只做框选——拖画/挪框/
   /// 把手调大小）。选区四边吸附格线（相位锚定九宫格锚点）：框的一切
   /// 变化都是整格增减，框到哪格就是哪格；覆盖层只在选区内铺格线并在
@@ -4081,6 +4305,20 @@ class _RestorePageState extends State<RestorePage> {
             children: [
               Text(_frameHint(), style: Theme.of(context).textTheme.bodySmall),
               const SizedBox(height: 8),
+              // 显式自动框选入口（与①「自动框选图例区」同范式）：进本步已
+              // 自动尝试过一次，检测失败/想重跑时点这里（有选区后隐藏——
+              // 重选直接拖新框覆盖即可）
+              if (_selDisplay == null || _selDisplay!.width <= 8) ...[
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _autoSelectSubject,
+                    icon: const Icon(Icons.auto_awesome, size: 18),
+                    label: const Text("自动框选主体"),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
               Row(
                 children: [
                   Expanded(
