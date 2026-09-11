@@ -85,9 +85,11 @@ class BoardPainter extends CustomPainter {
 
   ///< 文字绘制缓存（painter 每 build 新建，缓存须跨实例共享；key 含文本+字号+颜色）
 
-  ///< 高亮模式的板底/压暗豆共同灰：其他色号豆与空白区统一向它变灰，
-  ///< 中灰不压死色相残留（旧版压黑 0.78 观感太重）、也衬得出选中色
-  static const _dimGray = Color(0xFF9E9E9E);
+  ///< 高亮模式的板底/压暗豆共同基色：其他色号豆与空白区统一向它混
+  ///<（豆色 lerp 0.5 保一半色相可分辨）。冷蓝灰 slate——比中性灰更有
+  ///< 色彩倾向且与选中蓝框同调；亮度 ~113 持平 gray600（更浅的
+  ///< 0xFF9E9E9E 用户反馈不够暗，更早版本压黑 0.78 又太死）
+  static const _dimGray = Color(0xFF6B7280);
 
   BoardPainter({
     required this.board,
@@ -156,13 +158,24 @@ class BoardPainter extends CustomPainter {
 
   /// 画格子文字（色号/编号），TextPainter 按内容+字号+颜色缓存
   ///
-  /// 字号跟随格子尺寸（无下限）：小格子字小，画布放大后矢量渲染依然清晰
-  void _drawLabel(Canvas canvas, String text, Rect rect, bool light) {
+  /// 字号跟随格子尺寸（无下限）：小格子字小，画布放大后矢量渲染依然清晰。
+  /// [dimmed] = 高亮中未选中色的格：字色同样向共同灰混一半（与豆底同款
+  /// 变灰量），文字跟着退后而不是保持全对比抢焦
+  void _drawLabel(
+    Canvas canvas,
+    String text,
+    Rect rect,
+    bool light, {
+    bool dimmed = false,
+  }) {
     if (text.isEmpty) {
       return;
     }
     final px = ((rect.width * 0.58).clamp(1.0, 13.0) * 2).roundToDouble() / 2;
-    final color = light ? Colors.black87 : Colors.white;
+    var color = light ? Colors.black87 : Colors.white;
+    if (dimmed) {
+      color = Color.lerp(color, _dimGray, 0.5)!;
+    }
     final key = "$text|$px|${color.value}";
     var tp = _labelCache[key];
     if (tp == null) {
@@ -278,6 +291,7 @@ class BoardPainter extends CustomPainter {
                 cellH,
               ),
               light,
+              dimmed: dimmedCells.contains(key),
             );
           }
         }
