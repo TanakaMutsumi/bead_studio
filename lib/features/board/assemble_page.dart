@@ -6,6 +6,7 @@ import '../../core/draft_store.dart';
 import '../../core/palette.dart';
 import '../../core/zoom_controls.dart';
 import 'board_painter.dart';
+import 'major_color_picker.dart';
 import 'placed_work.dart';
 
 /// 拼豆界面：豆板画布（多作品按各自偏移叠加）+ 点色高亮 + 点格标记已放 +
@@ -40,9 +41,19 @@ class _AssemblePageState extends State<AssemblePage> {
 
   ///< 是否显示未选中色号的文本（高亮中关掉只留选中色编号降噪；
   ///< 无高亮时关掉 = 纯色块净板视图）
+  int? _majorColor;
+
+  ///< 粗框线颜色覆盖（本会话内即时生效；进页取板配置值，不回写板文件
+  ///<——持久配色仍走板设置页，两页状态互不踩）
   Size _canvasSize = Size.zero;
 
   ///< 画布内容尺寸速记（LayoutBuilder builder 内赋值供缩放边界计算用）
+
+  @override
+  void initState() {
+    super.initState();
+    _majorColor = widget.board.majorColor;
+  }
 
   @override
   void dispose() {
@@ -158,6 +169,18 @@ class _AssemblePageState extends State<AssemblePage> {
     return null;
   }
 
+  /// 粗框线颜色色板（共用 major_color_picker）：只改本会话视图不落盘
+  ///（持久化在板设置页；见 _majorColor 注释）
+  Future<void> _pickMajorColor() async {
+    final picked = await showMajorColorPicker(context, _majorColor);
+    if (picked == null || !mounted) {
+      return; // 点外部/取消不改动
+    }
+    setState(() {
+      _majorColor = picked == BoardConfig.defaultMajorColor ? null : picked;
+    });
+  }
+
   // ==================== 保存 ====================
 
   Future<void> _saveAll() async {
@@ -205,17 +228,6 @@ class _AssemblePageState extends State<AssemblePage> {
             overflow: TextOverflow.ellipsis,
           ),
           actions: [
-            // 缩放控制组（外置 AppBar，不放画布上——浮在画布会挡格子）：
-            // 放大/缩小（以画面中心为锚）+ 还原全幅（双指把板面拖丢后
-            // 一键复位）。Center 内 constrained IV 的视口=画布盒（与内容
-            // 同尺寸）显式传；本页 painter 无 viewScale 依赖，onChanged 免
-            ZoomControls(
-              controller: _viewerCtrl,
-              contentSize: () => _canvasSize,
-              viewportSize: () => _canvasSize,
-              maxScale: 12,
-            ),
-            const SizedBox(width: 8),
             IconButton(
               onPressed: _saveProgress,
               icon: const Icon(Icons.save_outlined),
@@ -235,6 +247,25 @@ class _AssemblePageState extends State<AssemblePage> {
                       "每${widget.board.interval}格加粗 · 已放 $done/$total",
                       style: Theme.of(context).textTheme.bodySmall,
                       overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  // 粗框线颜色（与板设置页同款色板；本会话内即时生效）
+                  Tooltip(
+                    message: "粗框线颜色",
+                    child: InkWell(
+                      onTap: _pickMajorColor,
+                      borderRadius: BorderRadius.circular(14),
+                      child: Container(
+                        width: 28,
+                        height: 28,
+                        decoration: BoxDecoration(
+                          color: Color(
+                            _majorColor ?? BoardConfig.defaultMajorColor,
+                          ),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.black38),
+                        ),
+                      ),
                     ),
                   ),
                   // 未选中色号文本开关（常显——高亮降噪/无高亮净板视图）
@@ -291,6 +322,21 @@ class _AssemblePageState extends State<AssemblePage> {
               borderRadius: BorderRadius.circular(2),
             ),
             Expanded(child: _buildCanvas()),
+            // 缩放控制组（外置条，紧贴画布底缘——放 AppBar 顶部离图太远
+            // 够不着）：放大/缩小（以画面中心为锚）+ 还原全幅。Center 内
+            // constrained IV 的视口=画布盒（与内容同尺寸）显式传
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 2, 16, 2),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: ZoomControls(
+                  controller: _viewerCtrl,
+                  contentSize: () => _canvasSize,
+                  viewportSize: () => _canvasSize,
+                  maxScale: 12,
+                ),
+              ),
+            ),
             _buildColorBar(totals),
           ],
         ),
@@ -331,8 +377,8 @@ class _AssemblePageState extends State<AssemblePage> {
                     painter: BoardPainter(
                       // 空白格白底；选中色号后其他豆+空白区统一变灰
                       //（BoardPainter 按 highlightId 自动处理）；
-                      // 粗线颜色随板配置（默认橙）
-                      board: widget.board,
+                      // 粗线颜色随板配置 + 本页色钮会话内覆盖
+                      board: widget.board.copyWith(majorColor: _majorColor),
                       labelMode: _labelMode,
                       showLabels: true,
                       showNonHiLabels: _showOtherIds,

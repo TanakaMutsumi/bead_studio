@@ -10,6 +10,7 @@ import '../../core/palette_registry.dart';
 import '../../core/zoom_controls.dart';
 import 'assemble_page.dart';
 import 'board_painter.dart';
+import 'major_color_picker.dart';
 import 'placed_work.dart';
 
 /// 豆板配置页：选板尺寸（52/78/104/自定义）+ 加粗框线（每5/8/10）+
@@ -537,52 +538,10 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     );
   }
 
-  /// 粗框线颜色色板（BottomSheet 预设色单选）：选中默认橙存 null
+  /// 粗框线颜色色板（共用 major_color_picker）：选中默认橙存 null
   ///（与未配置旧板同语义），其余存显式 ARGB；随板持久化
   Future<void> _pickMajorColor() async {
-    const choices = [
-      BoardConfig.defaultMajorColor, // 橙（默认）
-      0xFFFFB300, // 琥珀
-      0xFFE53935, // 红
-      0xFF43A047, // 绿
-      0xFF1E88E5, // 蓝
-      0xFF8E24AA, // 紫
-      0xFF212121, // 黑（浅底接近原始观感）
-      0xFFFFFFFF, // 白
-    ];
-    final picked = await showModalBottomSheet<int>(
-      context: context,
-      builder: (sctx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text("粗框线颜色", style: Theme.of(sctx).textTheme.titleMedium),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                children: [
-                  for (final v in choices)
-                    _colorOption(
-                      sctx,
-                      Color(v),
-                      v == (_majorColor ?? BoardConfig.defaultMajorColor),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                "粗线画在豆色之上（顶层），深色豆上选亮色更醒目",
-                style: Theme.of(sctx).textTheme.bodySmall,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
+    final picked = await showMajorColorPicker(context, _majorColor);
     if (picked == null || !mounted) {
       return; // 点外部/取消不改动
     }
@@ -590,33 +549,6 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       _majorColor = picked == BoardConfig.defaultMajorColor ? null : picked;
     });
     _persistBoard();
-  }
-
-  /// 色板单颗圆色块：选中画蓝圈+对勾（勾色按背景亮度取黑/白）
-  Widget _colorOption(BuildContext sctx, Color c, bool selected) {
-    return GestureDetector(
-      onTap: () => Navigator.pop(sctx, c.toARGB32()),
-      child: Container(
-        width: 44,
-        height: 44,
-        decoration: BoxDecoration(
-          color: c,
-          shape: BoxShape.circle,
-          border: Border.all(
-            color: selected ? Colors.blue : Colors.black26,
-            width: selected ? 3 : 1,
-          ),
-        ),
-        child: selected
-            ? Icon(
-                Icons.check,
-                size: 22,
-                color:
-                    c.computeLuminance() > 0.5 ? Colors.black54 : Colors.white,
-              )
-            : null,
-      ),
-    );
   }
 
   // 顶点相位：phaseX 增 = 竖粗线左移，减 = 右移；phaseY 增 = 横粗线上移，减 = 下移
