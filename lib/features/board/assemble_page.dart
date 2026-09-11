@@ -36,6 +36,10 @@ class _AssemblePageState extends State<AssemblePage> {
   var _labelMode = LabelMode.id;
 
   ///< 格子文字层模式（选中色号后可切横向/竖向编号；默认只色号）
+  var _showOtherIds = true;
+
+  ///< 是否显示未选中色号的文本（高亮中关掉只留选中色编号降噪；
+  ///< 无高亮时关掉 = 纯色块净板视图）
   Size _canvasSize = Size.zero;
 
   ///< 画布内容尺寸速记（LayoutBuilder builder 内赋值供缩放边界计算用）
@@ -233,36 +237,50 @@ class _AssemblePageState extends State<AssemblePage> {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                  if (_highlightId != null)
-                    TextButton.icon(
-                      onPressed: () => setState(() {
-                        _labelMode = switch (_labelMode) {
-                          LabelMode.id => LabelMode.rowNumber,
-                          LabelMode.rowNumber => LabelMode.colNumber,
-                          LabelMode.colNumber => LabelMode.id,
-                        };
-                      }),
-                      style: TextButton.styleFrom(
-                        visualDensity: VisualDensity.compact,
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                      ),
-                      icon: Icon(
-                        switch (_labelMode) {
-                          LabelMode.rowNumber => Icons.swap_horiz,
-                          LabelMode.colNumber => Icons.swap_vert,
-                          LabelMode.id => Icons.text_fields,
-                        },
-                        size: 16,
-                      ),
-                      label: Text(
-                        switch (_labelMode) {
-                          LabelMode.rowNumber => "横向排列",
-                          LabelMode.colNumber => "竖向排列",
-                          LabelMode.id => "只显示色号",
-                        },
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
+                  // 未选中色号文本开关（常显——高亮降噪/无高亮净板视图）
+                  IconButton(
+                    onPressed: () =>
+                        setState(() => _showOtherIds = !_showOtherIds),
+                    icon: Icon(
+                      _showOtherIds
+                          ? Icons.visibility_outlined
+                          : Icons.visibility_off_outlined,
+                      size: 18,
                     ),
+                    tooltip: _showOtherIds ? "隐藏未选中色号文本" : "显示未选中色号文本",
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  // 文字层模式切换（常显：编号模式须先选色才有效果，但入口
+                  // 不必藏着——用户可能先设模式再选色）
+                  TextButton.icon(
+                    onPressed: () => setState(() {
+                      _labelMode = switch (_labelMode) {
+                        LabelMode.id => LabelMode.rowNumber,
+                        LabelMode.rowNumber => LabelMode.colNumber,
+                        LabelMode.colNumber => LabelMode.id,
+                      };
+                    }),
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                    ),
+                    icon: Icon(
+                      switch (_labelMode) {
+                        LabelMode.rowNumber => Icons.swap_horiz,
+                        LabelMode.colNumber => Icons.swap_vert,
+                        LabelMode.id => Icons.text_fields,
+                      },
+                      size: 16,
+                    ),
+                    label: Text(
+                      switch (_labelMode) {
+                        LabelMode.rowNumber => "横向排列",
+                        LabelMode.colNumber => "竖向排列",
+                        LabelMode.id => "只显示色号",
+                      },
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -317,6 +335,7 @@ class _AssemblePageState extends State<AssemblePage> {
                       board: widget.board,
                       labelMode: _labelMode,
                       showLabels: true,
+                      showNonHiLabels: _showOtherIds,
                       items: [
                         for (var i = 0; i < widget.works.length; i++)
                           BoardPaintItem(

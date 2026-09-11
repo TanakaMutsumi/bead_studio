@@ -78,6 +78,10 @@ class BoardPainter extends CustomPainter {
   final bool showLabels;
 
   ///< 是否绘制格子文字层（拼豆页开 / 配置页关，摆放时看色块即可）
+  final bool showNonHiLabels;
+
+  ///< 是否绘制未选中（非高亮）格的色号文本：高亮中可关掉只留选中色
+  ///< 的编号降噪；无高亮时关掉 = 纯色块净板视图
   final double viewScale;
 
   ///< 当前视图缩放倍数（删除叉尺寸/线宽补偿用：画布放大后视觉恒定）
@@ -85,17 +89,18 @@ class BoardPainter extends CustomPainter {
 
   ///< 文字绘制缓存（painter 每 build 新建，缓存须跨实例共享；key 含文本+字号+颜色）
 
-  ///< 高亮模式的板底/压暗豆共同基色：其他色号豆与空白区统一向它混
-  ///<（豆色 lerp 0.5 保一半色相可分辨）。冷蓝灰 slate——比中性灰更有
-  ///< 色彩倾向且与选中蓝框同调；亮度 ~113 持平 gray600（更浅的
-  ///< 0xFF9E9E9E 用户反馈不够暗，更早版本压黑 0.78 又太死）
-  static const _dimGray = Color(0xFF6B7280);
+  ///< 高亮模式的板底/压暗豆共同基色：接近黑色的深冷灰 slate-700
+  ///<（亮度 ~64）。豆色按 0.75 幅度向它混——未选中整体沉到亮度
+  ///< ~55-110 深灰区（保留 25% 色相隐约可辨），选中色以全彩跳出，
+  ///< 差异一眼可辨；文字仍按 0.5 幅度混保持可读
+  static const _dimGray = Color(0xFF374151);
 
   BoardPainter({
     required this.board,
     required this.items,
     this.labelMode = LabelMode.id,
     this.showLabels = false,
+    this.showNonHiLabels = true,
     this.viewScale = 1.0,
     super.repaint,
   });
@@ -159,8 +164,8 @@ class BoardPainter extends CustomPainter {
   /// 画格子文字（色号/编号），TextPainter 按内容+字号+颜色缓存
   ///
   /// 字号跟随格子尺寸（无下限）：小格子字小，画布放大后矢量渲染依然清晰。
-  /// [dimmed] = 高亮中未选中色的格：字色同样向共同灰混一半（与豆底同款
-  /// 变灰量），文字跟着退后而不是保持全对比抢焦
+  /// [dimmed] = 高亮中未选中色的格：字色向共同基色混 0.5（豆底压得更深
+  /// 是 0.75，字留多一分亮度保可读），文字跟着退后不抢焦
   void _drawLabel(
     Canvas canvas,
     String text,
@@ -226,9 +231,9 @@ class BoardPainter extends CustomPainter {
           final c = item.palette.colors[v];
           var color = Color.fromARGB(255, c.r, c.g, c.b);
           if (item.highlightId != null && c.id != item.highlightId) {
-            // 未选中豆向共同灰混合（保一半色相便于分辨豆色），不再压黑
-            //——旧版 lerp 黑 0.78 观感太重；记下压暗格供文字层取色
-            color = Color.lerp(color, _dimGray, 0.5)!;
+            // 未选中豆大比例向深灰混（0.75：整体沉到深灰区衬托选中色，
+            // 残留 25% 色相隐约可辨；早期 lerp 黑 0.78 连色相带层次全灭）
+            color = Color.lerp(color, _dimGray, 0.75)!;
             dimmedCells.add(itemIdx * 10000000 + y * m.width + x);
           }
           gridPaint.color = color;
@@ -271,13 +276,20 @@ class BoardPainter extends CustomPainter {
             }
             final c = item.palette.colors[v];
             final isHi = item.highlightId != null && c.id == item.highlightId;
+            if (!isHi && !showNonHiLabels) {
+              continue; // 只看色块：未选中格不画色号文本
+            }
             final key = itemIdx * 10000000 + y * m.width + x;
             final text =
                 (isHi && numbers.containsKey(key)) ? "${numbers[key]}" : c.id;
-            // 压暗格字色按混合后的实际底色判深浅（混灰一半后原色深浅
-            // 大体保留，深字浅底/浅字深底仍然成立）
+            // 压暗格字色按混合后的实际底色判深浅（与豆底同款 0.75 混合
+            // 幅度；混后原色深浅大体保留，深字浅底/浅字深底仍然成立）
             final base = dimmedCells.contains(key)
-                ? Color.lerp(Color.fromARGB(255, c.r, c.g, c.b), _dimGray, 0.5)!
+                ? Color.lerp(
+                    Color.fromARGB(255, c.r, c.g, c.b),
+                    _dimGray,
+                    0.75,
+                  )!
                 : Color.fromARGB(255, c.r, c.g, c.b);
             final light =
                 base.r * 0.299 + base.g * 0.587 + base.b * 0.114 > 150;
@@ -427,6 +439,7 @@ class BoardPainter extends CustomPainter {
     return oldDelegate.board != board ||
         oldDelegate.labelMode != labelMode ||
         oldDelegate.showLabels != showLabels ||
+        oldDelegate.showNonHiLabels != showNonHiLabels ||
         oldDelegate.viewScale != viewScale ||
         oldDelegate.items.length != items.length ||
         oldDelegate.items != items;
