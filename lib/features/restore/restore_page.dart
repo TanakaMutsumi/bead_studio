@@ -2305,31 +2305,37 @@ class _RestorePageState extends State<RestorePage> {
     if (!mounted) {
       return;
     }
-    final goAssemble = await showDialog<bool>(
+    final next = await showDialog<String>(
       context: context,
       builder: (dctx) => AlertDialog(
         title: const Text("保存成功"),
-        content: Text("「${name.trim()}」已存入作品库，可直接开始拼豆"),
+        content: Text("「${name.trim()}」已存入作品库"),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(dctx, false),
-            child: const Text("留在本页"),
+            onPressed: () => Navigator.pop(dctx, "home"),
+            child: const Text("回到主页"),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(dctx, true),
+            onPressed: () => Navigator.pop(dctx, "assemble"),
             child: const Text("直接开始拼豆"),
           ),
         ],
       ),
     );
-    if (goAssemble != true || !mounted) {
+    if (next == null || !mounted) {
+      return; // 点对话框外留在本页（可继续调整后重存/进编辑器）
+    }
+    if (next == "home") {
+      Navigator.of(context).pop();
       return;
     }
     final entry = await DraftStore.readEntry(file);
     if (!mounted) {
       return;
     }
-    Navigator.of(context).push(
+    // pushReplacement：还原页出栈，板设置 back 直达主页；还原现场不再
+    // 保留，需要再进从「我的作品」打开该作品
+    Navigator.of(context).pushReplacement(
       MaterialPageRoute(builder: (_) => BoardSetupPage(initial: entry)),
     );
   }
