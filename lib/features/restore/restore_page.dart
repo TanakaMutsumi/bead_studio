@@ -590,17 +590,29 @@ class _RestorePageState extends State<RestorePage> {
 
   // ==================== 图例区自动检测 ====================
 
-  /// 量化色是否白背景（r/g/b 量化后均 >= 15，即原值 >= 240）
-  static bool _qWhite(int q) =>
-      ((q >> 8) & 15) >= 15 && ((q >> 4) & 15) >= 15 && (q & 15) >= 15;
+  /// 量化色是否白背景：近白含浅灰底——三通道 nibble 全 >=11（原值 >=176）
+  /// 且极差 <=1（平灰）。部分图纸（微信图 wx1）用 ~187-214 平灰做版底/
+  /// 数字带底，按纯白（>=240）判会把灰底当内容：灰底被 JPEG 抖动切成大量
+  /// >=20px 游程，数字带整行 45+「块」混成图例行，全页聚成巨带被高度上限
+  /// 整体拒绝（2026-09-11 wx1 实测）。主体检测的行/列密度同样受益
+  static bool _qWhite(int q) {
+    final r = (q >> 8) & 15, g = (q >> 4) & 15, b = q & 15;
+    final mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+    final mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+    return mn >= 11 && mx - mn <= 1;
+  }
 
-  /// 自动检测图例条带：游程法（原型已用两张实测图验证）
+  /// 自动检测图例条带：游程法（test_pic5 / wx1 两张实测图验证）
   ///
   /// 原理：图例色块是 20px+ 的纯色矩形（长游程），豆图每颗豆之间被格线
   /// 打断（游程 <= 豆宽），整行纯色背景/边框则只有 1 个超长游程——三者
   /// 按「块数 >= 3 且最长 <= 35% 行宽 且（最长 >= 60 或 多色且带白隙）」
   /// 区分出图例行；图例行聚簇成带，带高 <= 15% 图高，且带外必须是低信息
   /// 行（白隙或纯色隔离带，豆图大块同色区上下仍是密集豆行，据此排除）。
+  /// 贴行缘的游程（页边装饰框/黑边）不计块、不计内容占比、不撑选区横向
+  /// 范围——wx1 两侧 ~290px 黑边让每行白送 2 块，任何行加 1 个游程就
+  /// 混成图例行。打分含色数项（图例是小色板拼条，带内颜色种类远多于
+  /// 单色数字带/大色块主体）。
   /// 返回显示坐标选区；找不到返回 null（调用方静默或提示手动框选）。
   Rect? _autoDetectLegend() {
     final image = _image;
@@ -616,34 +628,20 @@ class _RestorePageState extends State<RestorePage> {
       var minX = 1 << 30, maxX = -(1 << 30);
       final colors = <int>{};
       var runCol = -1, runLen = 0, runStart = 0;
-      for (var x = 0; x < w; x++) {
-        final p = image.getPixel(x, y);
-        final q = ((p.r.toInt() >> 4) << 8) |
-            ((p.g.toInt() >> 4) << 4) |
-            (p.b.toInt() >> 4);
-        if (!_qWhite(q)) {
-          nonWhite++;
+      // 游程收尾统一结算（末游程 touchesRight 只有循环后那次可能为真）。
+      // 贴行缘的非白游程 = 页边框：像素也不算内容（否则 ~290px 黑边让
+      // 每行非白占比 0.30 起步，quiet 判定全线失效）
+      void flush(bool touchesRight) {
+        if (_qWhite(runCol)) {
+          return;
         }
-        if (q == runCol) {
-          runLen++;
-        } else {
-          if (runLen >= runMin && !_qWhite(runCol)) {
-            nBlocks++;
-            maxLen = maxLen < runLen ? runLen : maxLen;
-            colors.add(runCol);
-            if (runStart < minX) {
-              minX = runStart;
-            }
-            if (runStart + runLen > maxX) {
-              maxX = runStart + runLen;
-            }
-          }
-          runCol = q;
-          runLen = 1;
-          runStart = x;
+        if (runStart == 0 || touchesRight) {
+          nonWhite -= runLen;
+          return;
         }
-      }
-      if (runLen >= runMin && !_qWhite(runCol)) {
+        if (runLen < runMin) {
+          return;
+        }
         nBlocks++;
         maxLen = maxLen < runLen ? runLen : maxLen;
         colors.add(runCol);
@@ -654,6 +652,28 @@ class _RestorePageState extends State<RestorePage> {
           maxX = runStart + runLen;
         }
       }
+
+      for (var x = 0; x < w; x++) {
+        final p = image.getPixel(x, y);
+        final q = ((p.r.toInt() >> 4) << 8) |
+            ((p.g.toInt() >> 4) << 4) |
+            (p.b.toInt() >> 4);
+        if (q == runCol) {
+          runLen++;
+          if (!_qWhite(q)) {
+            nonWhite++;
+          }
+        } else {
+          flush(false);
+          runCol = q;
+          runLen = 1;
+          runStart = x;
+          if (!_qWhite(q)) {
+            nonWhite++;
+          }
+        }
+      }
+      flush(true);
       feats[y] = _RowFeat(nBlocks, maxLen, nonWhite / w, colors, minX, maxX);
     }
     // 图例行判定
@@ -707,9 +727,11 @@ class _RestorePageState extends State<RestorePage> {
         continue;
       }
       var nSum = 0, minX = 1 << 30, maxX = -(1 << 30);
+      final bandColors = <int>{};
       legendRows.forEach((y, f) {
         if (y >= b[0] && y <= b[1]) {
           nSum += f.nBlocks;
+          bandColors.addAll(f.colors);
           if (f.minX < minX) {
             minX = f.minX;
           }
@@ -718,7 +740,10 @@ class _RestorePageState extends State<RestorePage> {
           }
         }
       });
-      final score = nSum + (b[0] + b[1]) / 2 / h * 50;
+      // 色数项：图例带是小色板拼条（几十种色），单色数字带/大色块主体
+      // 只有几种——wx1 顶部数字带 nSum 接近但色数 5 vs 图例 46
+      final score =
+          nSum + bandColors.length * 15 + (b[0] + b[1]) / 2 / h * 50;
       if (score > bestScore) {
         bestScore = score;
         // 原图坐标 rect（上下 +10 余量；左右不加 pad——识别链按选区宽定
@@ -3450,14 +3475,29 @@ class _RestorePageState extends State<RestorePage> {
                   ),
                   const SizedBox(height: 8),
                   // 显式自动框选入口：载入时已自动尝试过，选区被改动或
-                  // 想重选时可随时点这里重跑（AppBar 魔法棒同功能）
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: _autoSelectLegend,
-                      icon: const Icon(Icons.auto_awesome, size: 18),
-                      label: const Text("自动框选图例区"),
-                    ),
+                  // 想重选时可随时点这里重跑（AppBar 魔法棒同功能）。
+                  // 清除选框：自动框选错位时框常压在图边缘（如贴底的页脚
+                  // 灰线带），把手出不了图没法抓——一键消掉旧框重新拖
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _autoSelectLegend,
+                          icon: const Icon(Icons.auto_awesome, size: 18),
+                          label: const Text("自动框选图例区"),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _legendSel == null
+                              ? null
+                              : () => setState(() => _legendSel = null),
+                          icon: const Icon(Icons.backspace_outlined, size: 18),
+                          label: const Text("清除选框"),
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 8),
                   Row(
@@ -4171,16 +4211,33 @@ class _RestorePageState extends State<RestorePage> {
       }
     }
     final scanBottom = math.min(h, legendTop.round());
-    // 行扫描：每行非白占比（RGB>>4 量化，与图例检测同款白判定）
+    // 行扫描：每行非白占比（RGB>>4 量化，与图例检测同款白判定）。
+    // 贴行缘的非白游程（页边框，wx1 两侧 ~290px 黑边）跳过不计——否则
+    // 每行占比 0.30 起步、全页皆密集行，聚簇失效主体框成整页
+    int qAt(int x, int y) {
+      final p = image.getPixel(x, y);
+      return ((p.r.toInt() >> 4) << 8) |
+          ((p.g.toInt() >> 4) << 4) |
+          (p.b.toInt() >> 4);
+    }
+
     final rowNw = <int, double>{};
     for (var y = 0; y < scanBottom; y += step) {
+      var x0 = 0;
+      while (x0 < w && !_qWhite(qAt(x0, y))) {
+        x0++;
+      }
+      var x1 = w - 1;
+      while (x1 > x0 && !_qWhite(qAt(x1, y))) {
+        x1--;
+      }
+      if (x0 > x1) {
+        rowNw[y] = 1.0; // 整行找不到白像素：按全内容行处理
+        continue;
+      }
       var nw = 0;
-      for (var x = 0; x < w; x++) {
-        final p = image.getPixel(x, y);
-        final q = ((p.r.toInt() >> 4) << 8) |
-            ((p.g.toInt() >> 4) << 4) |
-            (p.b.toInt() >> 4);
-        if (!_qWhite(q)) {
+      for (var x = x0; x <= x1; x++) {
+        if (!_qWhite(qAt(x, y))) {
           nw++;
         }
       }
@@ -4226,17 +4283,26 @@ class _RestorePageState extends State<RestorePage> {
       }
     }
     final yTop = main[0].toDouble(), yBot = main[1].toDouble();
-    // 带内列扫描同法（外圈豆行豆列的左右边界）
+    // 带内列扫描同法（外圈豆行豆列的左右边界）。贴图上下缘的非白整列
+    // （页边框，wx1 黑边整列全高）不计：从图顶/图底向内找首个白像素，
+    // 计数仅在 [yTop, yBot] 与之的交集内——否则边框列恒 1.0 密集，主体
+    // 框横向撑满整页
     final colNw = <int, double>{};
     final nRows = ((yBot - yTop) / step).floor() + 1;
     for (var x = 0; x < w; x += step) {
+      var y0 = 0;
+      while (y0 < h && !_qWhite(qAt(x, y0))) {
+        y0++;
+      }
+      var y1 = h - 1;
+      while (y1 > y0 && !_qWhite(qAt(x, y1))) {
+        y1--;
+      }
+      final lo = math.max(y0, yTop.toInt());
+      final hi = math.min(y1, yBot.toInt());
       var nw = 0;
-      for (var y = yTop.toInt(); y <= yBot.toInt(); y += step) {
-        final p = image.getPixel(x, y);
-        final q = ((p.r.toInt() >> 4) << 8) |
-            ((p.g.toInt() >> 4) << 4) |
-            (p.b.toInt() >> 4);
-        if (!_qWhite(q)) {
+      for (var y = lo; y <= hi; y += step) {
+        if (!_qWhite(qAt(x, y))) {
           nw++;
         }
       }
