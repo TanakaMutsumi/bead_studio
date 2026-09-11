@@ -375,6 +375,10 @@ class _RestorePageState extends State<RestorePage> {
   Size _reviewCanvasSize = Size.zero;
 
   ///< 复核总览画布内容尺寸速记（builder 内赋值，缩放边界计算用）
+  Size _stageViewSize = Size.zero;
+
+  ///< 图区视口尺寸速记（_imageStage 内 LayoutBuilder 赋值）——缩放
+  ///< 按钮外置后不在画布 Stack 内，探取失效，须显式传给 ZoomControls
 
   ///< 复核总览变换（还原全幅按钮复位用）
   final GlobalKey _viewerKey = GlobalKey();
@@ -1793,23 +1797,28 @@ class _RestorePageState extends State<RestorePage> {
     );
   }
 
-  /// 画布缩放控制组：放大/缩小（以画面中心为锚）+ 还原全幅（所有可缩放
-  /// 画布统一入口——手势缩放可发现性差，屏幕上要有显式按钮）。
-  /// [viewportIsContent]：Center 内 constrained InteractiveViewer 的真实
-  /// 视口=画布盒（与内容同尺寸），须显式传视口——探外层 Stack 会把锚点
-  /// 偏移、letterbox 轴平移夹限算错（图区 constrained:false 铺满 Stack
-  /// 的接入保持默认探取）
-  Widget _zoomCtrls(
+  /// 画布缩放按钮条：放大/缩小（以画面中心为锚）+ 还原全幅，横排外置
+  /// 在图区与底部操作区之间——不悬浮在图上（会挡选区把手与图像内容）。
+  /// 所有可缩放画布统一入口（手势缩放可发现性差，屏幕上要有显式按钮）。
+  /// [viewport]：真实视口尺寸提供者（aspect-fit 画布=内容尺寸；铺满型
+  /// 图区=_imageStage 速记的约束），锚点/平移夹限按它算
+  Widget _zoomStrip(
     TransformationController ctrl,
     Size Function() contentSize, {
     double maxScale = 8,
-    bool viewportIsContent = false,
+    Size Function()? viewport,
   }) {
-    return ZoomControls(
-      controller: ctrl,
-      contentSize: contentSize,
-      viewportSize: viewportIsContent ? contentSize : null,
-      maxScale: maxScale,
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 2, 16, 2),
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: ZoomControls(
+          controller: ctrl,
+          contentSize: contentSize,
+          viewportSize: viewport ?? contentSize,
+          maxScale: maxScale,
+        ),
+      ),
     );
   }
 
@@ -2818,84 +2827,87 @@ class _RestorePageState extends State<RestorePage> {
         // 同字节同页面，裸 Image.memory 彩、InteractiveViewer 包装白）。
         // 查看模式的"拖动浏览"由滚轮平移 + 双指拖动承担。
         LayoutBuilder(
-          builder: (ctx, cons) => InteractiveViewer(
-            maxScale: 8,
-            minScale: 1,
-            transformationController: _viewerCtrl,
-            // 滚轮缩放禁用开关：InteractiveViewer 滚轮缩放量 = exp(-dy/scaleFactor)，
-            // 取无穷大恒为 1（源码 _receivedPointerSignal），滚轮成无操作——
-            // 平移浏览交给 child 内 Listener（_onImgPointerSignal）；scaleFactor
-            // 只作用于滚轮，双指捏合缩放不受影响（不能用 scaleEnabled:false，
-            // 它会连捏合一起禁掉）
-            scaleFactor: double.infinity,
-            // 单指拖动逻辑与双指捏合缩放全部由 child 内 Listener 原始事件
-            // 自实现（不用 InteractiveViewer 的 scale 手势）：child 一旦声明
-            // pan/scale 手势就会在竞技场抢走第一指，双指捏合时 scale 手势
-            // 只剩一根手指无法算 span——Ctrl+左键/双指捏合缩放彻底失效
-            //（2026-08-28 实测）。Listener 不进竞技场，原始事件全量可得。
-            scaleEnabled: false,
-            panEnabled: false,
-            constrained: false,
-            key: _viewerKey,
-            child: Builder(
-              builder: (_) {
-                final ctx = _StageCtx(onSel, sel, cornerPts, onCornerDrag, cons,
-                    miniAnchor, onMiniAnchor, panFallback);
-                return Listener(
-                  // 滚轮=纵向平移浏览（图例清单展开会挡住图片下部，靠滚轮看回）
-                  onPointerSignal: (s) => _onImgPointerSignal(s, cons),
-                  onPointerDown: (e) => _onStagePointerDown(e, ctx),
-                  onPointerMove: (e) => _onStagePointerMove(e, ctx),
-                  onPointerUp: (e) => _onStagePointerUp(e, ctx),
-                  onPointerCancel: (e) => _onStagePointerCancel(e, ctx),
-                  // 桌面触控板捏合/双指滚动走独立的 PointerPanZoom 事件流：
-                  // 缩放暂不支持，只作废进行中的单指手势防误框
-                  onPointerPanZoomStart: (_) => _onStagePanZoomStart(onSel),
-                  child: GestureDetector(
-                    // 双击复位视角：滚轮平移把图（连同选区框）滚出视口后，
-                    // 框没被删只是看不见——双击立即回到全图视角找回
-                    onDoubleTap: () {
-                      _viewerCtrl.value = Matrix4.identity();
-                    },
-                    child: Stack(
-                      children: [
-                        Image.memory(
-                          _displayBytes ?? _bytes!,
-                          width: ds.width,
-                          height: ds.height,
-                          fit: BoxFit.fill,
-                          // 解码失败必须可见（红底提示），不能静默白屏让用户"不知发生了什么"
-                          errorBuilder: (ctx, error, stack) {
-                            return ColoredBox(
-                              color: Colors.redAccent,
-                              child: Center(
-                                child: Text(
-                                  "显示解码失败: $error",
-                                  textAlign: TextAlign.center,
-                                  style: const TextStyle(color: Colors.white),
+          builder: (ctx, cons) {
+            // 速记图区视口尺寸（无 setState，build 期间赋值）——缩放
+            // 按钮已外置出画布 Stack，边界计算须显式传视口
+            _stageViewSize = Size(cons.maxWidth, cons.maxHeight);
+            return InteractiveViewer(
+              maxScale: 8,
+              minScale: 1,
+              transformationController: _viewerCtrl,
+              // 滚轮缩放禁用开关：InteractiveViewer 滚轮缩放量 = exp(-dy/scaleFactor)，
+              // 取无穷大恒为 1（源码 _receivedPointerSignal），滚轮成无操作——
+              // 平移浏览交给 child 内 Listener（_onImgPointerSignal）；scaleFactor
+              // 只作用于滚轮，双指捏合缩放不受影响（不能用 scaleEnabled:false，
+              // 它会连捏合一起禁掉）
+              scaleFactor: double.infinity,
+              // 单指拖动逻辑与双指捏合缩放全部由 child 内 Listener 原始事件
+              // 自实现（不用 InteractiveViewer 的 scale 手势）：child 一旦声明
+              // pan/scale 手势就会在竞技场抢走第一指，双指捏合时 scale 手势
+              // 只剩一根手指无法算 span——Ctrl+左键/双指捏合缩放彻底失效
+              //（2026-08-28 实测）。Listener 不进竞技场，原始事件全量可得。
+              scaleEnabled: false,
+              panEnabled: false,
+              constrained: false,
+              key: _viewerKey,
+              child: Builder(
+                builder: (_) {
+                  final ctx = _StageCtx(onSel, sel, cornerPts, onCornerDrag,
+                      cons, miniAnchor, onMiniAnchor, panFallback);
+                  return Listener(
+                    // 滚轮=纵向平移浏览（图例清单展开会挡住图片下部，靠滚轮看回）
+                    onPointerSignal: (s) => _onImgPointerSignal(s, cons),
+                    onPointerDown: (e) => _onStagePointerDown(e, ctx),
+                    onPointerMove: (e) => _onStagePointerMove(e, ctx),
+                    onPointerUp: (e) => _onStagePointerUp(e, ctx),
+                    onPointerCancel: (e) => _onStagePointerCancel(e, ctx),
+                    // 桌面触控板捏合/双指滚动走独立的 PointerPanZoom 事件流：
+                    // 缩放暂不支持，只作废进行中的单指手势防误框
+                    onPointerPanZoomStart: (_) => _onStagePanZoomStart(onSel),
+                    child: GestureDetector(
+                      // 双击复位视角：滚轮平移把图（连同选区框）滚出视口后，
+                      // 框没被删只是看不见——双击立即回到全图视角找回
+                      onDoubleTap: () {
+                        _viewerCtrl.value = Matrix4.identity();
+                      },
+                      child: Stack(
+                        children: [
+                          Image.memory(
+                            _displayBytes ?? _bytes!,
+                            width: ds.width,
+                            height: ds.height,
+                            fit: BoxFit.fill,
+                            // 解码失败必须可见（红底提示），不能静默白屏让用户"不知发生了什么"
+                            errorBuilder: (ctx, error, stack) {
+                              return ColoredBox(
+                                color: Colors.redAccent,
+                                child: Center(
+                                  child: Text(
+                                    "显示解码失败: $error",
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(color: Colors.white),
+                                  ),
                                 ),
-                              ),
-                            );
-                          },
-                        ),
-                        if (sel != null && sel.width > 2)
-                          Positioned.fill(
-                            child: CustomPaint(painter: _SelPainter(sel)),
+                              );
+                            },
                           ),
-                        if (overlay != null)
-                          Positioned.fill(
-                            child: CustomPaint(painter: overlay, size: ds),
-                          ),
-                      ],
+                          if (sel != null && sel.width > 2)
+                            Positioned.fill(
+                              child: CustomPaint(painter: _SelPainter(sel)),
+                            ),
+                          if (overlay != null)
+                            Positioned.fill(
+                              child: CustomPaint(painter: overlay, size: ds),
+                            ),
+                        ],
+                      ),
                     ),
-                  ),
-                );
-              },
-            ),
-          ),
+                  );
+                },
+              ),
+            );
+          },
         ),
-        // 缩放控制组（放大/缩小/还原全幅）：三步共用图区
-        _zoomCtrls(_viewerCtrl, _displaySize),
         if (_decoding)
           Positioned.fill(
             child: Container(
@@ -3399,299 +3411,314 @@ class _RestorePageState extends State<RestorePage> {
   /// 阶段二：框选图例 + 识别 + 清单核对
   Widget _buildLegend() {
     final scanned = _legend.isNotEmpty;
-    return Column(
-      children: [
-        Expanded(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: _imageStage(
-              sel: _legendSel,
-              onSel: (r) => setState(() => _legendSel = r),
-              overlay: scanned && !_legendByOcr
-                  ? _legendOverlay()
-                  : null, // 网格层仅量化模式有参考意义
+    return LayoutBuilder(builder: (context, cons) {
+      // 展开态清单高度自适应：图是宽适配的固定显示高度（_displaySize），
+      // 图例带就在图底部——面板（含缩放条）超出剩余空间会把图的下半截
+      // 挤出视口，没法对照原图核对色号/颗数。展开态固定开销：图区
+      // padding 24 + 缩放条 ~38 + 摘要行 ~34 + 间距 12 + 操作行 ~44 +
+      // 间距 8 + 底 padding 12 ≈ 172
+      final imgH = _displaySize().height;
+      final listH = (cons.maxHeight - imgH - 172).clamp(96.0, 168.0);
+      return Column(
+        children: [
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: _imageStage(
+                sel: _legendSel,
+                onSel: (r) => setState(() => _legendSel = r),
+                overlay: scanned && !_legendByOcr
+                    ? _legendOverlay()
+                    : null, // 网格层仅量化模式有参考意义
+              ),
             ),
           ),
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (!scanned) ...[
-                const Text(
-                  "① 只框出图纸底部的图例区（色号 + 颗数对照表）",
-                  style: TextStyle(fontSize: 12, color: Colors.black54),
-                ),
-                const SizedBox(height: 8),
-                // 显式自动框选入口：载入时已自动尝试过，选区被改动或
-                // 想重选时可随时点这里重跑（AppBar 魔法棒同功能）
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: _autoSelectLegend,
-                    icon: const Icon(Icons.auto_awesome, size: 18),
-                    label: const Text("自动框选图例区"),
+          _zoomStrip(
+            _viewerCtrl,
+            _displaySize,
+            viewport: () => _stageViewSize,
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (!scanned) ...[
+                  const Text(
+                    "① 只框出图纸底部的图例区（色号 + 颗数对照表）",
+                    style: TextStyle(fontSize: 12, color: Colors.black54),
                   ),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: _legendBusy ? null : _scanLegend,
-                        icon: _legendBusy
-                            ? const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Icon(Icons.document_scanner, size: 18),
-                        label: Text(_legendBusy ? "识别中…" : "识别图例"),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    TextButton(onPressed: _goAlign, child: const Text("跳过图例")),
-                  ],
-                ),
-              ] else ...[
-                // 摘要行：点击展开/收起核对清单——收起后底部只占一行，
-                // 原图下半部（图例区）进入视野，用户按原图图例逐一核对色号与颗数
-                Row(
-                  children: [
-                    Expanded(
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(6),
-                        onTap: () =>
-                            setState(() => _panelExpanded = !_panelExpanded),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 4),
-                          child: Row(
-                            children: [
-                              Icon(
-                                _panelExpanded
-                                    ? Icons.keyboard_arrow_down
-                                    : Icons.keyboard_arrow_up,
-                                size: 22,
-                                color: Colors.black54,
-                              ),
-                              const SizedBox(width: 2),
-                              Expanded(
-                                child: Text(
-                                  _panelExpanded
-                                      ? "图例 ${_legend.length} 色（点此收起，露出原图核对）"
-                                      : "图例 ${_legend.length} 色（点此展开核对清单）",
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.black54,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                    if (!_panelExpanded)
-                      FilledButton.tonal(
-                        onPressed: _goAlign,
-                        child: const Text("下一步"),
-                      ),
-                  ],
-                ),
-                if (_panelExpanded) ...[
-                  const SizedBox(height: 4),
-                  if (!_legendByOcr)
-                    Row(
-                      children: [
-                        SizedBox(
-                          width: 64,
-                          child: TextField(
-                            controller: _legendColsCtrl,
-                            keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(
-                              labelText: "列",
-                              border: OutlineInputBorder(),
-                              isDense: true,
-                            ),
-                          ),
-                        ),
-                        const Padding(
-                          padding: EdgeInsets.symmetric(horizontal: 8),
-                          child: Text("×"),
-                        ),
-                        SizedBox(
-                          width: 64,
-                          child: TextField(
-                            controller: _legendRowsCtrl,
-                            keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(
-                              labelText: "行",
-                              border: OutlineInputBorder(),
-                              isDense: true,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: _legendBusy ? null : _scanLegend,
-                            icon: const Icon(Icons.refresh, size: 18),
-                            label: const Text("重新识别"),
-                          ),
-                        ),
-                      ],
-                    )
-                  else
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: TextButton.icon(
-                        onPressed: _legendBusy ? null : _scanLegend,
-                        icon: _legendBusy
-                            ? const SizedBox(
-                                width: 14,
-                                height: 14,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Icon(Icons.refresh, size: 18),
-                        label: Text(_legendBusy ? "识别中…" : "重新框选后识别"),
-                      ),
-                    ),
                   const SizedBox(height: 8),
+                  // 显式自动框选入口：载入时已自动尝试过，选区被改动或
+                  // 想重选时可随时点这里重跑（AppBar 魔法棒同功能）
                   SizedBox(
-                    height: 168,
-                    child: ListView.builder(
-                      itemCount: _legend.length + 1,
-                      itemBuilder: (_, i) {
-                        // 末尾常驻「添加颜色」行：补 OCR 漏识别的色
-                        if (i == _legend.length) {
-                          return Align(
-                            alignment: Alignment.centerLeft,
-                            child: TextButton.icon(
-                              onPressed: _addLegendColor,
-                              icon: const Icon(Icons.add, size: 18),
-                              label: const Text("添加颜色"),
-                            ),
-                          );
-                        }
-                        final e = _legend[i];
-                        final c = _palette.colors[e.paletteIndex];
-                        // 行距 3：isDense 输入框行与行紧贴会上下遮挡
-                        return Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 3),
-                          child: Row(
-                            children: [
-                              Tooltip(
-                                message: "点击修改色号",
-                                child: InkWell(
-                                  onTap: () => _changeLegendColor(e),
-                                  child: SizedBox(
-                                    width: 28,
-                                    height: 28,
-                                    child: Stack(
-                                      children: [
-                                        Positioned.fill(
-                                          child: ColoredBox(
-                                            color: Color.fromARGB(
-                                              255,
-                                              c.r,
-                                              c.g,
-                                              c.b,
-                                            ),
-                                          ),
-                                        ),
-                                        // 右下角编辑角标：提示色块可点改色号
-                                        Positioned(
-                                          right: 0,
-                                          bottom: 0,
-                                          child: Container(
-                                            color: Colors.white70,
-                                            padding: const EdgeInsets.all(1),
-                                            child: const Icon(
-                                              Icons.edit,
-                                              size: 10,
-                                              color: Colors.black54,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              SizedBox(width: 52, child: Text(c.id)),
-                              const SizedBox(width: 10),
-                              SizedBox(
-                                width: 72,
-                                child: TextField(
-                                  controller: e.countCtrl,
-                                  keyboardType: TextInputType.number,
-                                  decoration: const InputDecoration(
-                                    hintText: "颗数",
-                                    border: OutlineInputBorder(),
-                                    isDense: true,
-                                    contentPadding: EdgeInsets.symmetric(
-                                      horizontal: 8,
-                                      vertical: 9,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              // 占比条：填了颗数后按各色占比填充（颜色即豆色），
-                              // 填满中间空白让行更紧凑有信息量
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: _countBar(e, c),
-                              ),
-                              const SizedBox(width: 8),
-                              // 删除该色（识别错误且不需要的条目）
-                              SizedBox(
-                                width: 30,
-                                height: 32,
-                                child: IconButton(
-                                  visualDensity: VisualDensity.compact,
-                                  padding: EdgeInsets.zero,
-                                  iconSize: 16,
-                                  tooltip: "删除该色",
-                                  onPressed: () => _removeLegendEntry(e),
-                                  icon: const Icon(
-                                    Icons.close,
-                                    color: Colors.black38,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        );
-                      },
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _autoSelectLegend,
+                      icon: const Icon(Icons.auto_awesome, size: 18),
+                      label: const Text("自动框选图例区"),
                     ),
                   ),
-                  const SizedBox(height: 4),
+                  const SizedBox(height: 8),
                   Row(
                     children: [
                       Expanded(
                         child: FilledButton.icon(
-                          onPressed: _goAlign,
-                          icon: const Icon(Icons.arrow_forward),
-                          label: Text(
-                            "下一步：九宫格对齐（${_legend.length}色）",
+                          onPressed: _legendBusy ? null : _scanLegend,
+                          icon: _legendBusy
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.document_scanner, size: 18),
+                          label: Text(_legendBusy ? "识别中…" : "识别图例"),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      TextButton(
+                          onPressed: _goAlign, child: const Text("跳过图例")),
+                    ],
+                  ),
+                ] else ...[
+                  // 摘要行：点击展开/收起核对清单——收起后底部只占一行，
+                  // 原图下半部（图例区）进入视野，用户按原图图例逐一核对色号与颗数
+                  Row(
+                    children: [
+                      Expanded(
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(6),
+                          onTap: () =>
+                              setState(() => _panelExpanded = !_panelExpanded),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  _panelExpanded
+                                      ? Icons.keyboard_arrow_down
+                                      : Icons.keyboard_arrow_up,
+                                  size: 22,
+                                  color: Colors.black54,
+                                ),
+                                const SizedBox(width: 2),
+                                Expanded(
+                                  child: Text(
+                                    _panelExpanded
+                                        ? "图例 ${_legend.length} 色（点此收起，露出原图核对）"
+                                        : "图例 ${_legend.length} 色（点此展开核对清单）",
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.black54,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       ),
+                      if (!_panelExpanded)
+                        FilledButton.tonal(
+                          onPressed: _goAlign,
+                          child: const Text("下一步"),
+                        ),
                     ],
                   ),
+                  if (_panelExpanded) ...[
+                    const SizedBox(height: 4),
+                    if (!_legendByOcr)
+                      Row(
+                        children: [
+                          SizedBox(
+                            width: 64,
+                            child: TextField(
+                              controller: _legendColsCtrl,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(
+                                labelText: "列",
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
+                            ),
+                          ),
+                          const Padding(
+                            padding: EdgeInsets.symmetric(horizontal: 8),
+                            child: Text("×"),
+                          ),
+                          SizedBox(
+                            width: 64,
+                            child: TextField(
+                              controller: _legendRowsCtrl,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(
+                                labelText: "行",
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: _legendBusy ? null : _scanLegend,
+                              icon: const Icon(Icons.refresh, size: 18),
+                              label: const Text("重新识别"),
+                            ),
+                          ),
+                        ],
+                      )
+                    else
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          onPressed: _legendBusy ? null : _scanLegend,
+                          icon: _legendBusy
+                              ? const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.refresh, size: 18),
+                          label: Text(_legendBusy ? "识别中…" : "重新框选后识别"),
+                        ),
+                      ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      height: listH,
+                      child: ListView.builder(
+                        itemCount: _legend.length + 1,
+                        itemBuilder: (_, i) {
+                          // 末尾常驻「添加颜色」行：补 OCR 漏识别的色
+                          if (i == _legend.length) {
+                            return Align(
+                              alignment: Alignment.centerLeft,
+                              child: TextButton.icon(
+                                onPressed: _addLegendColor,
+                                icon: const Icon(Icons.add, size: 18),
+                                label: const Text("添加颜色"),
+                              ),
+                            );
+                          }
+                          final e = _legend[i];
+                          final c = _palette.colors[e.paletteIndex];
+                          // 行距 3：isDense 输入框行与行紧贴会上下遮挡
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 3),
+                            child: Row(
+                              children: [
+                                Tooltip(
+                                  message: "点击修改色号",
+                                  child: InkWell(
+                                    onTap: () => _changeLegendColor(e),
+                                    child: SizedBox(
+                                      width: 28,
+                                      height: 28,
+                                      child: Stack(
+                                        children: [
+                                          Positioned.fill(
+                                            child: ColoredBox(
+                                              color: Color.fromARGB(
+                                                255,
+                                                c.r,
+                                                c.g,
+                                                c.b,
+                                              ),
+                                            ),
+                                          ),
+                                          // 右下角编辑角标：提示色块可点改色号
+                                          Positioned(
+                                            right: 0,
+                                            bottom: 0,
+                                            child: Container(
+                                              color: Colors.white70,
+                                              padding: const EdgeInsets.all(1),
+                                              child: const Icon(
+                                                Icons.edit,
+                                                size: 10,
+                                                color: Colors.black54,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                SizedBox(width: 52, child: Text(c.id)),
+                                const SizedBox(width: 10),
+                                SizedBox(
+                                  width: 72,
+                                  child: TextField(
+                                    controller: e.countCtrl,
+                                    keyboardType: TextInputType.number,
+                                    decoration: const InputDecoration(
+                                      hintText: "颗数",
+                                      border: OutlineInputBorder(),
+                                      isDense: true,
+                                      contentPadding: EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 9,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                // 占比条：填了颗数后按各色占比填充（颜色即豆色），
+                                // 填满中间空白让行更紧凑有信息量
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: _countBar(e, c),
+                                ),
+                                const SizedBox(width: 8),
+                                // 删除该色（识别错误且不需要的条目）
+                                SizedBox(
+                                  width: 30,
+                                  height: 32,
+                                  child: IconButton(
+                                    visualDensity: VisualDensity.compact,
+                                    padding: EdgeInsets.zero,
+                                    iconSize: 16,
+                                    tooltip: "删除该色",
+                                    onPressed: () => _removeLegendEntry(e),
+                                    icon: const Icon(
+                                      Icons.close,
+                                      color: Colors.black38,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: _goAlign,
+                            icon: const Icon(Icons.arrow_forward),
+                            label: Text(
+                              "下一步：九宫格对齐（${_legend.length}色）",
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ],
               ],
-            ],
+            ),
           ),
-        ),
-      ],
-    );
+        ],
+      );
+    });
   }
 
   /// 【临时调试】图例 OCR 调试视图：喂给 ML Kit 的放大图 + 元素框 + 配对连线
@@ -3827,6 +3854,11 @@ class _RestorePageState extends State<RestorePage> {
               panFallback: true,
             ),
           ),
+        ),
+        _zoomStrip(
+          _viewerCtrl,
+          _displaySize,
+          viewport: () => _stageViewSize,
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
@@ -4247,13 +4279,96 @@ class _RestorePageState extends State<RestorePage> {
         mainX = c;
       }
     }
+    // 四侧行列数字边剔除：图纸主体四周常印一圈行列编号小数字，数字行与
+    // 主体豆行间没有干净白行时聚簇桥接，bbox 会把数字带一并框进去。从
+    // bbox 每边由外向内按半格步进检查（上限 4 带）：墨覆盖率低且彩色墨
+    // 占比低的带 = 纯数字带，剔除；近乎全白（cov<0.02）= 缝隙白隙穿越
+    // 继续；高覆盖或彩色的带 = 豆带，停。半格带跨界（半格数字+半格豆行
+    // 边缘）墨覆盖可到 0.55-0.7，覆盖上限取 0.7——过冲 < 半格由
+    // _snapSelToGrid 吸附格线归位（离线合成验证：贴边数字带剔后误差
+    // <3px，无数字原图零误剪）
+    final halfX = _pitchX * 0.5, halfY = _pitchY * 0.5;
+    (double, double) bandStats(double x0, double y0, double x1, double y1) {
+      var tot = 0, nw = 0, ch = 0;
+      for (var y = y0.toInt(); y < y1; y += 2) {
+        for (var x = x0.toInt(); x < x1; x += 2) {
+          if (x < 0 || x >= w || y < 0 || y >= h) {
+            continue;
+          }
+          final p = image.getPixel(x, y);
+          final r = p.r.toInt(), g = p.g.toInt(), b = p.b.toInt();
+          tot++;
+          final white = r >= 240 && g >= 240 && b >= 240;
+          if (white) {
+            continue;
+          }
+          nw++;
+          final mx = math.max(r, math.max(g, b));
+          final mn = math.min(r, math.min(g, b));
+          if (mx - mn >= 45) {
+            ch++; // 彩色墨（彩色豆带特征；灰黑印刷数字不命中）
+          }
+        }
+      }
+      final cov = tot == 0 ? 1.0 : nw / tot;
+      final cf = nw == 0 ? 0.0 : ch / nw;
+      return (cov, cf);
+    }
+
+    int trimBands(Rect Function(int) band) {
+      var n = 0;
+      for (var k = 0; k < 4; k++) {
+        final r = band(k);
+        final (cov, cf) = bandStats(r.left, r.top, r.right, r.bottom);
+        if (cov < 0.02) {
+          n++;
+          continue;
+        }
+        if (!(cov <= 0.7 && cf <= 0.35)) {
+          break;
+        }
+        n++;
+      }
+      return n;
+    }
+
+    var bxL = mainX[0].toDouble(), bxT = yTop;
+    var bxR = mainX[1].toDouble(), bxB = yBot;
+    var n = trimBands(
+      (k) =>
+          Rect.fromLTRB(bxL + k * halfX, bxT, bxL + (k + 1) * halfX, bxB + 1),
+    );
+    bxL += n * halfX;
+    n = trimBands(
+      (k) =>
+          Rect.fromLTRB(bxL, bxT + k * halfY, bxR + 1, bxT + (k + 1) * halfY),
+    );
+    bxT += n * halfY;
+    n = trimBands(
+      (k) => Rect.fromLTRB(
+        bxR + 1 - (k + 1) * halfX,
+        bxT,
+        bxR + 1 - k * halfX,
+        bxB + 1,
+      ),
+    );
+    bxR -= n * halfX;
+    n = trimBands(
+      (k) => Rect.fromLTRB(
+        bxL,
+        bxB + 1 - (k + 1) * halfY,
+        bxR + 1,
+        bxB + 1 - k * halfY,
+      ),
+    );
+    bxB -= n * halfY;
     // 图片坐标包围盒 -> 显示坐标 -> 吸附格线 -> 行列数校验
     final ds = _displaySize();
     var sel = Rect.fromLTRB(
-      mainX[0] * ds.width / w,
-      yTop * ds.height / h,
-      mainX[1] * ds.width / w,
-      yBot * ds.height / h,
+      bxL * ds.width / w,
+      bxT * ds.height / h,
+      bxR * ds.width / w,
+      bxB * ds.height / h,
     );
     sel = _snapSelToGrid(sel);
     final cr = _plannedColsRows(sel);
@@ -4261,6 +4376,7 @@ class _RestorePageState extends State<RestorePage> {
     debugPrint(
       "【临时调试】autoDetectSubject img=$w x $h legendTop=${legendTop.toStringAsFixed(0)} "
       "bbox=[${mainX[0]},${yTop.toInt()} ${mainX[1]},${yBot.toInt()}] "
+      "trim=[$bxL,$bxT $bxR,$bxB] "
       "rowsCols=${cr == null ? "null" : "${cr.$2}x${cr.$1}"}",
     );
     if (cr == null) {
@@ -4297,6 +4413,11 @@ class _RestorePageState extends State<RestorePage> {
               overlay: _frameOverlay(),
             ),
           ),
+        ),
+        _zoomStrip(
+          _viewerCtrl,
+          _displaySize,
+          viewport: () => _stageViewSize,
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
@@ -4415,6 +4536,7 @@ class _RestorePageState extends State<RestorePage> {
                 : _buildCellGallery(),
           ),
         ),
+        _zoomStrip(_reviewCtrl, () => _reviewCanvasSize, maxScale: 12),
         _buildReviewActions(order, counts, blankCount),
       ],
     );
@@ -4495,12 +4617,6 @@ class _RestorePageState extends State<RestorePage> {
               ),
             ),
           ),
-        ),
-        _zoomCtrls(
-          _reviewCtrl,
-          () => _reviewCanvasSize,
-          maxScale: 12,
-          viewportIsContent: true,
         ),
       ],
     );

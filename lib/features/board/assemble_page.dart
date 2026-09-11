@@ -198,8 +198,20 @@ class _AssemblePageState extends State<AssemblePage> {
             widget.works.length == 1
                 ? "拼豆 · ${widget.works.first.entry.name}"
                 : "拼豆 · ${widget.works.length} 件作品",
+            overflow: TextOverflow.ellipsis,
           ),
           actions: [
+            // 缩放控制组（外置 AppBar，不放画布上——浮在画布会挡格子）：
+            // 放大/缩小（以画面中心为锚）+ 还原全幅（双指把板面拖丢后
+            // 一键复位）。Center 内 constrained IV 的视口=画布盒（与内容
+            // 同尺寸）显式传；本页 painter 无 viewScale 依赖，onChanged 免
+            ZoomControls(
+              controller: _viewerCtrl,
+              contentSize: () => _canvasSize,
+              viewportSize: () => _canvasSize,
+              maxScale: 12,
+            ),
+            const SizedBox(width: 8),
             IconButton(
               onPressed: _saveProgress,
               icon: const Icon(Icons.save_outlined),
@@ -269,74 +281,61 @@ class _AssemblePageState extends State<AssemblePage> {
   }
 
   Widget _buildCanvas() {
-    return Stack(
-      children: [
-        Center(
-          child: Padding(
-            // 板四周留边距：满屏形态板外框贴屏幕边看不清（与配置页同款）
-            padding: const EdgeInsets.all(8),
-            child: InteractiveViewer(
-              transformationController: _viewerCtrl,
-              maxScale: 12,
-              panEnabled: true,
+    return Center(
+      child: Padding(
+        // 板四周留边距：满屏形态板外框贴屏幕边看不清（与配置页同款）
+        padding: const EdgeInsets.all(8),
+        child: InteractiveViewer(
+          transformationController: _viewerCtrl,
+          maxScale: 12,
+          panEnabled: true,
 
-              ///< 本页无画布手势，平移缩放都给查看器
-              child: AspectRatio(
-                aspectRatio: widget.board.w / widget.board.h,
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    // 速记画布内容尺寸（无 setState，build 期间赋值）——
-                    // ZoomControls 缩放边界计算用（闭包跨出本 builder）
-                    _canvasSize = Size(
-                      constraints.maxWidth,
-                      constraints.maxHeight,
-                    );
-                    return GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTapUp: (d) => _toggleAt(
-                        d.localPosition,
-                        constraints.maxWidth,
-                        constraints.maxHeight,
-                      ),
-                      child: CustomPaint(
-                        size: Size.infinite,
-                        painter: BoardPainter(
-                          // darkBoard：拼豆页深底——空白格沉底、未选中豆
-                          // 压黑，选中色更突出；粗线颜色随板配置（默认橙）
-                          board: widget.board,
-                          labelMode: _labelMode,
-                          showLabels: true,
-                          darkBoard: true,
-                          items: [
-                            for (var i = 0; i < widget.works.length; i++)
-                              BoardPaintItem(
-                                model: widget.works[i].model,
-                                palette: widget.works[i].palette,
-                                ox: widget.works[i].ox,
-                                oy: widget.works[i].oy,
-                                highlightId: _highlightId,
-                                placedCells: _placed[i],
-                              ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
+          ///< 本页无画布手势，平移缩放都给查看器
+          child: AspectRatio(
+            aspectRatio: widget.board.w / widget.board.h,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                // 速记画布内容尺寸（无 setState，build 期间赋值）——
+                // ZoomControls 缩放边界计算用（闭包跨出本 builder）
+                _canvasSize = Size(
+                  constraints.maxWidth,
+                  constraints.maxHeight,
+                );
+                return GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTapUp: (d) => _toggleAt(
+                    d.localPosition,
+                    constraints.maxWidth,
+                    constraints.maxHeight,
+                  ),
+                  child: CustomPaint(
+                    size: Size.infinite,
+                    painter: BoardPainter(
+                      // 空白格白底；选中色号后其他豆+空白区统一变灰
+                      //（BoardPainter 按 highlightId 自动处理）；
+                      // 粗线颜色随板配置（默认橙）
+                      board: widget.board,
+                      labelMode: _labelMode,
+                      showLabels: true,
+                      items: [
+                        for (var i = 0; i < widget.works.length; i++)
+                          BoardPaintItem(
+                            model: widget.works[i].model,
+                            palette: widget.works[i].palette,
+                            ox: widget.works[i].ox,
+                            oy: widget.works[i].oy,
+                            highlightId: _highlightId,
+                            placedCells: _placed[i],
+                          ),
+                      ],
+                    ),
+                  ),
+                );
+              },
             ),
           ),
         ),
-        // 缩放控制组：放大/缩小（以画面中心为锚）+ 还原全幅（双指把板面
-        // 拖丢后一键复位）；本页 painter 无 viewScale 依赖，onChanged 免。
-        // Center 内 constrained IV 的视口=画布盒（与内容同尺寸），显式传
-        ZoomControls(
-          controller: _viewerCtrl,
-          contentSize: () => _canvasSize,
-          viewportSize: () => _canvasSize,
-          maxScale: 12,
-        ),
-      ],
+      ),
     );
   }
 

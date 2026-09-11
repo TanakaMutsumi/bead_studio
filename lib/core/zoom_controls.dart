@@ -3,16 +3,17 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderStack;
 
-/// 可缩放画布的悬浮缩放控制组：放大 / 缩小 / 还原全幅，竖排三钮
+/// 可缩放画布的缩放控制组：放大 / 缩小 / 还原全幅，横排三钮（外置用）
 ///
 /// 以当前画面（视口）中心为锚缩放——中心处内容不动，画面向外扩张/
 /// 收缩；scale 夹在 [1, maxScale]，平移夹在内容可见边界（与双指捏合
-/// 同款边界），缩到顶/底再点按不再变化。视口尺寸默认经 ancestor
-/// RenderStack 探取（控件 Positioned 在画布 Stack 右下角，Stack 铺满
-/// 画布区——适用于画布铺满 Stack 的接入）；Center 内 constrained
-/// InteractiveViewer 的真实视口是其自身（=aspect-fit 画布盒，比外层
-/// Stack 小），此类页面必须传 [viewportSize] 指明，否则缩放锚点偏移、
-/// letterbox 轴平移夹限算成 0 锁死平移
+/// 同款边界），缩到顶/底再点按不再变化。
+///
+/// 本组件不再自带 Positioned 悬浮（旧版浮在画布 Stack 右下角会挡住
+/// 选区把手/图像内容），由调用方放进图区外的工具条/AppBar 横排嵌入；
+/// 因此视口尺寸必须经 [viewportSize] 显式传入（aspect-fit 画布传画布
+/// 盒尺寸=内容尺寸；constrained:false 铺满型图区传图区 LayoutBuilder
+/// 约束），否则缩放锚点与平移夹限会算错
 ///
 /// [contentSize] 画布内容原始尺寸（缩放边界计算用）；[onChanged] 缩放
 /// 落定后回调——painter 依赖 viewScale 的页面借此 setState 刷新补偿量
@@ -116,31 +117,27 @@ class ZoomControls extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Positioned(
-      right: 8,
-      bottom: 8,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _btn(
-            icon: Icons.add,
-            tooltip: "放大（以画面中心为准）",
-            onTap: () => _zoom(context, _step),
-          ),
-          const SizedBox(height: 8),
-          _btn(
-            icon: Icons.remove,
-            tooltip: "缩小（以画面中心为准）",
-            onTap: () => _zoom(context, 1 / _step),
-          ),
-          const SizedBox(height: 8),
-          _btn(
-            icon: Icons.fit_screen,
-            tooltip: fitAllTooltip,
-            onTap: _fitAll,
-          ),
-        ],
-      ),
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _btn(
+          icon: Icons.add,
+          tooltip: "放大（以画面中心为准）",
+          onTap: () => _zoom(context, _step),
+        ),
+        const SizedBox(width: 6),
+        _btn(
+          icon: Icons.remove,
+          tooltip: "缩小（以画面中心为准）",
+          onTap: () => _zoom(context, 1 / _step),
+        ),
+        const SizedBox(width: 6),
+        _btn(
+          icon: Icons.fit_screen,
+          tooltip: fitAllTooltip,
+          onTap: _fitAll,
+        ),
+      ],
     );
   }
 
@@ -151,17 +148,17 @@ class ZoomControls extends StatelessWidget {
   }) {
     return Material(
       color: Colors.white,
-      elevation: 3,
-      borderRadius: BorderRadius.circular(22),
+      elevation: 2,
+      borderRadius: BorderRadius.circular(17),
       child: InkWell(
-        borderRadius: BorderRadius.circular(22),
+        borderRadius: BorderRadius.circular(17),
         onTap: onTap,
         child: SizedBox(
-          width: 44,
-          height: 44,
+          width: 34,
+          height: 34,
           child: Tooltip(
             message: tooltip,
-            child: Icon(icon, size: 22, color: Colors.black54),
+            child: Icon(icon, size: 19, color: Colors.black54),
           ),
         ),
       ),

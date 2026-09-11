@@ -1186,6 +1186,23 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
           children: [
             _buildConfigRows(presetSelected),
             Expanded(child: _buildCanvas()),
+            // 缩放控制组（外置条，不放画布上——浮在画布会挡作品删除叉）：
+            // 放大/缩小（以画面中心为锚）+ 还原全幅。onChanged 里 setState
+            // ——viewScale（叉尺寸补偿）须随矩阵变化刷新。Center 内
+            // constrained IV 的视口=画布盒（与内容同尺寸），显式传
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 2, 16, 2),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: ZoomControls(
+                  controller: _viewerCtrl,
+                  contentSize: () => _lastCanvasSize,
+                  viewportSize: () => _lastCanvasSize,
+                  maxScale: 10,
+                  onChanged: () => setState(() {}),
+                ),
+              ),
+            ),
             _buildBottomBar(),
           ],
         ),
@@ -1380,16 +1397,6 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
               ),
             ),
           ),
-        ),
-        // 缩放控制组：放大/缩小（以画面中心为锚）+ 还原全幅。onChanged
-        // 里 setState——viewScale（叉尺寸补偿）须随矩阵变化刷新。
-        // Center 内 constrained IV 的视口=画布盒（与内容同尺寸），显式传
-        ZoomControls(
-          controller: _viewerCtrl,
-          contentSize: () => _lastCanvasSize,
-          viewportSize: () => _lastCanvasSize,
-          maxScale: 10,
-          onChanged: () => setState(() {}),
         ),
       ],
     );
