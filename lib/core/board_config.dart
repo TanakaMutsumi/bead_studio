@@ -32,6 +32,15 @@ class BoardConfig {
   final int oy;
 
   ///< 作品左上角在板上的行偏移
+  final int rot;
+
+  ///< 作品变换：顺时针 90° 步数（0-3）
+  final bool flipH;
+
+  ///< 作品变换：左右翻转
+  final bool flipV;
+
+  ///< 作品变换：上下翻转
   const BoardConfig({
     required this.w,
     required this.h,
@@ -41,6 +50,9 @@ class BoardConfig {
     this.majorColor,
     this.ox = 0,
     this.oy = 0,
+    this.rot = 0,
+    this.flipH = false,
+    this.flipV = false,
   });
 
   BoardConfig copyWith({
@@ -52,6 +64,9 @@ class BoardConfig {
     int? majorColor,
     int? ox,
     int? oy,
+    int? rot,
+    bool? flipH,
+    bool? flipV,
   }) =>
       BoardConfig(
         w: w ?? this.w,
@@ -62,6 +77,9 @@ class BoardConfig {
         majorColor: majorColor ?? this.majorColor,
         ox: ox ?? this.ox,
         oy: oy ?? this.oy,
+        rot: rot ?? this.rot,
+        flipH: flipH ?? this.flipH,
+        flipV: flipV ?? this.flipV,
       );
 
   Map<String, dynamic> toJson() => {
@@ -73,6 +91,9 @@ class BoardConfig {
         "majorColor": majorColor,
         "ox": ox,
         "oy": oy,
+        "rot": rot,
+        "flipH": flipH,
+        "flipV": flipV,
       };
 
   static BoardConfig? fromJson(Map<String, dynamic>? json) {
@@ -88,6 +109,9 @@ class BoardConfig {
       majorColor: json["majorColor"] as int?,
       ox: json["ox"] as int? ?? 0,
       oy: json["oy"] as int? ?? 0,
+      rot: json["rot"] as int? ?? 0,
+      flipH: json["flipH"] as bool? ?? false,
+      flipV: json["flipV"] as bool? ?? false,
     );
   }
 }

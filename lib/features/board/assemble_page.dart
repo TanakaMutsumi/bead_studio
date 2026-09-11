@@ -30,7 +30,7 @@ class AssemblePage extends StatefulWidget {
 class _AssemblePageState extends State<AssemblePage> {
   final _viewerCtrl = TransformationController();
   late final List<Set<int>> _placed = [
-    for (final w in widget.works) {...w.entry.placed},
+    for (final w in widget.works) {...w.placed},
   ];
   String? _highlightId;
   var _labelMode = LabelMode.id;
@@ -52,7 +52,7 @@ class _AssemblePageState extends State<AssemblePage> {
   int _hitWorkIndex(int bx, int by) {
     for (var i = widget.works.length - 1; i >= 0; i--) {
       final w = widget.works[i];
-      final m = w.entry.model;
+      final m = w.model;
       if (bx >= w.ox &&
           bx < w.ox + m.width &&
           by >= w.oy &&
@@ -78,7 +78,7 @@ class _AssemblePageState extends State<AssemblePage> {
       return; // 点在板空区
     }
     final w = widget.works[idx];
-    final m = w.entry.model;
+    final m = w.model;
     final x = bx - w.ox, y = by - w.oy;
     if (x < 0 || x >= m.width || y < 0 || y >= m.height) {
       return;
@@ -100,7 +100,7 @@ class _AssemblePageState extends State<AssemblePage> {
   Map<String, int> _totalStats() {
     final stats = <String, int>{};
     for (final w in widget.works) {
-      final m = w.entry.model;
+      final m = w.model;
       m.countByColor().forEach((v, n) {
         final id = v < m.paletteIds.length ? m.paletteIds[v] : "?$v";
         stats[id] = (stats[id] ?? 0) + n;
@@ -113,7 +113,7 @@ class _AssemblePageState extends State<AssemblePage> {
   int _remainOf(String id, Map<String, int> totals) {
     var placedCount = 0;
     for (var i = 0; i < widget.works.length; i++) {
-      final m = widget.works[i].entry.model;
+      final m = widget.works[i].model;
       for (final cell in _placed[i]) {
         if (cell < 0 || cell >= m.grid.length) {
           continue;
@@ -132,7 +132,7 @@ class _AssemblePageState extends State<AssemblePage> {
     var total = 0;
     var done = 0;
     for (var i = 0; i < widget.works.length; i++) {
-      final m = widget.works[i].entry.model;
+      final m = widget.works[i].model;
       for (var c = 0; c < m.grid.length; c++) {
         if (m.grid[c] >= 0) {
           total++;
@@ -162,7 +162,8 @@ class _AssemblePageState extends State<AssemblePage> {
       await DraftStore.saveWork(
         widget.works[i].entry.model,
         overwrite: widget.works[i].entry.file,
-        placed: _placed[i],
+        // 保存前逆映射回原坐标（作品文件存原始坐标系，不感知变换）
+        placed: widget.works[i].toOriginalCells(_placed[i]),
       );
     }
   }
@@ -309,7 +310,7 @@ class _AssemblePageState extends State<AssemblePage> {
                           items: [
                             for (var i = 0; i < widget.works.length; i++)
                               BoardPaintItem(
-                                model: widget.works[i].entry.model,
+                                model: widget.works[i].model,
                                 palette: widget.works[i].palette,
                                 ox: widget.works[i].ox,
                                 oy: widget.works[i].oy,

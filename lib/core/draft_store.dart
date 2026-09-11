@@ -39,16 +39,28 @@ class WorkEntry {
   });
 }
 
-/// 豆板会话中的一件作品引用（文件 + 摆放偏移）
+/// 豆板会话中的一件作品引用（文件 + 摆放偏移 + 变换）
 class BoardSessionWork {
   final File file;
   final int ox;
   final int oy;
+  final int rot;
+
+  ///< 顺时针 90° 步数（0-3）
+  final bool flipH;
+
+  ///< 左右翻转
+  final bool flipV;
+
+  ///< 上下翻转
 
   const BoardSessionWork({
     required this.file,
     required this.ox,
     required this.oy,
+    this.rot = 0,
+    this.flipH = false,
+    this.flipV = false,
   });
 }
 
@@ -348,7 +360,8 @@ class DraftStore {
     "board": s.board.toJson(),
     "works": [
       for (final w in s.works)
-        {"file": w.file.path, "ox": w.ox, "oy": w.oy},
+        {"file": w.file.path, "ox": w.ox, "oy": w.oy, "rot": w.rot,
+         "flipH": w.flipH, "flipV": w.flipV},
     ],
   };
 
@@ -369,6 +382,9 @@ class DraftStore {
               file: File(item["file"] as String),
               ox: item["ox"] as int? ?? 0,
               oy: item["oy"] as int? ?? 0,
+              rot: item["rot"] as int? ?? 0,
+              flipH: item["flipH"] as bool? ?? false,
+              flipV: item["flipV"] as bool? ?? false,
             ),
           );
         }

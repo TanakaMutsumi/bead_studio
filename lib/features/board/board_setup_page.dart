@@ -94,9 +94,19 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     final w = PlacedWork(
       entry: e,
       palette: const BeadPalette([]),
-      ox: b?.ox ?? ((_bw - e.model.width) / 2).round(),
-      oy: b?.oy ?? ((_bh - e.model.height) / 2).round(),
+      rot: b?.rot ?? 0,
+      flipH: b?.flipH ?? false,
+      flipV: b?.flipV ?? false,
+      ox: b?.ox ?? 0,
+      oy: b?.oy ?? 0,
     );
+    // 无历史偏移时按变换后尺寸居中（rot 奇数宽高互换，不能用原始宽高）
+    if (b?.ox == null) {
+      w.ox = ((_bw - w.model.width) / 2).round();
+    }
+    if (b?.oy == null) {
+      w.oy = ((_bh - w.model.height) / 2).round();
+    }
     w.clampTo(_bw, _bh);
     _works.add(w);
     _selected = 0;
@@ -124,7 +134,14 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
         ),
         works: [
           for (final w in _works)
-            BoardSessionWork(file: w.entry.file, ox: w.ox, oy: w.oy),
+            BoardSessionWork(
+              file: w.entry.file,
+              ox: w.ox,
+              oy: w.oy,
+              rot: w.rot,
+              flipH: w.flipH,
+              flipV: w.flipV,
+            ),
         ],
       );
 
@@ -218,6 +235,9 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       final w = PlacedWork(
         entry: entry,
         palette: palette,
+        rot: sw.rot,
+        flipH: sw.flipH,
+        flipV: sw.flipV,
         ox: sw.ox,
         oy: sw.oy,
       )..clampTo(_bw, _bh);
@@ -750,7 +770,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
         continue;
       }
       final o = _works[i];
-      final om = o.entry.model;
+      final om = o.model;
       if (nx < o.ox + om.width &&
           nx + mw > o.ox &&
           ny < o.oy + om.height &&
@@ -828,7 +848,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       }
       _accDx -= dx * cell;
       _accDy -= dy * cell;
-      final m = w.entry.model;
+      final m = w.model;
       var nx = (w.ox + dx).clamp(0, _maxOf(_bw, m.width)).toInt();
       var ny = (w.oy + dy).clamp(0, _maxOf(_bh, m.height)).toInt();
       // 原位置不重叠时，新位置逐轴回退到贴边（贴着其他作品边缘滑走）；
@@ -874,7 +894,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
         continue; // 只有选中作品的叉可点（与 painter 只给选中作品画叉一致）
       }
       final w = _works[i];
-      final m = w.entry.model;
+      final m = w.model;
       final center = Offset((w.ox + m.width) * cellW, w.oy * cellH);
       if ((local - center).distance <= hitR) {
         _confirmRemoveAt(i);
@@ -886,7 +906,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     var hit = -1;
     for (var i = _works.length - 1; i >= 0; i--) {
       final w = _works[i];
-      final m = w.entry.model;
+      final m = w.model;
       if (bx >= w.ox &&
           bx < w.ox + m.width &&
           by >= w.oy &&
@@ -933,13 +953,29 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
   Map<String, int> _beadStats() {
     final stats = <String, int>{};
     for (final w in _works) {
-      final m = w.entry.model;
+      final m = w.model;
       m.countByColor().forEach((v, n) {
         final id = v < m.paletteIds.length ? m.paletteIds[v] : "?$v";
         stats[id] = (stats[id] ?? 0) + n;
       });
     }
     return stats;
+  }
+
+  /// 变换选中作品（旋转 ±90°/翻转），clamp 回板内并持久化
+  void _transformSelected({int? rotDelta, bool? flipH, bool? flipV}) {
+    if (_selected < 0 || _selected >= _works.length) {
+      return;
+    }
+    final w = _works[_selected];
+    w.setTransform(
+      rot: rotDelta == null ? null : (w.rot + rotDelta) % 4,
+      flipH: flipH == null ? null : !w.flipH,
+      flipV: flipV == null ? null : !w.flipV,
+    );
+    w.clampTo(_bw, _bh);
+    setState(() {});
+    _persistBoard();
   }
 
   /// 色号查显示颜色（任一含该色的作品调色板）
@@ -1028,13 +1064,20 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       phaseY: _phaseY,
       majorColor: _majorColor,
     );
-    // 板配置（含各自偏移）随各作品持久化；placed 进度不动
+    // 板配置（含各自偏移与变换）随各作品持久化；placed 逆映射回原坐标
+    // 保存（作品文件存原始坐标系，不感知变换）
     for (final w in _works) {
       await DraftStore.saveWork(
         w.entry.model,
         overwrite: w.entry.file,
-        board: board.copyWith(ox: w.ox, oy: w.oy),
-        placed: w.entry.placed,
+        board: board.copyWith(
+          ox: w.ox,
+          oy: w.oy,
+          rot: w.rot,
+          flipH: w.flipH,
+          flipV: w.flipV,
+        ),
+        placed: w.placedOriginal(),
       );
     }
     if (!mounted) {
@@ -1065,12 +1108,36 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
         appBar: AppBar(
           title: Text(_boardName == null ? "拼豆板设置" : "拼豆板 · $_boardName"),
           actions: [
-            if (_selected >= 0)
+            if (_selected >= 0) ...[
+              IconButton(
+                onPressed: () => _transformSelected(rotDelta: 3),
+                icon: const Icon(Icons.rotate_left),
+                tooltip: "逆时针旋转 90°",
+              ),
+              IconButton(
+                onPressed: () => _transformSelected(rotDelta: 1),
+                icon: const Icon(Icons.rotate_right),
+                tooltip: "顺时针旋转 90°",
+              ),
+              IconButton(
+                onPressed: () => _transformSelected(flipH: true),
+                icon: const Icon(Icons.flip),
+                tooltip: "左右翻转",
+              ),
+              IconButton(
+                onPressed: () => _transformSelected(flipV: true),
+                icon: const RotatedBox(
+                  quarterTurns: 1,
+                  child: Icon(Icons.flip),
+                ),
+                tooltip: "上下翻转",
+              ),
               IconButton(
                 onPressed: _removeSelected,
                 icon: const Icon(Icons.close),
                 tooltip: "移除选中作品",
               ),
+            ],
             PopupMenuButton<String>(
               tooltip: "豆板菜单",
               onSelected: (action) {
@@ -1279,7 +1346,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
                           items: [
                             for (var i = 0; i < _works.length; i++)
                               BoardPaintItem(
-                                model: _works[i].entry.model,
+                                model: _works[i].model,
                                 palette: _works[i].palette,
                                 ox: _works[i].ox,
                                 oy: _works[i].oy,

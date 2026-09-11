@@ -180,3 +180,66 @@ class PatternModel {
     return img.encodePng(out);
   }
 }
+
+/// 图案变换：左右/上下翻转 + 顺时针 90° 步数（先翻转后旋转）
+///
+/// 持久化保存原坐标系（作品文件不感知变换）；豆板会话与作品 meta.board
+/// 记 rot/flipH/flipV 三参，进板时 applyTo 生成变换后快照供渲染/交互，
+/// 保存进度时经 inverse 逆映射回原坐标（板设置/拼豆页共用）
+class PatternTransform {
+  final int rot;
+
+  ///< 顺时针 90° 步数（0-3）
+  final bool flipH;
+
+  ///< 左右翻转（先于旋转执行）
+  final bool flipV;
+
+  ///< 上下翻转（先于旋转执行）
+
+  const PatternTransform({this.rot = 0, this.flipH = false, this.flipV = false});
+
+  bool get isIdentity => rot == 0 && !flipH && !flipV;
+
+  /// 变换后网格尺寸（rot 为奇数时宽高互换）
+  (int, int) sizeOf(int w, int h) => rot.isOdd ? (h, w) : (w, h);
+
+  /// 原坐标 -> 变换后坐标（先翻转后顺时针旋转 rot×90°）
+  (int, int) forward(int w, int h, int x, int y) {
+    final x1 = flipH ? w - 1 - x : x;
+    final y1 = flipV ? h - 1 - y : y;
+    return switch (rot) {
+      1 => (h - 1 - y1, x1),
+      2 => (w - 1 - x1, h - 1 - y1),
+      3 => (y1, w - 1 - x1),
+      _ => (x1, y1),
+    };
+  }
+
+  /// 变换后坐标 -> 原坐标（forward 的逆映射：先逆旋转后逆翻转）
+  (int, int) inverse(int w, int h, int X, int Y) {
+    final (x1, y1) = switch (rot) {
+      1 => (Y, h - 1 - X),
+      2 => (w - 1 - X, h - 1 - Y),
+      3 => (w - 1 - Y, X),
+      _ => (X, Y),
+    };
+    return (flipH ? w - 1 - x1 : x1, flipV ? h - 1 - y1 : y1);
+  }
+
+  /// 生成变换后模型（identity 零拷贝返回原模型）
+  PatternModel applyTo(PatternModel m) {
+    if (isIdentity) {
+      return m;
+    }
+    final (w2, h2) = sizeOf(m.width, m.height);
+    final grid = List<int>.filled(w2 * h2, -1);
+    for (var y = 0; y < m.height; y++) {
+      for (var x = 0; x < m.width; x++) {
+        final (X, Y) = forward(m.width, m.height, x, y);
+        grid[Y * w2 + X] = m.grid[y * m.width + x];
+      }
+    }
+    return PatternModel(width: w2, height: h2, grid: grid, paletteIds: m.paletteIds);
+  }
+}
