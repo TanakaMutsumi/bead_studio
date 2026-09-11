@@ -33,6 +33,28 @@ $ADB shell am start -n com.beadstudio.bead_studio/.MainActivity
 - **adb pull 的本地路径必须 `D:/...` Windows 风格**——`/d/...` msys 风格间歇性报 "cannot create file/directory"
 - 清空测试数据（作品/豆板/app 数据）：`$ADB shell pm clear com.beadstudio.bead_studio`；相册清理直接 `rm /sdcard/Pictures/*.png` 后重启模拟器让 MediaStore 重建索引
 
+### 0.1 走流程前必做：相册污染检查（②定案教训，2026-09-11）
+
+**相册第一格 = date_added 最新条目**。调试期 screencap 到 `/sdcard/` 根目录的截图会被 MediaStore 索引并抢占第一格——曾导致 tap(539,1583) 选到 snap_snack.png（还原页自己的截图、内嵌 test_pic5 缩图），后续识别全程跑在"截图套图"上，自动框选位置随截图布局平移 ~180px，表象酷似"算法非确定"（实为输入图不同，算法两次都正确）。
+
+```bash
+# 1. 列出全部图片条目，确认最新（_id 最大/date_added 最新）的是 test_pic5
+$ADB shell "content query --uri content://media/external/images/media --projection _id:_data:date_added"
+# 2. 若根目录有调试截图残留：rm 后重启模拟器（死条目根治，见 §5.4）
+$ADB shell "rm -f /storage/emulated/0/snap_*.png /storage/emulated/0/ld_*.png /storage/emulated/0/exp_*.png"
+$ADB reboot   # MediaProvider 重建索引
+```
+
+### 0.2 载入图铁证取证：image_picker cache（app 实际拿到的字节）
+
+`/data/data/com.beadstudio.bead_studio/cache/<uuid>/<MediaStore_id>.<ext>` 是 image_picker 把选中图拷进 app cache 的会话目录——**文件名即所选条目的 MediaStore _id**，与 0.1 的 query 结果对照即可铁证"这次到底选了哪张"（adb root 后可直读）：
+
+```bash
+$ADB shell "ls -la /data/data/com.beadstudio.bead_studio/cache/*/"   # 每个 UUID 目录一个所选文件
+$ADB pull /data/data/com.beadstudio.bead_studio/cache/<uuid>/<id>.png D:/code/bead_studio/.test/picked_<id>.png
+# md5 对比 .test/test_pic5.png（de94dca48fe2dc334f08b2655b6fc6ec）即知是否本尊
+```
+
 ---
 
 ## 1. dump 解析模板（每次验证页面状态用）
@@ -72,8 +94,12 @@ for n in re.findall(r'<node[^>]*/?>', xml):
 | 步骤 | 操作 | 坐标 | 等待/验证 |
 |------|------|------|-----------|
 | 1 | 主页点「图纸还原」 | (799,813) | dump 见 AppBar「图纸还原 · 选图」 |
-| 2 | 点「从相册选择图纸」 | 主页下方按钮，dump 找 | 相册打开 |
-| 3 | 选测试图（相册第一张网格位） | (539,1583) | sleep 3；解码后进①框图例，AppBar「① 框图例」 |
+| 2 | 点「从相册选择图纸」 | (540,1483) | 相册打开（**拍照图纸是 (540,1648)，误点会进相机**——y 抄旧值/猜值是高发错误，tap 前先 dump） |
+| 2.5 | **选图前验证相册第一格**（§0.1 query，最新条目须是 Pictures/test_pic5.png） | — | 条目不对先清理，勿盲选 |
+| 3 | 选测试图（相册第一张网格位） | (177,1583) | sleep 5；解码后进①框图例，AppBar「① 框图例」 |
+
+> **相册第一格坐标 (177,1583)，不是屏幕中间 (539,1583)**——系统 PhotoPicker 是 3 列网格，第一张在左列；旧值 (539,1583) 是老版相册的单列大图时代实测，已作废（曾致整链 tap 落空白全流程走不动）。PhotoPicker 属系统组件，dump 坐标可信（x/y 都可用）；每轮 tap 前以 dump 实测为准。
+| 3.5 | **选图后验证载入的是本尊**（可选铁证）：按 §0.2 列 picker cache 最新 UUID 目录，文件名应为 test_pic5 的 _id（清干净后通常 _id=83） | — | 或按 §6 特征反查：载入 snap 类 1080×2340 截图时自动框选落 y≈1500-1588（显示坐标随缩放换算），图例带 [1510,1576]、h/w=2.167 |
 
 > 载入即自动预框图例（_autoDetectLegend 游程法）；若失败提示"未识别到图例区"，手动拖框或点「自动框选图例区」按钮/AppBar 魔法棒重试。
 
@@ -104,6 +130,7 @@ test_pic5 基准：16 色图例，识别后清单应约 16 条（H7 黑 343 颗�
 
 | 步骤 | 操作 | 坐标 | 验证 |
 |------|------|------|------|
+| 8.5 | （修复回归点）验证 AppBar **唯一**「返回上一步」箭头，无「退出图纸还原」/「回对齐」/系统 Back；操作条三按钮完整在屏（放不下自动折行） | — | dump 检查 |
 | 9 | 「保存作品」 | (360,2241) | dump 见「保存作品」命名框 |
 | 10 | 点 EditText → 清空 → 输名 | (540,1172)；输名序列见 §5.2 | dump EditText text='tb2' |
 | 11 | 「保存」 | (754,1381) | dump 见「保存成功」框 |
@@ -145,13 +172,19 @@ test_pic5 基准：16 色图例，识别后清单应约 16 条（H7 黑 343 颗�
 ### 图纸还原页（按阶段）
 | 控件 | 坐标 |
 |------|------|
-| 相册第一张 | (539,1583) |
+| 选图页 从相册选择图纸 | (540,1483) |
+| 选图页 拍照图纸（勿误点） | (540,1648) |
+| 相册第一张（PhotoPicker 3 列网格） | (177,1583) |
+| ①/③/④ 返回上一步（AppBar 唯一箭头） | (750,213)/(882,213)/(1014,213)，x 随左侧按钮数变，dump 为准 |
 | ① 自动框选图例区（按钮） | (540,2087) |
-| ① 自动框选图例（AppBar 魔法棒） | (882,213) |
+| ① 自动框选图例（AppBar 魔法棒） | (882,213)（箭头750/魔法棒882/色卡1014 同排） |
 | ① 识别图例 | (413,2241) |
 | ① 跳过图例 | (925,2241) |
 | ② 下一步（对齐） | (540,2241) |
 | ③ 开始识别 | (796,2230) |
+| ④ 全选当前色 | (207,1933) |
+| ④ 清除选中(N) | (559,1933) |
+| ④ 归类到…（Wrap 折行后第二行） | (212,2087) |
 | ④ 保存作品 | (360,2241) |
 | ④ 进编辑器 | (867,2241) |
 | 命名框 EditText | (540,1172) |
@@ -261,16 +294,18 @@ sleep 1
 
 - **SystemUI ANR 对话框**（"App 无响应"）：对话框属 system_server，am/input 都点不动——`keyevent 4 (BACK)` 再 `keyevent 66 (ENTER)` 可关；副作用 app 被带崩，重启 app 即可
 - **MediaStore 死条目**：相册显示的幽灵条目若 content delete 删不掉，先查条目指向的文件是否真实存在（多半是 /storage/emulated/0/ 根目录的历史调试图）——rm 文件 + 重启模拟器，MediaProvider 重建索引
-- **Flutter SnackBar 4s 超时消失**：验证 snackbar 的 dump/截图必须在 tap 后 4s 窗口内完成
+- **AppSnackBar 顶部胶囊 3 秒消失**（不是 Material 底部条）：显示在屏幕顶部 y≈120-210 的深色胶囊，3s 自动消失——验证 snackbar 的 dump/截图必须在「触发动作完成 + 3s」窗口内查屏幕**顶部**；去底部找会误判"没提示"
 
 ---
 
 ## 6. 基准数据（test_pic5）
 
-- 测试图：test_pic5.png（1440×2100，16 色图例；相册中 2026-08-27 拍摄条目）
-- 图例带位置（游程法实测）：y≈1684-1780（原图坐标），y≥1782 全白
+- 测试图：test_pic5.png（1440×2100，16 色图例；相册中 2026-08-27 拍摄条目，md5 de94dca48fe2dc334f08b2655b6fc6ec）
+- **自动框选选区（原图坐标）**：y∈[1674,1792]——sim best band [1684,1780]（score=579.2）上下各 +10 余量；y≥1782 全白
 - 识别基线参考：H7 纯黑 343 颗（2026-09-08 离线验证）
 - 板默认 52×52、每 5 格加粗；back 自动保存、拼豆页点色点格标记均正常
+- **选错图特征指纹（②定案沉淀）**：误载入还原页截图（snap 类 1080×2340，h/w=2.167）时，游程法 best band 落 [1510,1576]（app 选区 [1500,1588]，内嵌图纸被屏幕 UI 平移 ~180px）——看到这组数即相册污染选错图，先走 §0.1 清理
+- 复现工具：`.test/legend_detect_sim.py`（游程法 Python 复刻，换输入 `sed "s/test_pic5.png/<文件>/"` 即可离线对拍）
 
 ---
 
@@ -278,4 +313,6 @@ sleep 1
 
 | 日期 | 修改人 | 内容 |
 |------|--------|------|
+| 2026-09-11 | Claude | ①④修复实测回写：（④=用户本轮新定义两问题）问题1 返回入口唯一化——AppBar `automaticallyImplyLeading:false` 关系统 Back + 删「退出图纸还原」「回对齐」「回九宫格」三冗余钮 + `_confirmExitRestore` 死方法，actions 首位唯一左箭头（pick 步不显示）；问题2 复核操作条三按钮 Row→Wrap 折行（实测默认字体下「归类到…」自动折第二行 y=2087，完整在屏）。实测：①/③/④ 三页 AppBar 均唯一箭头；箭头弹「返回上一步？」确认（④→③ 文案正确、选区 37×23 保留）闭环通过。**坐标漂移记录**：选图页「从相册选择图纸」(540,1483)/「拍照图纸」(540,1648)（误点拍照进相机一次）；**相册第一格 (177,1583) 非 (539,1583)**——PhotoPicker 3 列网格第一张在左列，旧单列大图时代坐标作废（曾致整链 tap 落空白）；§2.1/§3 坐标表全部更新，加「tap 前 dump 实测为准」提醒 |
+| 2026-09-11 | Claude | ②定案回写：自动框选"非确定"表象根因=相册污染（根目录 7 张调试截图抢占第一格，误选 snap_snack 还原页截图）；游程法零 bug——sim 于误选图跑出 band [1510,1576] 与 app 选区 [1500,1588] 逐像素吻合，本尊 band [1684,1780] 亦吻合。新增 §0.1 相册污染检查/§0.2 picker cache 取证（文件名=MediaStore _id 铁证）；§2.1 加选图前 query 验证 + 选图后本尊验证步骤；§5.4 修正 snackbar 描述（AppSnackBar 顶部胶囊 3s，y≈120-210，非底部条 4s）；§6 补选区/指纹基准。教训：**图区视口高宽比是布局常量（Expanded 视口），与载入什么图无关，不能用于推断载入图属性**（曾据此推理两轮全废） |
 | 2026-09-11 | Claude | skill 初建：从 .test/full_flow_test.md 操作手册部分迁移升级，新增 test_pic5 基准、x 坐标不可信/D:/ 路径/ANR 处理/MediaStore 清理/snackbar 4s 窗口等本轮教训；问题清单仍留在 .test/full_flow_test.md 跟踪（①②④待修，③⑤⑥⑦已修提交） |

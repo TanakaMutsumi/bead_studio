@@ -2519,33 +2519,6 @@ class _RestorePageState extends State<RestorePage> {
     setState(() => _stage = prev);
   }
 
-  /// 「退出」按钮确认：完全退出图纸还原（选的图/图例框/九宫格标定/识别
-  /// 结果全部丢弃；已单独保存进作品库的作品不受影响）。与「上一步」
-  /// 相对：上一步保留现场只回退阶段。识别完成回调处处有 mounted 守卫，
-  /// 识别中退出页面安全（后台 compute 跑完即弃），不拦
-  Future<void> _confirmExitRestore() async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (dctx) => AlertDialog(
-        title: const Text("退出图纸还原？"),
-        content: const Text("已识别、已调整的内容将全部丢弃（已保存进作品库的作品不受影响）"),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dctx, false),
-            child: const Text("取消"),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dctx, true),
-            child: const Text("退出"),
-          ),
-        ],
-      ),
-    );
-    if (ok == true && mounted) {
-      Navigator.of(context).pop();
-    }
-  }
-
   // ==================== 布局 ====================
 
   @override
@@ -2560,6 +2533,9 @@ class _RestorePageState extends State<RestorePage> {
       },
       child: Scaffold(
         appBar: AppBar(
+          // 系统自动 leading Back 关掉：屏上只留 actions 里唯一的左箭头
+          // 返回入口（见 actions 首块注释），避免两个箭头两个入口
+          automaticallyImplyLeading: false,
           title: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
@@ -2578,33 +2554,17 @@ class _RestorePageState extends State<RestorePage> {
             ],
           ),
           actions: [
-            // 回退入口只留两处：系统 back（同款确认弹窗）+ 各步具名快捷
-            // 钮（框选步「回九宫格」/复核步「回对齐」，直达不弹确认）——
-            // 再放通用「上一步」会与之重复（框选步两个按钮同为回对齐）
-            // 显式「退出」按钮：完全退出图纸还原。第一步无可丢内容直接退；
-            // 中间步弹确认——与回退相对：回退保留现场只回退阶段，
-            // 退出丢弃已调的图例/标定/识别结果（已保存进作品库的不受影响）
-            IconButton(
-              onPressed: _stage == _Stage.pick
-                  ? () => Navigator.of(context).pop()
-                  : _confirmExitRestore,
-              icon: const Icon(Icons.logout),
-              tooltip: "退出图纸还原",
-            ),
-            // 复核发现问题多半是网格没对齐：一键回对齐阶段微调后重识别
-            // （网格参数/选区/图例都保留，直接可调）
-            if (_stage == _Stage.review)
-              TextButton.icon(
-                onPressed: _goAlign,
-                icon: const Icon(Icons.undo, size: 18),
-                label: const Text("回对齐"),
-              ),
-            // 框选步发现格距不对：回九宫格步重新标定（选区保留，回来直接用）
-            if (_stage == _Stage.frame)
-              TextButton.icon(
-                onPressed: _goAlign,
-                icon: const Icon(Icons.undo, size: 18),
-                label: const Text("回九宫格"),
+            // 返回上一步唯一入口：右上角左箭头（弹确认、已调内容全保留）。
+            // 曾同时存在 退出/回对齐/回九宫格 三钮与之重复（用户实测反馈
+            // 入口冗余），全删；系统自动 leading Back 也关掉
+            // （automaticallyImplyLeading:false，避免屏上两个箭头两个入口，
+            // 系统 back 手势仍走 PopScope 同款确认）。完全退出 = 连续返回
+            // 到选图步后再系统 back（第一步无可丢内容直接退出）
+            if (_stage != _Stage.pick)
+              IconButton(
+                onPressed: _confirmBack,
+                icon: const Icon(Icons.arrow_back),
+                tooltip: "返回上一步",
               ),
             // 自动框选图例区（载入时已自动尝试过，这里供失败重试/重新选）
             if (_stage == _Stage.legend)
@@ -4536,20 +4496,22 @@ class _RestorePageState extends State<RestorePage> {
               ),
             ),
           const SizedBox(height: 8),
-          Row(
+          // Wrap 折行代替 Row 单行：三按钮总宽超屏（用户实测「归类到…」
+          // 被裁出手机界面右侧），窄屏/大字体下自动折行不再溢出
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
             children: [
               OutlinedButton(
                 onPressed: _reviewColor == -2 ? null : _selectAllOfCurrent,
                 child: const Text("全选当前色"),
               ),
-              const SizedBox(width: 8),
               OutlinedButton(
                 onPressed: _picked.isEmpty
                     ? null
                     : () => setState(() => _picked.clear()),
                 child: Text("清除选中(${_picked.length})"),
               ),
-              const SizedBox(width: 8),
               OutlinedButton.icon(
                 onPressed: _picked.isEmpty || !_hasClassifyTarget()
                     ? null
