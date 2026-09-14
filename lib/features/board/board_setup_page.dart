@@ -9,7 +9,10 @@ import '../../core/palette.dart';
 import '../../core/palette_registry.dart';
 import '../../core/zoom_controls.dart';
 import 'assemble_page.dart';
+import 'board_dialogs.dart';
 import 'board_painter.dart';
+import 'board_setup_panel.dart';
+import 'board_stats.dart';
 import 'major_color_picker.dart';
 import 'placed_work.dart';
 
@@ -300,28 +303,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     String content, {
     String? cancelLabel,
   }) {
-    return showDialog<bool>(
-      context: context,
-      builder: (dctx) => AlertDialog(
-        title: Text(title),
-        content: Text(content),
-        actions: [
-          if (cancelLabel != null)
-            TextButton(
-              onPressed: () => Navigator.pop(dctx),
-              child: Text(cancelLabel),
-            ),
-          TextButton(
-            onPressed: () => Navigator.pop(dctx, false),
-            child: const Text("否"),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dctx, true),
-            child: const Text("是"),
-          ),
-        ],
-      ),
-    );
+    return confirmDialog(context, title, content, cancelLabel: cancelLabel);
   }
 
   /// back 退出确认：板上有作品时问是否保存——显式三键（是=保存退出 /
@@ -441,40 +423,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     TextEditingController ctrl, {
     String? emptyError,
   }) {
-    return showDialog<String>(
-      context: context,
-      builder: (dctx) => StatefulBuilder(
-        builder: (dctx, setDState) => AlertDialog(
-          title: Text(title),
-          content: TextField(
-            controller: ctrl,
-            autofocus: true,
-            decoration: InputDecoration(
-              hintText: hint,
-              errorText: ctrl.text.trim().isEmpty ? emptyError : null,
-              border: const OutlineInputBorder(),
-            ),
-            onChanged: (_) => setDState(() {}), // 清空/回填后刷新红字状态
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dctx),
-              child: const Text("取消"),
-            ),
-            FilledButton(
-              onPressed: () {
-                if (emptyError != null && ctrl.text.trim().isEmpty) {
-                  setDState(() {}); // 空名拦截：只刷红字不关框
-                  return;
-                }
-                Navigator.pop(dctx, ctrl.text);
-              },
-              child: const Text("确定"),
-            ),
-          ],
-        ),
-      ),
-    );
+    return inputDialog(context, title, hint, ctrl, emptyError: emptyError);
   }
 
   Future<void> _resolvePalette(int index) async {
@@ -898,19 +847,6 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
 
   // ==================== 豆数统计 ====================
 
-  /// 板上全部作品的豆数加和：色号 -> 颗数（跨作品同色号合并）
-  Map<String, int> _beadStats() {
-    final stats = <String, int>{};
-    for (final w in _works) {
-      final m = w.model;
-      m.countByColor().forEach((v, n) {
-        final id = v < m.paletteIds.length ? m.paletteIds[v] : "?$v";
-        stats[id] = (stats[id] ?? 0) + n;
-      });
-    }
-    return stats;
-  }
-
   /// 变换选中作品（旋转 ±90°/翻转），clamp 回板内并持久化
   void _transformSelected({int? rotDelta, bool? flipH, bool? flipV}) {
     if (_selected < 0 || _selected >= _works.length) {
@@ -927,67 +863,9 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     _persistBoard();
   }
 
-  /// 色号查显示颜色（任一含该色的作品调色板）
-  BeadColor? _colorOf(String id) {
-    for (final w in _works) {
-      final c = w.palette.byId(id);
-      if (c != null) {
-        return c;
-      }
-    }
-    return null;
-  }
-
   /// 豆数统计明细（BottomSheet：色块 + 色号/名 + 颗数，按颗数降序）
-  Future<void> _showBeadStats() async {
-    if (_works.isEmpty) {
-      AppSnackBar.show(context, "板上还没有作品");
-      return;
-    }
-    final stats = _beadStats();
-    final total = stats.values.fold(0, (a, b) => a + b);
-    final entries = stats.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-    await showModalBottomSheet<void>(
-      context: context,
-      builder: (sctx) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Text(
-                "豆数统计 · ${_works.length} 件作品 · ${stats.length} 种色 · 共 $total 颗",
-                style: Theme.of(sctx).textTheme.titleMedium,
-              ),
-            ),
-            for (final e in entries)
-              ListTile(
-                leading: Container(
-                  width: 36,
-                  height: 36,
-                  decoration: BoxDecoration(
-                    color: _colorOf(e.key) != null
-                        ? Color.fromARGB(
-                            255,
-                            _colorOf(e.key)!.r,
-                            _colorOf(e.key)!.g,
-                            _colorOf(e.key)!.b,
-                          )
-                        : Colors.grey,
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: Colors.black26),
-                  ),
-                ),
-                title: Text(
-                  "${e.key} ${_colorOf(e.key)?.name ?? ""}".trim(),
-                ),
-                trailing: Text("${e.value} 颗"),
-              ),
-          ],
-        ),
-      ),
-    );
+  Future<void> _showBeadStats() {
+    return showBeadStatsSheet(context, works: _works);
   }
 
   // ==================== 开始拼豆 ====================
@@ -1143,99 +1021,21 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
   }
 
   Widget _buildConfigRows(bool presetSelected) {
-    final stats = _beadStats();
-    final total = stats.values.fold(0, (a, b) => a + b);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: SegmentedButton<int>(
-                  showSelectedIcon: false,
-                  style: const ButtonStyle(
-                    visualDensity: VisualDensity.compact,
-                  ),
-                  segments: [
-                    for (final s in _presets)
-                      ButtonSegment(value: s, label: Text("$s×$s")),
-                    const ButtonSegment(value: 0, label: Text("自定义")),
-                  ],
-                  selected: presetSelected ? {_bw} : const {0},
-                  onSelectionChanged: (sel) {
-                    if (sel.first > 0) {
-                      _setBoardSize(sel.first);
-                    } else {
-                      _openCustomSize();
-                    }
-                  },
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Text("加粗框线", style: Theme.of(context).textTheme.labelMedium),
-              const SizedBox(width: 8),
-              Expanded(
-                child: SegmentedButton<int>(
-                  showSelectedIcon: false,
-                  style: const ButtonStyle(
-                    visualDensity: VisualDensity.compact,
-                  ),
-                  segments: const [
-                    ButtonSegment(value: 5, label: Text("每5")),
-                    ButtonSegment(value: 8, label: Text("每8")),
-                    ButtonSegment(value: 10, label: Text("每10")),
-                  ],
-                  selected: {_interval},
-                  onSelectionChanged: (sel) => _setInterval(sel.first),
-                ),
-              ),
-              const SizedBox(width: 8),
-              _majorColorDot(),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Row(
-            children: [
-              Text("顶点", style: Theme.of(context).textTheme.labelMedium),
-              _phaseBtn(Icons.arrow_back, "竖线左移", () => _shiftPhase(dx: 1)),
-              _phaseBtn(Icons.arrow_forward, "竖线右移", () => _shiftPhase(dx: -1)),
-              _phaseBtn(Icons.arrow_upward, "横线上移", () => _shiftPhase(dy: 1)),
-              _phaseBtn(
-                  Icons.arrow_downward, "横线下移", () => _shiftPhase(dy: -1)),
-            ],
-          ),
-          const SizedBox(height: 2),
-          Text(
-            "板 $_bw×$_bh · 每$_interval格加粗 · 点作品选中后拖动",
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          const SizedBox(height: 2),
-          GestureDetector(
-            onTap: _showBeadStats,
-            child: Text(
-              "${_works.length} 件作品 · ${stats.length} 种色 · $total 颗豆 ›",
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-            ),
-          ),
-        ],
-      ),
+    return BoardConfigPanel(
+      presetSelected: presetSelected,
+      bw: _bw,
+      bh: _bh,
+      interval: _interval,
+      majorColorDot: _majorColorDot(),
+      worksCount: _works.length,
+      stats: beadStats(_works),
+      onSelectPreset: _setBoardSize,
+      onCustom: _openCustomSize,
+      onSetInterval: _setInterval,
+      onShiftPhase: _shiftPhase,
+      onShowStats: _showBeadStats,
     );
   }
-
-  Widget _phaseBtn(IconData icon, String tip, VoidCallback onTap) => IconButton(
-        onPressed: onTap,
-        icon: Icon(icon, size: 18),
-        tooltip: tip,
-        visualDensity: VisualDensity.compact,
-      );
 
   Widget _buildCanvas() {
     if (_works.isEmpty) {
@@ -1336,36 +1136,12 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
 
   Widget _buildBottomBar() {
     final anyOverflow = _works.any((w) => !w.fits(_bw, _bh));
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (_works.isNotEmpty && anyOverflow)
-            Text(
-              "有作品超出豆板 $_bw×$_bh，请换大板或自定义尺寸",
-              style: const TextStyle(fontSize: 12, color: Colors.orange),
-            ),
-          Row(
-            children: [
-              OutlinedButton.icon(
-                onPressed: _openWorkPicker,
-                icon: const Icon(Icons.library_add_outlined, size: 18),
-                label: Text(_works.isEmpty ? "导入作品" : "添加作品"),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed:
-                      _works.isNotEmpty && !anyOverflow ? _startAssemble : null,
-                  icon: const Icon(Icons.play_arrow),
-                  label: const Text("开始拼豆"),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
+    return BoardBottomBar(
+      works: _works,
+      bw: _bw,
+      bh: _bh,
+      onAddWork: _openWorkPicker,
+      onStart: _works.isNotEmpty && !anyOverflow ? _startAssemble : null,
     );
   }
 }
