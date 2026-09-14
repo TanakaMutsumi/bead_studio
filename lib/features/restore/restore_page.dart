@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -7,48 +6,36 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart'
     show PointerScrollEvent, PointerSignalEvent;
 import 'package:flutter/material.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
-import 'package:path_provider/path_provider.dart';
 
 import '../../core/app_build.dart';
 import '../../core/app_snack_bar.dart';
 import '../../core/decode_image.dart';
 import '../../core/draft_store.dart';
 import '../../core/grid_detector.dart';
-import '../../core/board_detect.dart';
 import '../../core/legend_detect.dart';
+import '../../core/legend_ocr.dart';
 import '../../core/palette.dart';
 import '../../core/palette_registry.dart';
 import '../../core/pattern_model.dart';
 import '../../core/quantizer.dart';
+import '../../core/subject_detect.dart';
 import '../../core/zoom_controls.dart';
 import '../board/board_setup_page.dart';
 import '../editor/editor_page.dart';
-import '../editor/grid_painter.dart';
-
-/// 页面阶段：选图 -> 框图例 -> 九宫格对齐 -> 框选主体 -> 识别复核
-enum _Stage { pick, legend, align, frame, review }
+import 'legend_ocr_runner.dart';
+import 'ocr_debug_sheet.dart';
+import 'restore_painters.dart';
+import 'restore_types.dart';
+import 'steps/align_step.dart';
+import 'steps/frame_step.dart';
+import 'steps/legend_step.dart';
+import 'steps/pick_step.dart';
+import 'steps/review_step.dart';
 
 /// 空白判定阈值：格色与候选色的 Lab 距离平方超过此值视为空白格
 const double _blankDistSq = 900.0; // ΔE ≈ 30
-
-/// 四角双线性插值：单位网格坐标 (u,v)∈[0,1]² -> 平面坐标
-///
-/// q 为四角 [左上, 右上, 右下, 左下]（对应单位坐标 (0,0)(1,0)(1,1)(0,1)）。
-/// 四角对齐模式的核心几何：用户把 4 个角点拖到图案网格的四个角，
-/// 识别采样与网格覆盖层的全部交点都经此映射反求，两处坐标同源。
-Offset _bilinearQuad(List<Offset> q, double u, double v) {
-  final a = (1 - u) * (1 - v);
-  final b = u * (1 - v);
-  final c = u * v;
-  final d = (1 - u) * v;
-  return Offset(
-    a * q[0].dx + b * q[1].dx + c * q[2].dx + d * q[3].dx,
-    a * q[0].dy + b * q[1].dy + c * q[2].dy + d * q[3].dy,
-  );
-}
 
 /// 灰度构建 + 主体格距自相关检测（顶层函数供 compute isolate 调用）
 ///
@@ -66,195 +53,6 @@ GridDetectResult? detectGridInIsolate(img.Image image) {
     }
   }
   return detectGridAutocorr(gray, image.width, image.height);
-}
-
-/// 格子 OCR 裁剪参数（encodeCellOcrPng 的 compute 入参）
-class _CellOcrArgs {
-  final img.Image image;
-
-  ///< 原图（isolate 内裁剪）
-  final int x, y, w, h;
-
-  ///< 裁剪区（图片坐标）
-  final double scale;
-
-  ///< 放大倍率（1.0=不缩放）
-  const _CellOcrArgs(this.image, this.x, this.y, this.w, this.h, this.scale);
-}
-
-/// 裁剪+缩放+PNG 编码（顶层函数供 compute isolate 调用）：喂 ML Kit 前
-/// 的重活，百万像素级同步跑在主 isolate 会冻结 UI 秒级（ANR），与
-/// encodeDisplayJpg 同理
-Uint8List _encodeCellOcrPng(_CellOcrArgs a) {
-  final crop = img.copyCrop(a.image, x: a.x, y: a.y, width: a.w, height: a.h);
-  final out = a.scale == 1.0
-      ? crop
-      : img.copyResize(crop, width: (crop.width * a.scale).round());
-  return img.encodePng(out);
-}
-
-/// OCR 常见字符混淆表（色号匹配用：印刷小字 0/O、1/I/L、2/Z、5/S、6/G、8/B、4/A 互混）
-const Map<String, List<String>> _ocrConfusions = {
-  "0": ["O"],
-  "O": ["0"],
-  "1": ["I", "L"],
-  "I": ["1"],
-  "L": ["1"],
-  "2": ["Z"],
-  "Z": ["2"],
-  "5": ["S"],
-  "S": ["5"],
-  "6": ["G"],
-  "G": ["6"],
-  "8": ["B"],
-  "B": ["8"],
-  "4": ["A"],
-  "A": ["4"],
-};
-
-/// 掉字母色号的色块采样：图例条目整条是彩色豆底块（色号/颗数直接印在彩底上），
-/// 取色号框外扩窗口内高饱和像素的 RGB 均值——黑/白文字与白色底块饱和度低，
-/// 天然被排除，剩下的就是豆底颜色
-(int, int, int)? _sampleSwatch(img.Image image, Rect codeRect) {
-  final m = codeRect.height;
-  final left = (codeRect.left - m).round().clamp(0, image.width - 1);
-  final right = (codeRect.right + m).round().clamp(0, image.width - 1);
-  final top = (codeRect.top - m * 0.6).round().clamp(0, image.height - 1);
-  final bottom = (codeRect.bottom + m * 0.6).round().clamp(0, image.height - 1);
-  var sr = 0, sg = 0, sb = 0, n = 0;
-  for (var y = top; y <= bottom; y++) {
-    for (var x = left; x <= right; x++) {
-      final p = image.getPixel(x, y);
-      final r = p.r.toInt(), g = p.g.toInt(), b = p.b.toInt();
-      final mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
-      final mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
-      if (mx - mn < 40) {
-        continue; // 黑/白文字与白底低饱和，排除
-      }
-      sr += r;
-      sg += g;
-      sb += b;
-      n++;
-    }
-  }
-  if (n < 20) {
-    return null; // 采样点太少（白底条目无彩底），不可信
-  }
-  return (sr ~/ n, sg ~/ n, sb ~/ n);
-}
-
-/// 掉字母色号按「数字后缀候选 + 条目色块颜色最近匹配」补全。
-/// 返回补全的调色板索引；候选为空/色块不可采样/颜色差过远（色卡切换
-/// 不对或本就不是色号）时返回 null 保守放弃
-int? _fixCodeBySwatch(
-  BeadPalette palette,
-  int bareNum,
-  Rect codeRect,
-  img.Image scaled,
-) {
-  final suffix = bareNum.toString();
-  final cands = <int>[
-    for (var i = 0; i < palette.colors.length; i++)
-      if (palette.colors[i].id.length == suffix.length + 1 &&
-          palette.colors[i].id.endsWith(suffix))
-        i,
-  ];
-  if (cands.isEmpty) {
-    return null;
-  }
-  final swatch = _sampleSwatch(scaled, codeRect);
-  if (swatch == null) {
-    return null;
-  }
-  var best = -1;
-  var bestDist = 1 << 30;
-  for (final i in cands) {
-    final c = palette.colors[i];
-    final d = (c.r - swatch.$1) * (c.r - swatch.$1) +
-        (c.g - swatch.$2) * (c.g - swatch.$2) +
-        (c.b - swatch.$3) * (c.b - swatch.$3);
-    if (d < bestDist) {
-      bestDist = d;
-      best = i;
-    }
-  }
-  if (best < 0 || bestDist > 120 * 120 * 3) {
-    return null;
-  }
-  return best;
-}
-
-/// 图例 OCR 识别元素（色号或颗数，带几何框供跨行配对）
-class _OcrElem {
-  final int seq;
-
-  ///< 收集序（block/line/element 遍历序，保底配对用）
-  final Rect rect;
-
-  ///< 元素框（放大图坐标系；个别平台可能退化为 0 框）
-  final int? code;
-
-  ///< 色号 -> 调色板索引（与 count 互斥）
-  final int? count;
-
-  ///< 颗数
-  bool used = false;
-
-  ///< 已被配对消费（数字侧）
-  int? pairedCount;
-
-  ///< 色号侧配到的颗数
-  // 【临时调试】配对的另一侧元素引用（调试视图画连线用，正式版随调试功能一起移除）
-  _OcrElem? pairedWith;
-  String dbgText = "";
-
-  ///< 【临时调试】OCR 原始文本
-  _OcrElem(this.seq, this.rect, this.code, this.count);
-}
-
-/// 【临时调试】一次图例 OCR 的调试快照（正式版随调试视图一起移除）
-class _OcrDebugInfo {
-  final String source;
-
-  ///< 来源（自动扫描档位 / 手动框选）
-  final String imgPath;
-
-  ///< 喂给 ML Kit 的放大选区图路径
-  final int imgW, imgH;
-
-  ///< 放大图尺寸（元素框坐标系）
-  final List<_OcrElem> elems;
-
-  ///< 全部识别元素（含配对引用）
-  final double selX, selY, selW, selH;
-
-  ///< 框选区（原图坐标）——复现框选用
-  _OcrDebugInfo(
-    this.source,
-    this.imgPath,
-    this.imgW,
-    this.imgH,
-    this.elems,
-    this.selX,
-    this.selY,
-    this.selW,
-    this.selH,
-  );
-}
-
-/// 图例条目：图纸图例里识别出的一个用色
-class _LegendEntry {
-  final int paletteIndex;
-
-  ///< 调色板索引
-  final TextEditingController countCtrl = TextEditingController();
-
-  ///< 图例标注数量（手填，对账用）
-
-  _LegendEntry(this.paletteIndex);
-
-  /// 图例标注数量（空/非法返回 null = 不参与对账）
-  int? get expectedCount => int.tryParse(countCtrl.text.trim());
 }
 
 /// 图纸还原页：复刻原 App 五步链路
@@ -276,7 +74,7 @@ class RestorePage extends StatefulWidget {
 }
 
 class _RestorePageState extends State<RestorePage> {
-  _Stage _stage = _Stage.pick;
+  RestoreStage _stage = RestoreStage.pick;
   Uint8List? _bytes;
 
   ///< 原图字节
@@ -300,7 +98,7 @@ class _RestorePageState extends State<RestorePage> {
   final _legendColsCtrl = TextEditingController();
   final _legendRowsCtrl = TextEditingController();
   var _legendBusy = false;
-  List<_LegendEntry> _legend = [];
+  List<LegendEntry> _legend = [];
 
   ///< 识别出的图例清单
   var _legendByOcr = false;
@@ -310,7 +108,7 @@ class _RestorePageState extends State<RestorePage> {
 
   ///< 图例确认面板展开（收起后图片区变大，便于对照原图校对）
   // 【临时调试】最近一次图例 OCR 的调试信息（放大图/元素/配对），正式版随调试视图一起移除
-  _OcrDebugInfo? _ocrDebug;
+  OcrDebugInfo? _ocrDebug;
   int _selHandleDrag = -1;
 
   ///< 选区把手拖拽中（-1=非把手，0-7=把手索引）
@@ -564,7 +362,7 @@ class _RestorePageState extends State<RestorePage> {
         // 换图即清空调试快照：新图识别前 AppBar 不显示旧图的调试入口，
         // 否则点开看到的是上一张图的放大图/元素，误导排障
         _ocrDebug = null;
-        _stage = _Stage.legend;
+        _stage = RestoreStage.legend;
       });
       // 载入即自动预框图例区（省一次手动框选）；识别不到就保持空选区，
       // 用户手动框或点 AppBar「自动框选」重试
@@ -591,10 +389,6 @@ class _RestorePageState extends State<RestorePage> {
   }
 
   // ==================== 图例区自动检测 ====================
-
-  /// 量化色是否白背景（近白含平灰底）——实现见 legend_detect.dart
-  /// `qWhite`（2026-09-14 抽共享库，app/离线模拟器唯一实现）
-  static bool _qWhite(int q) => qWhite(q);
 
   /// 自动检测图例条带：游程法——实现抽在 lib/core/legend_detect.dart
   /// `detectLegendCanonical`（app 与 tool/legend_sim.dart 离线模拟器共用
@@ -733,17 +527,17 @@ class _RestorePageState extends State<RestorePage> {
       var entries = [
         for (final entry
             in freq.entries.toList()..sort((a, b) => b.value - a.value))
-          _LegendEntry(entry.key),
+          LegendEntry(entry.key),
       ];
       var ocrHit = 0;
       if (pairs != null && pairs.length >= 3) {
-        final byOcr = <_LegendEntry>[];
+        final byOcr = <LegendEntry>[];
         final seen = <int>{};
         for (final (idx, count) in pairs) {
           if (!seen.add(idx)) {
             continue; // 同一色号多次出现（图例重复/误读），取首条
           }
-          final e = _LegendEntry(idx);
+          final e = LegendEntry(idx);
           e.countCtrl.text = count.toString();
           byOcr.add(e);
         }
@@ -780,10 +574,9 @@ class _RestorePageState extends State<RestorePage> {
 
   /// OCR 图例选区 -> [(印刷色号调色板索引, 印刷颗数)] 按阅读顺序
   ///
-  /// 图纸图例每条目 = 色块 + 色号 + 颗数（印刷数字）；颗数有时跟在色号右侧同行，
-  /// 有时印在色号/色块正下方。裁剪选区放大 3 倍喂 ML Kit，先收集全部色号/颗数
-  /// element（带几何框），再走 [_pairLegendOcr] 两轮配对。
-  /// web 平台不可用 / 异常 / 无配对时返回 null（调用方回退色块量化清单）。
+  /// 编排实现抽在 legend_ocr_runner.dart `runLegendOcr`（放大/识别/修复/
+  /// 配对/调试快照整链）。web 平台不可用 / 异常 / 无配对时返回 null
+  /// （调用方回退色块量化清单）。
   Future<List<(int, int)>?> _ocrLegendPairs(
     double rx,
     double ry,
@@ -800,564 +593,25 @@ class _RestorePageState extends State<RestorePage> {
     }
     // 【临时调试】每次识别尝试先清旧快照：本次失败不留上一张图的旧数据
     _ocrDebug = null;
-    var dbgPath = ""; // 【临时调试】异常路径已产出的放大图路径（crop/写盘成功后才有值）
-    var dbgW = 0;
-    var dbgH = 0;
-    try {
-      final crop = img.copyCrop(
-        image,
-        x: rx.toInt(),
-        y: ry.toInt(),
-        width: rw.toInt(),
-        height: rh.toInt(),
+    final run = await runLegendOcr(
+      image,
+      _palette,
+      rx,
+      ry,
+      rw,
+      rh,
+      source: source,
+    );
+    _ocrDebug = run.debug;
+    // 色卡外色号（如 MARD 卡没有的 H7）：无法入清单，明确提示用户手工补
+    if (run.orphanNotes.isNotEmpty && mounted) {
+      final names = run.orphanNotes.toSet().join("、");
+      AppSnackBar.show(
+        context,
+        "识别到色卡外色号：$names（不在当前色卡，未入清单；如有需要请用\"添加颜色\"手工补）",
       );
-      // 小字放大提高识别率：按高度放大到 ~960px（数字高 ~120px+）。
-      // 固定 ×2/×3 在小字图例（色号字高 ~20 原图像素）下分辨率不足，
-      // 实测 480 目标时第三行 5 条目只读出 3 个色号（2026-08-27 pic4），
-      // 提到 960 后字高 ~74px 识别稳定；同时按宽度 cap 防超 ML Kit 输入上限
-      var scale = (960 / rh).clamp(3.0, 8.0);
-      final widthCap = 3800 / rw;
-      if (scale > widthCap) {
-        scale = widthCap;
-      }
-      final scaled = img.copyResize(crop, width: (crop.width * scale).round());
-      final tmp = File(
-        "${(await getTemporaryDirectory()).path}/legend_ocr.png",
-      );
-      await tmp.writeAsBytes(img.encodePng(scaled));
-      dbgPath = tmp.path; // 【临时调试】记下放大图，异常路径的快照也要能看图
-      dbgW = scaled.width;
-      dbgH = scaled.height;
-
-      final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
-      final recognized = await recognizer.processImage(
-        InputImage.fromFilePath(tmp.path),
-      );
-      await recognizer.close();
-
-      // 精确 + 混淆变体查找表（图例 OCR 与格子 OCR 共用）
-      final codeMap = _buildCodeMap();
-
-      // 收集全部色号/颗数元素（带几何框：颗数可能在色号下一行，纯行内序配不上）；
-      // 原图轮/反色轮共用同一收集逻辑
-      List<_OcrElem> collect(RecognizedText result, int seqStart) {
-        final out = <_OcrElem>[];
-        var seq = seqStart;
-        for (final block in result.blocks) {
-          for (final line in block.lines) {
-            for (final element in line.elements) {
-              final text = element.text.trim().toUpperCase().replaceAll(
-                    " ",
-                    "",
-                  );
-              // 色号最多 4 字符（A1/H12 型），长文本是正文/杂项不做色号。
-              // 纯数字文本即使命中混淆变体（8↔B 使 "81"→B1）也先按颗数
-              // 收集——它更常是左侧色号的真颗数（"H7 81" 行的 81），
-              // 配对后仍未消费的裸数字才兜底回落为色号
-              if (text.length <= 4 && RegExp(r'^[A-Z]').hasMatch(text)) {
-                final code = codeMap[text];
-                if (code != null) {
-                  final e = _OcrElem(seq++, element.boundingBox, code, null);
-                  e.dbgText = element.text; // 【临时调试】保留原始文本
-                  out.add(e);
-                  continue;
-                }
-              }
-              final n = _parseCountText(element.text);
-              if (n != null) {
-                final e = _OcrElem(seq++, element.boundingBox, null, n);
-                e.dbgText = element.text; // 【临时调试】保留原始文本
-                out.add(e);
-              }
-            }
-          }
-        }
-        return out;
-      }
-
-      final elems = collect(recognized, 0);
-      // 掉字母色号修复：深底反白/浅底浅字色号被 ML Kit 吞掉首字母，读成
-      // 无括号纯数字 count（真颗数全部带括号 (N)）。当图内带括号颗数占绝对
-      // 多数（≥6 且 ≥2×无括号数）时，无括号纯数字判定为掉字母色号：按数字
-      // 后缀取色卡候选，用条目色块颜色（色号左侧最饱和区）最近匹配补全。
-      // 后缀候选多（如 16 有 A16~H16），颜色是唯一决定性约束——图例色块
-      // 印的就是该色号的实物色。
-      var fixedCount = 0;
-      final parenCount =
-          elems.where((e) => e.code == null && e.dbgText.contains("(")).length;
-      final bareCount =
-          elems.where((e) => e.code == null && !e.dbgText.contains("(")).length;
-      if (parenCount >= 6 && bareCount > 0 && bareCount * 2 <= parenCount) {
-        final bare = elems
-            .where((e) => e.code == null && !e.dbgText.contains("("))
-            .toList();
-        for (final e in bare) {
-          final best = _fixCodeBySwatch(_palette, e.count!, e.rect, scaled);
-          if (best == null) {
-            continue;
-          }
-          final fixed = _OcrElem(e.seq, e.rect, best, null);
-          fixed.dbgText = "${e.dbgText}→${_palette.colors[best].id}(色块补全)";
-          elems.remove(e);
-          elems.add(fixed);
-          fixedCount++;
-        }
-      }
-      // 孤儿颗数二次 OCR：带括号颗数的左侧同行/正上方近旁都没有色号元素，
-      // 说明该条目的色号整条被 ML Kit 吞掉（深底白字识别不稳定；H7 案例：
-      // (343) 正常读出而 H7 消失）。裁「左邻元素右缘 -> 颗数左缘」的空隙
-      // 小区放大后单独再识别（原图 + 反色两轮），读出的色号补回元素表参与
-      // 最终配对
-      final orphanNotes = <String>[];
-      final gapFixed = await _fixOrphanCountCodes(
-        elems,
-        scaled,
-        codeMap,
-        tmp,
-        orphanNotes,
-      );
-      // 【临时调试】保存本次 OCR 快照（放大图 + 元素 + 配对前状态 + 框选区），正式版移除
-      _ocrDebug = _OcrDebugInfo(
-        source,
-        tmp.path,
-        scaled.width,
-        scaled.height,
-        elems,
-        rx,
-        ry,
-        rw,
-        rh,
-      );
-      // 【临时调试】元素明细同时打 logcat 与写文件（个别环境 logcat 收不到
-      // flutter tag，文件可 adb pull，像素判读调试面板太费劲），正式版移除
-      final dbgLines = <String>[
-        "框选($source) $rx,$ry ${rw}x$rh elems=${elems.length}(色块补全$fixedCount, 空隙OCR$gapFixed, 括号颗数$parenCount/裸数字$bareCount) img=${scaled.width}x${scaled.height}"
-            "${orphanNotes.isEmpty ? "" : " 色卡外色号=[${orphanNotes.toSet().join(" ")}]"}",
-      ];
-      for (final e in elems) {
-        final kind = e.code != null
-            ? "code:${_palette.colors[e.code!].id}"
-            : "count:${e.count}";
-        dbgLines.add(
-          "elem $kind raw=\"${e.dbgText}\" "
-          "rect=(${e.rect.left.toInt()},${e.rect.top.toInt()} "
-          "${e.rect.width.toInt()}x${e.rect.height.toInt()})",
-        );
-      }
-      final paired = _pairLegendOcr(elems).toList();
-      // 配对后兜底：仍未消费的裸数字若命中混淆变体（掉字母色号 "81"→B1
-      // 型），回落为色号条目（颗数 0，进未配色号提示让用户手填）。先配对
-      // 后兜底的顺序保证 "H7 81" 型同行的 81 优先成为左侧色号的颗数，
-      // 而不是被 B1 变体抢走导致 H7 悬空
-      for (final e in [...elems]) {
-        if (e.code != null || e.used || e.dbgText.contains("(")) {
-          continue;
-        }
-        final t = e.dbgText.trim().toUpperCase().replaceAll(" ", "");
-        final hit = t.length <= 4 ? codeMap[t] : null;
-        if (hit == null) {
-          continue;
-        }
-        final fixed = _OcrElem(e.seq, e.rect, hit, null);
-        fixed.dbgText = "${e.dbgText}→${_palette.colors[hit].id}(变体兜底)";
-        elems.remove(e);
-        elems.add(fixed);
-        paired.add((hit, 0));
-      }
-      final unpaired = elems
-          .where((e) => e.code != null && e.pairedCount == null)
-          .map((e) => "${_palette.colors[e.code!].id}(${e.dbgText})")
-          .join(" ");
-      dbgLines.add(
-        "result=${paired.length}对 未配色号=[${unpaired.isEmpty ? "无" : unpaired}] ${[
-          for (final (idx, n) in paired) "${_palette.colors[idx].id}=$n"
-        ].join(" ")}",
-      );
-      for (final l in dbgLines) {
-        debugPrint("【临时调试】$l");
-      }
-      File("${tmp.parent.path}/legend_ocr_log.txt").writeAsStringSync(
-        dbgLines.join("\n"),
-      );
-      // 色卡外色号（如 MARD 卡没有的 H7）：无法入清单，明确提示用户手工补
-      if (orphanNotes.isNotEmpty && mounted) {
-        final names = orphanNotes.toSet().join("、");
-        AppSnackBar.show(
-          context,
-          "识别到色卡外色号：$names（不在当前色卡，未入清单；如有需要请用\"添加颜色\"手工补）",
-        );
-      }
-      return paired;
-    } catch (_) {
-      // 【临时调试】识别抛异常也记快照（source 标"异常"）：调试视图能看到放大图 + 0 个
-      // 元素——比入口直接消失更有排障价值；放大图都没产出（crop 就失败）则保持 null
-      if (dbgPath.isNotEmpty) {
-        _ocrDebug = _OcrDebugInfo(
-          "$source（异常）",
-          dbgPath,
-          dbgW,
-          dbgH,
-          const [],
-          rx,
-          ry,
-          rw,
-          rh,
-        );
-      }
-      return null;
     }
-  }
-
-  /// 孤儿颗数修复：带括号颗数的左侧同行/正上方近旁都没有色号元素，说明该
-  /// 条目的色号整条被 ML Kit 吞掉（H7 案例：(343) 读出而 H7 消失）。裁
-  /// 「左邻元素右缘 -> 颗数左缘」的空隙小区放大后单独再识别，读出的色号
-  /// 按空隙几何位置补回 [elems] 参与最终配对。
-  /// 返回补全数；识别到但当前色卡没有的色号（如 MARD 卡外的 H7）收集到
-  /// [orphanNotes] 供上层提示用户手工补。[tmpBase] 只取目录，临时文件名固定
-  Future<int> _fixOrphanCountCodes(
-    List<_OcrElem> elems,
-    img.Image scaled,
-    Map<String, int> codeMap,
-    File tmpBase,
-    List<String> orphanNotes,
-  ) async {
-    if (elems.isEmpty) {
-      return 0;
-    }
-    var heightSum = 0.0;
-    for (final e in elems) {
-      heightSum += e.rect.height;
-    }
-    final avgH = heightSum > 0 ? heightSum / elems.length : 40.0;
-    final codes = elems.where((e) => e.code != null).toList();
-
-    // 色号近旁判定窗口与 _pairLegendOcr 两轮配对一致，配得上的不是孤儿
-    bool hasCodeNearby(_OcrElem c) {
-      for (final s in codes) {
-        final dy = (s.rect.center.dy - c.rect.center.dy).abs();
-        // 同行左侧窗口（配对轮 1 同款）
-        if (dy <= avgH * 0.7 &&
-            s.rect.right < c.rect.left + avgH * 0.5 &&
-            c.rect.left - s.rect.right <= avgH * 4) {
-          return true;
-        }
-        // 正上方窗口（配对轮 2 同款）
-        if (s.rect.bottom <= c.rect.center.dy &&
-            c.rect.center.dy - s.rect.top <= avgH * 2.5 &&
-            (s.rect.center.dx - c.rect.center.dx).abs() <= avgH * 3) {
-          return true;
-        }
-      }
-      return false;
-    }
-
-    final orphans = elems
-        .where(
-          (e) => e.code == null && e.dbgText.contains("(") && !hasCodeNearby(e),
-        )
-        .toList();
-    if (orphans.isEmpty) {
-      return 0;
-    }
-    var nextSeq = 0;
-    for (final e in elems) {
-      if (e.seq >= nextSeq) {
-        nextSeq = e.seq + 1;
-      }
-    }
-    var fixed = 0;
-    for (final c in orphans) {
-      // 空隙左界：左邻元素（同行、在颗数左侧、不太远）的最大右缘
-      var gLeft = c.rect.left - avgH * 6;
-      for (final e in elems) {
-        if (identical(e, c)) {
-          continue;
-        }
-        final dy = (e.rect.center.dy - c.rect.center.dy).abs();
-        if (dy > avgH * 0.8 || e.rect.right >= c.rect.left) {
-          continue;
-        }
-        if (c.rect.left - e.rect.right > avgH * 8) {
-          continue;
-        }
-        if (e.rect.right > gLeft) {
-          gLeft = e.rect.right;
-        }
-      }
-      if (gLeft < 0) {
-        gLeft = 0;
-      }
-      final gapW = c.rect.left - gLeft;
-      // 空隙窄于一个字高：位置上放不下色号，跳过
-      if (gapW < avgH * 0.8) {
-        continue;
-      }
-      final gTop = (c.rect.top - avgH * 0.8).clamp(0.0, scaled.height - 1.0);
-      final gBottom = (c.rect.bottom + avgH * 0.8)
-          .clamp(gTop + 1.0, scaled.height.toDouble());
-      final gap = img.copyCrop(
-        scaled,
-        x: gLeft.toInt(),
-        y: gTop.toInt(),
-        width: gapW.toInt(),
-        height: (gBottom - gTop).toInt(),
-      );
-      final hit = await _ocrGapText(
-        img.copyResize(gap, width: gap.width * 2),
-        File("${tmpBase.parent.path}/legend_ocr_gap.png"),
-      );
-      if (hit == null) {
-        continue;
-      }
-      final (text, rel) = hit;
-      // 空隙小区坐标 -> 放大图坐标（gap 又放大了 2 倍）
-      final abs = Rect.fromLTWH(
-        gLeft + rel.left / 2,
-        gTop + rel.top / 2,
-        rel.width / 2,
-        rel.height / 2,
-      );
-      final code = codeMap[text];
-      if (code != null) {
-        final ne = _OcrElem(nextSeq++, abs, code, null);
-        ne.dbgText = "$text(空隙OCR)";
-        elems.add(ne);
-        fixed++;
-        continue;
-      }
-      // 掉字母裸数字：与全图轮同一套「后缀候选 + 色块颜色」补全
-      final n = _parseCountText(text);
-      if (n != null && n < 1000) {
-        final idx = _fixCodeBySwatch(_palette, n, abs, scaled);
-        if (idx != null) {
-          final ne = _OcrElem(nextSeq++, abs, idx, null);
-          ne.dbgText = "$text→${_palette.colors[idx].id}(空隙OCR+色块)";
-          elems.add(ne);
-          fixed++;
-          continue;
-        }
-      }
-      // 色号样式但色卡没有：提示用户用"添加颜色"补
-      if (RegExp(r'^[A-Z]{1,2}\d{1,2}$').hasMatch(text)) {
-        orphanNotes.add(text);
-      }
-    }
-    return fixed;
-  }
-
-  /// 空隙小区单独识别：原图 + 反色（深底白字对反色更稳定）两轮，返回第一
-  /// 个「像色号」的元素文本与其在 [gapBig] 中的框；每轮内色号样式优先于
-  /// 裸数字，未识别到返回 null
-  Future<(String, Rect)?> _ocrGapText(img.Image gapBig, File tmp) async {
-    await tmp.writeAsBytes(img.encodePng(gapBig));
-    final inverted = img.Image.from(gapBig);
-    for (final p in inverted) {
-      p.r = 255 - p.r;
-      p.g = 255 - p.g;
-      p.b = 255 - p.b;
-    }
-    final codeLike = RegExp(r'^[A-Z]{1,2}\d{1,2}$');
-    final numLike = RegExp(r'^\d{1,3}$');
-    final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
-    try {
-      for (var round = 0; round < 2; round++) {
-        if (round == 1) {
-          await tmp.writeAsBytes(img.encodePng(inverted));
-        }
-        final recognized = await recognizer.processImage(
-          InputImage.fromFilePath(tmp.path),
-        );
-        (String, Rect)? numHit;
-        for (final block in recognized.blocks) {
-          for (final line in block.lines) {
-            for (final element in line.elements) {
-              final text =
-                  element.text.trim().toUpperCase().replaceAll(" ", "");
-              if (text.length > 4) {
-                continue; // 长文本是杂项，不是色号
-              }
-              if (codeLike.hasMatch(text)) {
-                return (text, element.boundingBox);
-              }
-              if (numHit == null && numLike.hasMatch(text)) {
-                numHit = (text, element.boundingBox);
-              }
-            }
-          }
-        }
-        if (numHit != null) {
-          return numHit;
-        }
-      }
-    } finally {
-      await recognizer.close();
-    }
-    return null;
-  }
-
-  /// 色号与颗数配对（两轮，几何驱动）
-  ///
-  /// 轮 1：颗数与色号同行且在其右侧 -> 最近者配对（A6 64 型布局）；
-  /// 轮 2：未配色号找正下方紧邻数字（垂直近 + 水平接近，H2/118 型布局），
-  ///       按色号从下往上处理——下方行的色号先消费下方数字，避免上一行
-  ///       漏配的色号抢走下一行的颗数。
-  /// 几何框缺失（个别平台 rect 退化）时退回收集序「色号后第一个数字」。
-  List<(int, int)> _pairLegendOcr(List<_OcrElem> elems) {
-    final codes = elems.where((e) => e.code != null).toList();
-    final nums = elems.where((e) => e.count != null).toList();
-    if (codes.isEmpty || nums.isEmpty) {
-      return const [];
-    }
-    final heights = [
-      for (final e in elems)
-        if (e.rect.height > 0) e.rect.height,
-    ];
-    if (heights.isEmpty) {
-      return _pairInSeqOrder(codes, nums);
-    }
-    final avgH = heights.reduce((a, b) => a + b) / heights.length;
-
-    // 轮 1：同行右侧最近的未消费数字
-    for (final c in codes) {
-      _OcrElem? best;
-      for (final n in nums) {
-        if (n.used || n.rect.center.dx <= c.rect.center.dx) {
-          continue;
-        }
-        if ((n.rect.center.dy - c.rect.center.dy).abs() > avgH * 0.7) {
-          continue; // 不同行
-        }
-        if (n.rect.left - c.rect.right > avgH * 4) {
-          continue; // 颗数紧邻色号；远处数字属邻条目，不抢（否则 B1 颗数
-          // 漏读时会横跨抢走 H15 的颗数，H15 再抢 M3 的，链式错位尾部落空）
-        }
-        if (best == null || n.rect.left < best.rect.left) {
-          best = n;
-        }
-      }
-      if (best != null) {
-        best.used = true;
-        c.pairedCount = best.count;
-        // 【临时调试】记录配对引用供调试视图画连线
-        c.pairedWith = best;
-        best.pairedWith = c;
-      }
-    }
-
-    // 轮 2：正下方紧邻数字（从下往上的色号顺序）
-    final belowFirst = [...codes]
-      ..sort((a, b) => b.rect.top.compareTo(a.rect.top));
-    for (final c in belowFirst) {
-      if (c.pairedCount != null) {
-        continue;
-      }
-      _OcrElem? best;
-      for (final n in nums) {
-        if (n.used || n.rect.top <= c.rect.center.dy) {
-          continue; // 必须在色号下方
-        }
-        if (n.rect.top - c.rect.center.dy > avgH * 2.5) {
-          continue; // 只认紧邻下方
-        }
-        final dx = (n.rect.center.dx - c.rect.center.dx).abs();
-        if (dx > avgH * 3) {
-          continue; // 水平接近（同列附近），不跨到邻条目
-        }
-        // 水平距离优先：正下方布局里水平对齐是本质特征；top 只差 OCR 框
-        // 噪声几像素，若 top 优先会把邻条目的颗数抢过来（H2 抢到 H3 的 31）
-        if (best == null ||
-            dx < (best.rect.center.dx - c.rect.center.dx).abs() ||
-            (dx == (best.rect.center.dx - c.rect.center.dx).abs() &&
-                n.rect.top < best.rect.top)) {
-          best = n;
-        }
-      }
-      if (best != null) {
-        best.used = true;
-        c.pairedCount = best.count;
-        // 【临时调试】记录配对引用供调试视图画连线
-        c.pairedWith = best;
-        best.pairedWith = c;
-      }
-    }
-
-    // 阅读顺序输出：先上后下，同行先左后右。
-    // 未配上颗数的色号也保留（颗数 0）：条目本身是真的（OCR 漏读了它的颗数），
-    // 丢弃会让清单直接少一色（H15 曾因此消失）；颗数 0 用户在清单里手改即可
-    final sorted = [...codes]..sort((a, b) {
-        final dy = a.rect.top - b.rect.top;
-        return dy.abs() > avgH * 0.7
-            ? (dy > 0 ? 1 : -1)
-            : a.rect.left.compareTo(b.rect.left);
-      });
-    return [for (final c in sorted) (c.code!, c.pairedCount ?? 0)];
-  }
-
-  /// 保底配对：按收集顺序「色号 -> 其后第一个数字」（几何框不可用时）
-  List<(int, int)> _pairInSeqOrder(List<_OcrElem> codes, List<_OcrElem> nums) {
-    final merged = [...codes, ...nums]..sort((a, b) => a.seq.compareTo(b.seq));
-    final pairs = <(int, int)>[];
-    int? cur;
-    for (final e in merged) {
-      if (e.code != null) {
-        cur = e.code;
-      } else if (cur != null) {
-        pairs.add((cur, e.count!));
-        cur = null; // 一条色号只配第一个数字，防后续串号
-      }
-    }
-    return pairs;
-  }
-
-  /// 全色卡「精确 + 混淆变体」查找表：variant -> 调色板索引（图例 OCR
-  /// 与格子 OCR 共用；变体撞车先到先得）
-  Map<String, int> _buildCodeMap() {
-    final codeMap = <String, int>{};
-    for (var i = 0; i < _palette.colors.length; i++) {
-      final variants = <String>{};
-      _collectCodeVariants(
-        _palette.colors[i].id.toUpperCase(),
-        0,
-        "",
-        variants,
-      );
-      for (final v in variants) {
-        codeMap[v] ??= i;
-      }
-    }
-    return codeMap;
-  }
-
-  /// 递归生成色号的 OCR 混淆变体（0/O、1/I/L、2/Z、5/S、6/G、8/B、4/A）
-  void _collectCodeVariants(String src, int i, String cur, Set<String> out) {
-    if (i == src.length) {
-      out.add(cur);
-      return;
-    }
-    _collectCodeVariants(src, i + 1, cur + src[i], out);
-    for (final alt in _ocrConfusions[src[i]] ?? const <String>[]) {
-      _collectCodeVariants(src, i + 1, cur + alt, out);
-    }
-  }
-
-  /// 解析 OCR 数字文本为颗数（容忍逗号/空格/字母混淆），非法返回 null
-  int? _parseCountText(String raw) {
-    // 图例颗数常带包围符号印制（如 "A6 (64)"、全角括号、书名号等），先剥掉再解析；
-    // 带括号的数字剥不掉会整条丢弃——色号找到了却配不上颗数就是这种格式
-    var t = raw.trim().toUpperCase();
-    t = t.replaceAll(RegExp(r"[()\[\]{}（）【】《》〈〉「」『』]"), "");
-    t = t.replaceAll(",", "").replaceAll(" ", "");
-    t = t
-        .replaceAll("O", "0")
-        .replaceAll("I", "1")
-        .replaceAll("L", "1")
-        .replaceAll("S", "5")
-        .replaceAll("B", "8");
-    if (!RegExp(r"^\d+$").hasMatch(t)) {
-      return null;
-    }
-    final v = int.tryParse(t);
-    return (v == null || v <= 0 || v > 100000) ? null : v;
+    return run.pairs;
   }
 
   /// 弹色卡选色器（修正图例色号 / 添加颜色 / 复核归类共用）
@@ -1452,61 +706,19 @@ class _RestorePageState extends State<RestorePage> {
       AppSnackBar.show(context, "${_palette.colors[idx].id} 已在清单中");
       return;
     }
-    setState(() => _legend.add(_LegendEntry(idx)));
+    setState(() => _legend.add(LegendEntry(idx)));
   }
 
   /// 从图例清单删除条目（先释放控制器再移除，防二次 dispose）
-  void _removeLegendEntry(_LegendEntry entry) {
+  void _removeLegendEntry(LegendEntry entry) {
     setState(() {
       entry.countCtrl.dispose();
       _legend.remove(entry);
     });
   }
 
-  /// 清单行占比条：该色颗数占全部颗数的比例（条色即豆色），
-  /// 未填颗数时返回空位保持行对齐
-  Widget _countBar(_LegendEntry e, BeadColor c) {
-    final cnt = e.expectedCount;
-    var total = 0;
-    for (final o in _legend) {
-      total += o.expectedCount ?? 0;
-    }
-    if (cnt == null || cnt <= 0 || total <= 0) {
-      return const SizedBox.shrink();
-    }
-    final ratio = (cnt / total).clamp(0.0, 1.0);
-    return Row(
-      children: [
-        Expanded(
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(2),
-            child: Container(
-              height: 6,
-              color: Colors.black.withValues(alpha: 0.06),
-              child: FractionallySizedBox(
-                alignment: Alignment.centerLeft,
-                widthFactor: ratio,
-                child: Container(
-                  color: Color.fromARGB(255, c.r, c.g, c.b),
-                ),
-              ),
-            ),
-          ),
-        ),
-        SizedBox(
-          width: 38,
-          child: Text(
-            "${(ratio * 100).toStringAsFixed(0)}%",
-            textAlign: TextAlign.end,
-            style: const TextStyle(fontSize: 11, color: Colors.black45),
-          ),
-        ),
-      ],
-    );
-  }
-
   /// 修正图例条目色号（若目标色已有条目则合并格数后删除本条）
-  Future<void> _changeLegendColor(_LegendEntry entry) async {
+  Future<void> _changeLegendColor(LegendEntry entry) async {
     final idx = await _pickColorIndex();
     if (idx == null) {
       return;
@@ -1518,7 +730,7 @@ class _RestorePageState extends State<RestorePage> {
         dup.first.countCtrl.dispose();
         _legend.remove(dup.first);
       }
-      _legend[_legend.indexOf(entry)] = _LegendEntry(idx);
+      _legend[_legend.indexOf(entry)] = LegendEntry(idx);
       entry.countCtrl.dispose();
     });
   }
@@ -1651,24 +863,6 @@ class _RestorePageState extends State<RestorePage> {
     setState(() {
       _miniAnchor = Offset(anchor.dx + dx * stepX, anchor.dy + dy * stepY);
     });
-  }
-
-  /// 紧凑图标按钮（对齐面板格子大小/微移行专用）：默认 IconButton 48
-  /// 逻辑宽，一行 6 个加标签在窄屏溢出，压到 36 宽/22 图标
-  Widget _compactIconBtn({
-    required IconData icon,
-    VoidCallback? onPressed,
-    String? tooltip,
-  }) {
-    return IconButton(
-      visualDensity: VisualDensity.compact,
-      padding: EdgeInsets.zero,
-      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-      iconSize: 22,
-      onPressed: onPressed,
-      tooltip: tooltip,
-      icon: Icon(icon),
-    );
   }
 
   /// 画布缩放按钮条：放大/缩小（以画面中心为锚）+ 还原全幅，横排外置
@@ -1848,10 +1042,10 @@ class _RestorePageState extends State<RestorePage> {
         for (var c = 0; c < cols; c++) {
           if (useCorner) {
             // 四角双线性：矩形取对角交点包围盒（近似），中心取映射中点
-            final tl = _bilinearQuad(qImg, c / cols, r / rows);
-            final br = _bilinearQuad(qImg, (c + 1) / cols, (r + 1) / rows);
+            final tl = bilinearQuad(qImg, c / cols, r / rows);
+            final br = bilinearQuad(qImg, (c + 1) / cols, (r + 1) / rows);
             centers.add(
-              _bilinearQuad(qImg, (c + 0.5) / cols, (r + 0.5) / rows),
+              bilinearQuad(qImg, (c + 0.5) / cols, (r + 0.5) / rows),
             );
             cellRects.add(Rect.fromPoints(tl, br));
           } else {
@@ -1865,7 +1059,8 @@ class _RestorePageState extends State<RestorePage> {
       // OCR 轮：选区整图单次识别（逐格 ~1600 次 processImage 要数分钟），
       // 元素按几何归类回格；印刷色号是图纸的权威声明，命中候选色号的格
       // 直接采用，读不到的回落色彩识别
-      final ocrByCell = await _ocrCells(
+      final ocrByCell = await ocrCells(
+        image,
         cellRects,
         centers,
         Offset(rx + offX, ry + offY),
@@ -1875,7 +1070,7 @@ class _RestorePageState extends State<RestorePage> {
         pitchX,
         pitchY,
       );
-      final codeMap = _buildCodeMap();
+      final codeMap = buildCodeMap(_palette);
       final quantizer = Quantizer(_palette);
       final grid = List<int>.filled(cols * rows, 0);
       var ocrHit = 0;
@@ -1937,7 +1132,7 @@ class _RestorePageState extends State<RestorePage> {
           for (var i = 0; i < grid.length; i++)
             if (grid[i] >= 0) grid[i],
         };
-        _stage = _Stage.review;
+        _stage = RestoreStage.review;
       });
       // 复核截图数据源异步解码，不阻塞进复核页（_displayBytes 是长边
       // 限幅显示版，原图直解码会超 GLES 2048 纹理上限）
@@ -1955,156 +1150,6 @@ class _RestorePageState extends State<RestorePage> {
         "【临时调试】识别 $cols x $rows | OCR命中 $ocrHit/${cols * rows} | $dbgPairs",
       );
     });
-  }
-
-  /// 选区整图单次 OCR：裁全部格子包围盒外扩半格，放大喂 ML Kit，元素
-  /// 中心换算回图片坐标归类到格（九宫格模式按格线相位解析 col/row +
-  /// 中心距校验；四角模式取最近格中心），同格多元素按 x 排序拼接成
-  /// 整串色号。返回 格扁平索引 -> 拼接文本；web/异常/无识别返回空 map
-  /// （调用方回落色彩识别）。
-  Future<Map<int, String>> _ocrCells(
-    List<Rect> cellRects,
-    List<Offset> centers,
-    Offset gridOrigin,
-    int cols,
-    int rows,
-    bool useCorner,
-    double pitchX,
-    double pitchY,
-  ) async {
-    if (kIsWeb) {
-      return const {};
-    }
-    final image = _image;
-    if (image == null || cellRects.isEmpty) {
-      return const {};
-    }
-    try {
-      // 裁剪范围：全部格子包围盒外扩半格（边缘格文字完整）
-      var bLeft = image.width.toDouble();
-      var bTop = image.height.toDouble();
-      var bRight = 0.0, bBottom = 0.0;
-      var sumW = 0.0, sumH = 0.0;
-      for (final cr in cellRects) {
-        if (cr.left < bLeft) {
-          bLeft = cr.left;
-        }
-        if (cr.top < bTop) {
-          bTop = cr.top;
-        }
-        if (cr.right > bRight) {
-          bRight = cr.right;
-        }
-        if (cr.bottom > bBottom) {
-          bBottom = cr.bottom;
-        }
-        sumW += cr.width;
-        sumH += cr.height;
-      }
-      final avgW = sumW / cellRects.length;
-      final avgH = sumH / cellRects.length;
-      final cx0 = (bLeft - avgW / 2).clamp(0.0, image.width - 4.0);
-      final cy0 = (bTop - avgH / 2).clamp(0.0, image.height - 4.0);
-      final cx1 = (bRight + avgW / 2).clamp(cx0 + 4.0, image.width.toDouble());
-      final cy1 =
-          (bBottom + avgH / 2).clamp(cy0 + 4.0, image.height.toDouble());
-      final cropW = (cx1 - cx0).toInt();
-      final cropH = (cy1 - cy0).toInt();
-      // 放大策略：目标宽 3600（格内色号字小，格距 ~31px 时字高 ~10px，
-      // 不放大 ML Kit 读不出），上限 6 防小选区过度放大锯齿化丢字；大选区
-      // （相机原片 crop ≥3600px 宽）不再强制放大——旧版 clamp 下限 2.0 会
-      // 把 4000px crop 拉到 8000px 宽（48MP），并按 ML Kit 输入上限把输出
-      // 宽 cap 在 3800 内（同图例路径 widthCap），防超限后 processImage
-      // 异常被下方 catch 吞掉整轮 OCR 静默失效
-      var scale = (3600 / cropW).clamp(1.0, 6.0);
-      final widthCap = 3800 / cropW;
-      if (scale > widthCap) {
-        scale = widthCap;
-      }
-      // 裁剪/缩放/PNG 编码走 compute isolate：百万像素级同步重活（大图
-      // 12MP+）在主 isolate 会冻结 UI 秒级（ANR），与 encodeDisplayJpg
-      // 同理
-      final pngBytes = await compute(
-        _encodeCellOcrPng,
-        _CellOcrArgs(image, cx0.toInt(), cy0.toInt(), cropW, cropH, scale),
-      );
-      final tmp = File(
-        "${(await getTemporaryDirectory()).path}/cells_ocr.png",
-      );
-      await tmp.writeAsBytes(pngBytes);
-      final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
-      final recognized = await recognizer.processImage(
-        InputImage.fromFilePath(tmp.path),
-      );
-      await recognizer.close();
-      // 元素中心（放大图坐标）-> 图片坐标 -> 归类到格
-      final rawByCell = <int, List<(double, String)>>{};
-      final centerLimit = 0.65 * math.max(avgW, avgH);
-      for (final block in recognized.blocks) {
-        for (final line in block.lines) {
-          for (final element in line.elements) {
-            final text = element.text.trim().toUpperCase().replaceAll(" ", "");
-            if (text.isEmpty ||
-                text.length > 4 ||
-                !RegExp(r'^[A-Z0-9]+$').hasMatch(text)) {
-              continue; // 只收色号样式（≤4 字母数字），长文本/杂项不做
-            }
-            final bc = element.boundingBox.center;
-            final p = Offset(cx0 + bc.dx / scale, cy0 + bc.dy / scale);
-            int? cellIdx;
-            if (!useCorner) {
-              // 九宫格模式：按格线相位直接解析 col/row，中心距校验防
-              // 串格（文字压在格线上时 floor 会落到邻格）
-              final col = ((p.dx - gridOrigin.dx) / pitchX).floor();
-              final row = ((p.dy - gridOrigin.dy) / pitchY).floor();
-              if (col >= 0 && col < cols && row >= 0 && row < rows) {
-                final idx = row * cols + col;
-                if ((p - centers[idx]).distance < centerLimit) {
-                  cellIdx = idx;
-                }
-              }
-            }
-            if (cellIdx == null) {
-              // 兜底（四角模式主路径）：最近格中心，超限丢弃。格子联合
-              // 包围盒（不含外扩半格）之外的元素是选区外内容（行列编号/
-              // 图例杂文）——裁剪外扩半格会把它读进 OCR，若被收进边缘格
-              // 会与格内色号按 x 拼接成 "F2"+"1"→"F21" 型错串（撞上混淆
-              // 变体即按 OCR 权威错认上色），直接丢弃
-              if (p.dx < bLeft ||
-                  p.dx > bRight ||
-                  p.dy < bTop ||
-                  p.dy > bBottom) {
-                continue;
-              }
-              var best = -1;
-              var bestD = double.infinity;
-              for (var i = 0; i < centers.length; i++) {
-                final d = (p - centers[i]).distance;
-                if (d < bestD) {
-                  bestD = d;
-                  best = i;
-                }
-              }
-              if (best >= 0 && bestD < centerLimit) {
-                cellIdx = best;
-              }
-            }
-            if (cellIdx != null) {
-              rawByCell.putIfAbsent(cellIdx, () => []).add((p.dx, text));
-            }
-          }
-        }
-      }
-      // 同格多元素（"F" "2" 分开识别等）按 x 排序拼接
-      final out = <int, String>{};
-      rawByCell.forEach((idx, list) {
-        list.sort((a, b) => a.$1.compareTo(b.$1));
-        out[idx] = [for (final t in list) t.$2].join();
-      });
-      return out;
-    } catch (_) {
-      return const {};
-    }
   }
 
   /// 复核截图数据源：解码 _displayBytes（长边限幅显示版）为 ui.Image，
@@ -2223,16 +1268,6 @@ class _RestorePageState extends State<RestorePage> {
     );
   }
 
-  /// 图例标注数量（无勾选条目/未填返回 null = 不对账）
-  int? _expectedOf(int paletteIndex) {
-    for (final e in _legend) {
-      if (e.paletteIndex == paletteIndex) {
-        return e.expectedCount;
-      }
-    }
-    return null;
-  }
-
   /// 全选当前复核色的全部格子
   void _selectAllOfCurrent() {
     final model = _model;
@@ -2337,7 +1372,7 @@ class _RestorePageState extends State<RestorePage> {
       AppSnackBar.show(context, "识别进行中，请等待完成");
       return;
     }
-    setState(() => _stage = _Stage.align);
+    setState(() => _stage = RestoreStage.align);
     if (_miniAnchor == null) {
       _initMiniGrid();
     }
@@ -2354,7 +1389,7 @@ class _RestorePageState extends State<RestorePage> {
       auto = _autoDetectSubject();
     }
     setState(() {
-      _stage = _Stage.frame;
+      _stage = RestoreStage.frame;
       final sel = _selDisplay;
       if (sel != null) {
         _selDisplay = _snapSelToGrid(sel);
@@ -2380,15 +1415,15 @@ class _RestorePageState extends State<RestorePage> {
     }
     // 四角对齐流程无独立框选步（②四角直接识别，见 _buildAlign），从复核
     // 返回应回②对齐，而不是落入本流程不存在的③框选主体
-    final prev = _stage == _Stage.review && _useCornerAlign
-        ? _Stage.align
-        : _Stage.values[_stage.index - 1];
+    final prev = _stage == RestoreStage.review && _useCornerAlign
+        ? RestoreStage.align
+        : RestoreStage.values[_stage.index - 1];
     final prevName = switch (prev) {
-      _Stage.pick => "选图",
-      _Stage.legend => "① 框图例",
-      _Stage.align => "② 九宫格对齐",
-      _Stage.frame => "③ 框选主体",
-      _Stage.review => "④ 识别复核",
+      RestoreStage.pick => "选图",
+      RestoreStage.legend => "① 框图例",
+      RestoreStage.align => "② 九宫格对齐",
+      RestoreStage.frame => "③ 框选主体",
+      RestoreStage.review => "④ 识别复核",
     };
     final ok = await showDialog<bool>(
       context: context,
@@ -2454,7 +1489,7 @@ class _RestorePageState extends State<RestorePage> {
   Widget build(BuildContext context) {
     return PopScope(
       // 选图步（第一步）back 直接退出；中间步骤先确认返回上一步
-      canPop: _stage == _Stage.pick,
+      canPop: _stage == RestoreStage.pick,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) {
           _confirmBack();
@@ -2467,7 +1502,7 @@ class _RestorePageState extends State<RestorePage> {
           // 退出图纸还原（弹确认后整页出栈）。系统自动 leading Back 关掉
           // 由自己的 leading 接管，系统 back 手势仍走 PopScope 同款确认
           automaticallyImplyLeading: false,
-          leading: _stage != _Stage.pick
+          leading: _stage != RestoreStage.pick
               ? IconButton(
                   onPressed: _confirmBack,
                   icon: const Icon(Icons.arrow_back),
@@ -2479,11 +1514,11 @@ class _RestorePageState extends State<RestorePage> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(switch (_stage) {
-                _Stage.pick => "图纸还原 · 选图",
-                _Stage.legend => "图纸还原 · ① 框图例",
-                _Stage.align => "图纸还原 · ② 九宫格对齐",
-                _Stage.frame => "图纸还原 · ③ 框选主体",
-                _Stage.review => "图纸还原 · ④ 识别复核",
+                RestoreStage.pick => "图纸还原 · 选图",
+                RestoreStage.legend => "图纸还原 · ① 框图例",
+                RestoreStage.align => "图纸还原 · ② 九宫格对齐",
+                RestoreStage.frame => "图纸还原 · ③ 框选主体",
+                RestoreStage.review => "图纸还原 · ④ 识别复核",
               }),
               Text(
                 "构建 $appBuildLabel",
@@ -2493,22 +1528,27 @@ class _RestorePageState extends State<RestorePage> {
           ),
           actions: [
             // 自动框选图例区（载入时已自动尝试过，这里供失败重试/重新选）
-            if (_stage == _Stage.legend)
+            if (_stage == RestoreStage.legend)
               IconButton(
                 onPressed: _autoSelectLegend,
                 icon: const Icon(Icons.auto_awesome),
                 tooltip: "自动框选图例",
               ),
             // 【临时调试】图例 OCR 调试入口：识别后即可查看放大图/元素/配对，正式版移除
-            if (_stage == _Stage.legend && _ocrDebug != null)
+            if (_stage == RestoreStage.legend && _ocrDebug != null)
               IconButton(
-                onPressed: _showOcrDebug,
+                onPressed: () {
+                  final dbg = _ocrDebug;
+                  if (dbg != null) {
+                    showOcrDebugSheet(context, dbg);
+                  }
+                },
                 icon: const Icon(Icons.bug_report),
                 tooltip: "OCR 调试",
               ),
-            if (_stage == _Stage.legend ||
-                _stage == _Stage.align ||
-                _stage == _Stage.frame)
+            if (_stage == RestoreStage.legend ||
+                _stage == RestoreStage.align ||
+                _stage == RestoreStage.frame)
               PopupMenuButton<String>(
                 tooltip: "切换色卡",
                 icon: const Icon(Icons.palette),
@@ -2529,7 +1569,7 @@ class _RestorePageState extends State<RestorePage> {
               ),
             // 完全退出图纸还原：右上角 ✕（弹确认后整页出栈，与左上角
             // 「返回上一步」相对——一个保现场逐级退、一个整页丢弃退）
-            if (_stage != _Stage.pick)
+            if (_stage != RestoreStage.pick)
               IconButton(
                 onPressed: _confirmExitRestore,
                 icon: const Icon(Icons.close),
@@ -2538,11 +1578,11 @@ class _RestorePageState extends State<RestorePage> {
           ],
         ),
         body: switch (_stage) {
-          _Stage.pick => _buildPick(),
-          _Stage.legend => _buildLegend(),
-          _Stage.align => _buildAlign(),
-          _Stage.frame => _buildFrame(),
-          _Stage.review => _buildReview(),
+          RestoreStage.pick => _buildPick(),
+          RestoreStage.legend => _buildLegend(),
+          RestoreStage.align => _buildAlign(),
+          RestoreStage.frame => _buildFrame(),
+          RestoreStage.review => _buildReview(),
         },
       ),
     );
@@ -2578,38 +1618,9 @@ class _RestorePageState extends State<RestorePage> {
     AppSnackBar.show(context, "已切换到${target.label}，图例需重新识别");
   }
 
-  /// 阶段一：选图入口
+  /// 阶段一：选图入口（面板实现在 steps/pick_step.dart）
   Widget _buildPick() {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.grid_on, size: 72, color: Colors.black26),
-            const SizedBox(height: 16),
-            const Text("导入拼豆图纸，五步还原为可编辑图案", textAlign: TextAlign.center),
-            const SizedBox(height: 8),
-            const Text(
-              "框图例 → 核对用色 → 九宫格对齐 → 框选主体 → 识别 → 手工纠错",
-              style: TextStyle(fontSize: 12, color: Colors.black45),
-            ),
-            const SizedBox(height: 32),
-            FilledButton.tonalIcon(
-              onPressed: () => _pickImage(ImageSource.gallery),
-              icon: const Icon(Icons.photo_library),
-              label: const Text("从相册选择图纸"),
-            ),
-            const SizedBox(height: 12),
-            FilledButton.tonalIcon(
-              onPressed: () => _pickImage(ImageSource.camera),
-              icon: const Icon(Icons.photo_camera),
-              label: const Text("拍照图纸"),
-            ),
-          ],
-        ),
-      ),
-    );
+    return PickStep(onPick: _pickImage);
   }
 
   /// 命中选区把手（返回 0-7 索引，未命中返回 -1）
@@ -2726,7 +1737,7 @@ class _RestorePageState extends State<RestorePage> {
               key: _viewerKey,
               child: Builder(
                 builder: (_) {
-                  final ctx = _StageCtx(onSel, sel, cornerPts, onCornerDrag,
+                  final ctx = StageCtx(onSel, sel, cornerPts, onCornerDrag,
                       cons, miniAnchor, onMiniAnchor, panFallback);
                   return Listener(
                     // 滚轮=纵向平移浏览（图例清单展开会挡住图片下部，靠滚轮看回）
@@ -2767,7 +1778,7 @@ class _RestorePageState extends State<RestorePage> {
                           ),
                           if (sel != null && sel.width > 2)
                             Positioned.fill(
-                              child: CustomPaint(painter: _SelPainter(sel)),
+                              child: CustomPaint(painter: SelPainter(sel)),
                             ),
                           if (overlay != null)
                             Positioned.fill(
@@ -2803,7 +1814,7 @@ class _RestorePageState extends State<RestorePage> {
 
   /// 图区指针按下：单指按拖动模式分派（把手/挪框/平移画面/画框兜底/
   /// 角点校正），第二指落下转捏合缩放（作废单指手势+恢复快照+记起始）
-  void _onStagePointerDown(PointerDownEvent e, _StageCtx ctx) {
+  void _onStagePointerDown(PointerDownEvent e, StageCtx ctx) {
     _activePtrs[e.pointer] = e.position;
     _ptrCount = _activePtrs.length;
     if (_ptrCount >= 2) {
@@ -2905,7 +1916,7 @@ class _RestorePageState extends State<RestorePage> {
 
   /// 图区指针移动：双指捏合改矩阵；单指按模式处理（角点/平移画面/挪框/
   /// 把手/画框）。localPosition 经 InteractiveViewer 逆变换即图坐标
-  void _onStagePointerMove(PointerMoveEvent e, _StageCtx ctx) {
+  void _onStagePointerMove(PointerMoveEvent e, StageCtx ctx) {
     if (_activePtrs.containsKey(e.pointer)) {
       _activePtrs[e.pointer] = e.position;
     }
@@ -3022,7 +2033,7 @@ class _RestorePageState extends State<RestorePage> {
 
   /// 图区指针抬起：全部抬起时按 位移+时长+速度 三重判定回溯误触；
   /// 捏合结束剩一指则转为平移画面继续跟手
-  void _onStagePointerUp(PointerUpEvent e, _StageCtx ctx) {
+  void _onStagePointerUp(PointerUpEvent e, StageCtx ctx) {
     _activePtrs.remove(e.pointer);
     _ptrCount = _activePtrs.length;
     if (_ptrCount == 1) {
@@ -3063,7 +2074,7 @@ class _RestorePageState extends State<RestorePage> {
 
   /// 指针异常中止（系统夺走等）：剩一指转平移画面，全抬起视为手势作废
   ///——恢复按下前选区快照（cancel 意味着手势没走完，中间态不留）
-  void _onStagePointerCancel(PointerCancelEvent e, _StageCtx ctx) {
+  void _onStagePointerCancel(PointerCancelEvent e, StageCtx ctx) {
     _activePtrs.remove(e.pointer);
     _ptrCount = _activePtrs.length;
     if (_ptrCount == 1) {
@@ -3243,7 +2254,7 @@ class _RestorePageState extends State<RestorePage> {
       if (pts == null || pts.length != 4 || cols < 1 || rows < 1) {
         return null;
       }
-      return _CornerGridPainter(pts: pts, cols: cols, rows: rows);
+      return CornerGridPainter(pts: pts, cols: cols, rows: rows);
     }
     final anchor = _miniAnchor;
     if (anchor == null || _pitchX <= 0 || _pitchY <= 0) {
@@ -3251,7 +2262,7 @@ class _RestorePageState extends State<RestorePage> {
     }
     final ds = _displaySize();
     final image = _image!;
-    return _MiniGridPainter(
+    return MiniGridPainter(
       grid: Rect.fromLTWH(
         anchor.dx,
         anchor.dy,
@@ -3263,7 +2274,7 @@ class _RestorePageState extends State<RestorePage> {
   }
 
   /// 图例网格覆盖层（按图例行列均分）
-  _GridOverlayPainter? _legendOverlay() {
+  GridOverlayPainter? _legendOverlay() {
     final cols = int.tryParse(_legendColsCtrl.text) ?? 0;
     final rows = int.tryParse(_legendRowsCtrl.text) ?? 0;
     if (cols < 1 || rows < 1) {
@@ -3272,7 +2283,7 @@ class _RestorePageState extends State<RestorePage> {
     final (rx, ry, rw, rh) = _selToImage(_legendSel);
     final ds = _displaySize();
     final image = _image!;
-    return _GridOverlayPainter(
+    return GridOverlayPainter(
       cols: cols,
       rows: rows,
       originDx: rx * ds.width / image.width,
@@ -3282,636 +2293,67 @@ class _RestorePageState extends State<RestorePage> {
     );
   }
 
-  /// 阶段二：框选图例 + 识别 + 清单核对
+  /// 阶段二：框选图例 + 识别 + 清单核对（面板实现在 steps/legend_step.dart）
   Widget _buildLegend() {
-    final scanned = _legend.isNotEmpty;
-    return LayoutBuilder(builder: (context, cons) {
-      // 展开态清单高度自适应：图是宽适配的固定显示高度（_displaySize），
-      // 图例带就在图底部——面板（含缩放条）超出剩余空间会把图的下半截
-      // 挤出视口，没法对照原图核对色号/颗数。展开态固定开销：图区
-      // padding 24 + 缩放条 ~38 + 摘要行 ~34 + 间距 12 + 操作行 ~44 +
-      // 间距 8 + 底 padding 12 ≈ 172
-      final imgH = _displaySize().height;
-      final listH = (cons.maxHeight - imgH - 172).clamp(96.0, 168.0);
-      return Column(
-        children: [
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: _imageStage(
-                sel: _legendSel,
-                onSel: (r) => setState(() => _legendSel = r),
-                overlay: scanned && !_legendByOcr
-                    ? _legendOverlay()
-                    : null, // 网格层仅量化模式有参考意义
-              ),
-            ),
-          ),
-          _zoomStrip(
-            _viewerCtrl,
-            _displaySize,
-            viewport: () => _stageViewSize,
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (!scanned) ...[
-                  const Text(
-                    "① 只框出图纸底部的图例区（色号 + 颗数对照表）",
-                    style: TextStyle(fontSize: 12, color: Colors.black54),
-                  ),
-                  const SizedBox(height: 8),
-                  // 显式自动框选入口：载入时已自动尝试过，选区被改动或
-                  // 想重选时可随时点这里重跑（AppBar 魔法棒同功能）。
-                  // 清除选框：自动框选错位时框常压在图边缘（如贴底的页脚
-                  // 灰线带），把手出不了图没法抓——一键消掉旧框重新拖
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: _autoSelectLegend,
-                          icon: const Icon(Icons.auto_awesome, size: 18),
-                          label: const Text("自动框选图例区"),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: _legendSel == null
-                              ? null
-                              : () => setState(() => _legendSel = null),
-                          icon: const Icon(Icons.backspace_outlined, size: 18),
-                          label: const Text("清除选框"),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: FilledButton.icon(
-                          onPressed: _legendBusy ? null : _scanLegend,
-                          icon: _legendBusy
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.document_scanner, size: 18),
-                          label: Text(_legendBusy ? "识别中…" : "识别图例"),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      TextButton(
-                          onPressed: _goAlign, child: const Text("跳过图例")),
-                    ],
-                  ),
-                ] else ...[
-                  // 摘要行：点击展开/收起核对清单——收起后底部只占一行，
-                  // 原图下半部（图例区）进入视野，用户按原图图例逐一核对色号与颗数
-                  Row(
-                    children: [
-                      Expanded(
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(6),
-                          onTap: () =>
-                              setState(() => _panelExpanded = !_panelExpanded),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 4),
-                            child: Row(
-                              children: [
-                                Icon(
-                                  _panelExpanded
-                                      ? Icons.keyboard_arrow_down
-                                      : Icons.keyboard_arrow_up,
-                                  size: 22,
-                                  color: Colors.black54,
-                                ),
-                                const SizedBox(width: 2),
-                                Expanded(
-                                  child: Text(
-                                    _panelExpanded
-                                        ? "图例 ${_legend.length} 色（点此收起，露出原图核对）"
-                                        : "图例 ${_legend.length} 色（点此展开核对清单）",
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.black54,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                      if (!_panelExpanded)
-                        FilledButton.tonal(
-                          onPressed: _goAlign,
-                          child: const Text("下一步"),
-                        ),
-                    ],
-                  ),
-                  if (_panelExpanded) ...[
-                    const SizedBox(height: 4),
-                    if (!_legendByOcr)
-                      Row(
-                        children: [
-                          SizedBox(
-                            width: 64,
-                            child: TextField(
-                              controller: _legendColsCtrl,
-                              keyboardType: TextInputType.number,
-                              decoration: const InputDecoration(
-                                labelText: "列",
-                                border: OutlineInputBorder(),
-                                isDense: true,
-                              ),
-                            ),
-                          ),
-                          const Padding(
-                            padding: EdgeInsets.symmetric(horizontal: 8),
-                            child: Text("×"),
-                          ),
-                          SizedBox(
-                            width: 64,
-                            child: TextField(
-                              controller: _legendRowsCtrl,
-                              keyboardType: TextInputType.number,
-                              decoration: const InputDecoration(
-                                labelText: "行",
-                                border: OutlineInputBorder(),
-                                isDense: true,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: OutlinedButton.icon(
-                              onPressed: _legendBusy ? null : _scanLegend,
-                              icon: const Icon(Icons.refresh, size: 18),
-                              label: const Text("重新识别"),
-                            ),
-                          ),
-                        ],
-                      )
-                    else
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: TextButton.icon(
-                          onPressed: _legendBusy ? null : _scanLegend,
-                          icon: _legendBusy
-                              ? const SizedBox(
-                                  width: 14,
-                                  height: 14,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.refresh, size: 18),
-                          label: Text(_legendBusy ? "识别中…" : "重新框选后识别"),
-                        ),
-                      ),
-                    const SizedBox(height: 8),
-                    SizedBox(
-                      height: listH,
-                      child: ListView.builder(
-                        itemCount: _legend.length + 1,
-                        itemBuilder: (_, i) {
-                          // 末尾常驻「添加颜色」行：补 OCR 漏识别的色
-                          if (i == _legend.length) {
-                            return Align(
-                              alignment: Alignment.centerLeft,
-                              child: TextButton.icon(
-                                onPressed: _addLegendColor,
-                                icon: const Icon(Icons.add, size: 18),
-                                label: const Text("添加颜色"),
-                              ),
-                            );
-                          }
-                          final e = _legend[i];
-                          final c = _palette.colors[e.paletteIndex];
-                          // 行距 3：isDense 输入框行与行紧贴会上下遮挡
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 3),
-                            child: Row(
-                              children: [
-                                Tooltip(
-                                  message: "点击修改色号",
-                                  child: InkWell(
-                                    onTap: () => _changeLegendColor(e),
-                                    child: SizedBox(
-                                      width: 28,
-                                      height: 28,
-                                      child: Stack(
-                                        children: [
-                                          Positioned.fill(
-                                            child: ColoredBox(
-                                              color: Color.fromARGB(
-                                                255,
-                                                c.r,
-                                                c.g,
-                                                c.b,
-                                              ),
-                                            ),
-                                          ),
-                                          // 右下角编辑角标：提示色块可点改色号
-                                          Positioned(
-                                            right: 0,
-                                            bottom: 0,
-                                            child: Container(
-                                              color: Colors.white70,
-                                              padding: const EdgeInsets.all(1),
-                                              child: const Icon(
-                                                Icons.edit,
-                                                size: 10,
-                                                color: Colors.black54,
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                SizedBox(width: 52, child: Text(c.id)),
-                                const SizedBox(width: 10),
-                                SizedBox(
-                                  width: 72,
-                                  child: TextField(
-                                    controller: e.countCtrl,
-                                    keyboardType: TextInputType.number,
-                                    decoration: const InputDecoration(
-                                      hintText: "颗数",
-                                      border: OutlineInputBorder(),
-                                      isDense: true,
-                                      contentPadding: EdgeInsets.symmetric(
-                                        horizontal: 8,
-                                        vertical: 9,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                                // 占比条：填了颗数后按各色占比填充（颜色即豆色），
-                                // 填满中间空白让行更紧凑有信息量
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: _countBar(e, c),
-                                ),
-                                const SizedBox(width: 8),
-                                // 删除该色（识别错误且不需要的条目）
-                                SizedBox(
-                                  width: 30,
-                                  height: 32,
-                                  child: IconButton(
-                                    visualDensity: VisualDensity.compact,
-                                    padding: EdgeInsets.zero,
-                                    iconSize: 16,
-                                    tooltip: "删除该色",
-                                    onPressed: () => _removeLegendEntry(e),
-                                    icon: const Icon(
-                                      Icons.close,
-                                      color: Colors.black38,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: FilledButton.icon(
-                            onPressed: _goAlign,
-                            icon: const Icon(Icons.arrow_forward),
-                            label: Text(
-                              "下一步：九宫格对齐（${_legend.length}色）",
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ],
-              ],
-            ),
-          ),
-        ],
-      );
-    });
-  }
-
-  /// 【临时调试】图例 OCR 调试视图：喂给 ML Kit 的放大图 + 元素框 + 配对连线
-  ///
-  /// 用于排查「为什么框选后读出来是错的」：
-  /// - 图本身不对（框错区域）-> 放大图一眼看出
-  /// - 字读错（OCR 误识别）-> 元素列表看原始文本
-  /// - 配对错（色号-颗数连错线）-> 红色连线直观可见
-  /// 正式版随调试功能一起移除。
-  void _showOcrDebug() {
-    final dbg = _ocrDebug;
-    if (dbg == null) {
-      return;
-    }
-    final codes = dbg.elems.where((e) => e.code != null).length;
-    final nums = dbg.elems.where((e) => e.count != null).length;
-    final paired =
-        dbg.elems.where((e) => e.code != null && e.pairedCount != null).length;
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (ctx) => SizedBox(
-        height: MediaQuery.of(ctx).size.height * 0.85,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
-              child: Row(
-                children: [
-                  const Icon(Icons.bug_report, size: 18, color: Colors.black54),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      "OCR 调试 · ${dbg.source} · 色号$codes/颗数$nums/配上$paired对",
-                      style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.pop(ctx),
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
-              ),
-            ),
-            // 【临时调试】框选区（原图坐标）：报坐标可精确复现同一次框选
-            Padding(
-              padding: const EdgeInsets.fromLTRB(22, 0, 16, 4),
-              child: Text(
-                "框选(原图坐标): x=${dbg.selX.round()} y=${dbg.selY.round()} · ${dbg.selW.round()}×${dbg.selH.round()}",
-                style: const TextStyle(fontSize: 11, color: Colors.black54),
-              ),
-            ),
-            // 放大图 1:1 显示（横向滚动看细节），元素框与连线直接用图坐标
-            Expanded(
-              flex: 6,
-              child: SingleChildScrollView(
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: SizedBox(
-                    width: dbg.imgW.toDouble(),
-                    height: dbg.imgH.toDouble(),
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        // 放大图宽可达 ~4800，超 GLES 纹理上限（2048）会渲染成
-                        // 一条带——超限时按解码目标宽限幅（等比，不放大小图）
-                        Image.file(
-                          File(dbg.imgPath),
-                          fit: BoxFit.fill,
-                          cacheWidth: dbg.imgW > kDisplayMaxEdge
-                              ? kDisplayMaxEdge
-                              : null,
-                        ),
-                        CustomPaint(painter: _OcrDebugPainter(dbg.elems)),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            // 元素明细：原始文本 + 几何框 + 配对结果
-            Expanded(
-              flex: 4,
-              child: ListView.builder(
-                padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-                itemCount: dbg.elems.length,
-                itemBuilder: (_, i) {
-                  final e = dbg.elems[i];
-                  final geo = "(${e.rect.left.toInt()},${e.rect.top.toInt()} "
-                      "${e.rect.width.toInt()}×${e.rect.height.toInt()})";
-                  return Text(
-                    e.code != null
-                        ? "色号「${e.dbgText}」$geo → ${e.pairedCount ?? "✗未配上"}"
-                        : "颗数「${e.dbgText}」$geo ${e.used ? "已消费" : "未消费"}",
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: e.code != null
-                          ? (e.pairedCount != null ? Colors.green : Colors.red)
-                          : Colors.blue,
-                    ),
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
+    return LegendStep(
+      imageStage: _imageStage,
+      zoomStrip: _zoomStrip,
+      viewerCtrl: _viewerCtrl,
+      displaySize: _displaySize,
+      stageViewSize: () => _stageViewSize,
+      legendSel: _legendSel,
+      overlay: _legend.isNotEmpty && !_legendByOcr
+          ? _legendOverlay()
+          : null, // 网格层仅量化模式有参考意义
+      onSel: (r) => setState(() => _legendSel = r),
+      onClearSel: () => setState(() => _legendSel = null),
+      legendBusy: _legendBusy,
+      legendByOcr: _legendByOcr,
+      panelExpanded: _panelExpanded,
+      colsCtrl: _legendColsCtrl,
+      rowsCtrl: _legendRowsCtrl,
+      legend: _legend,
+      palette: _palette,
+      onAutoSelect: _autoSelectLegend,
+      onScan: _scanLegend,
+      onGoAlign: _goAlign,
+      onTogglePanel: () => setState(() => _panelExpanded = !_panelExpanded),
+      onAddColor: _addLegendColor,
+      onChangeColor: _changeLegendColor,
+      onRemoveEntry: _removeLegendEntry,
     );
   }
 
-  /// 阶段②：九宫格标定每格大小（本步只做标定，框选主体在下一步独立
-  /// 进行）；四角对齐作歪图透视备选（四角即区域、无独立框选步，直接识别）
+  /// 阶段②：九宫格标定每格大小（面板实现在 steps/align_step.dart；本步
+  /// 只做标定，框选主体在下一步独立进行）；四角对齐作歪图透视备选（四角
+  /// 即区域、无独立框选步，直接识别）
   Widget _buildAlign() {
-    return Column(
-      children: [
-        Expanded(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: _imageStage(
-              // 本步无选区交互：sel 恒 null，九宫格未命中的拖动走
-              // panFallback=平移画面查看（放大核对格线重叠情况）
-              sel: null,
-              onSel: (_) {},
-              overlay: _mainOverlay(),
-              cornerPts: _useCornerAlign ? _cornerPts : null,
-              onCornerDrag: _onCornerDrag,
-              miniAnchor: _useCornerAlign ? null : _miniAnchor,
-              onMiniAnchor: (p) => setState(() => _miniAnchor = p),
-              panFallback: true,
-            ),
-          ),
-        ),
-        _zoomStrip(
-          _viewerCtrl,
-          _displaySize,
-          viewport: () => _stageViewSize,
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SegmentedButton<bool>(
-                showSelectedIcon: false,
-                style: const ButtonStyle(visualDensity: VisualDensity.compact),
-                segments: const [
-                  ButtonSegment(
-                    value: false,
-                    icon: Icon(Icons.grid_3x3, size: 18),
-                    label: Text("九宫格标定"),
-                  ),
-                  ButtonSegment(
-                    value: true,
-                    icon: Icon(Icons.crop_free, size: 18),
-                    label: Text("四角对齐"),
-                  ),
-                ],
-                selected: {_useCornerAlign},
-                onSelectionChanged: (sel) => _switchAlignMode(sel.first),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                _useCornerAlign
-                    ? "把 4 个圆点拖到图案网格的四个角（斜拍/歪图用此模式，网格随四角透视贴合）"
-                    : _alignHint(),
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 8),
-              if (_useCornerAlign) ...[
-                Row(
-                  children: [
-                    SizedBox(
-                      width: 64,
-                      child: TextField(
-                        controller: _colsCtrl,
-                        keyboardType: TextInputType.number,
-                        // 四角覆盖层读 controller 文本定行列，改动即重画
-                        onChanged: (_) => setState(() {}),
-                        decoration: const InputDecoration(
-                          labelText: "列",
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                      ),
-                    ),
-                    const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 8),
-                      child: Text("×"),
-                    ),
-                    SizedBox(
-                      width: 64,
-                      child: TextField(
-                        controller: _rowsCtrl,
-                        keyboardType: TextInputType.number,
-                        onChanged: (_) => setState(() {}),
-                        decoration: const InputDecoration(
-                          labelText: "行",
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    OutlinedButton.icon(
-                      onPressed: _resetCorners,
-                      icon: const Icon(Icons.restart_alt, size: 18),
-                      label: const Text("重置四角"),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Row(
-                  children: [
-                    Expanded(
-                      child: SwitchListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        title: const Text(
-                          "偏色过大识别为空白格",
-                          style: TextStyle(fontSize: 13),
-                        ),
-                        value: _blankEnable,
-                        onChanged: (v) => setState(() => _blankEnable = v),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: _recognizing ? null : _recognize,
-                        icon: _recognizing
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.document_scanner),
-                        label: Text(_recognizing ? "识别中…" : "开始识别"),
-                      ),
-                    ),
-                  ],
-                ),
-              ] else ...[
-                // 紧凑 IconButton（36 逻辑点击区 + 22 图标）+ 格子大小/微移
-                // 拆两行：单行放 6 个按钮加标签在窄屏/大字体下仍会溢出
-                // （用户实测微移控件被裁出屏错误显示）
-                Row(
-                  children: [
-                    const Text("格子大小"),
-                    _compactIconBtn(
-                      onPressed: _pitchX > 0 ? () => _adjustPitch(-0.2) : null,
-                      icon: Icons.remove_circle_outline,
-                    ),
-                    Text(_pitchX > 0 ? _pitchX.toStringAsFixed(2) : "--"),
-                    _compactIconBtn(
-                      onPressed: _pitchX > 0 ? () => _adjustPitch(0.2) : null,
-                      icon: Icons.add_circle_outline,
-                    ),
-                  ],
-                ),
-                Row(
-                  children: [
-                    const Text("微移"),
-                    _compactIconBtn(
-                      onPressed: _pitchX > 0 ? () => _nudge(-1, 0) : null,
-                      icon: Icons.arrow_left,
-                      tooltip: "左移",
-                    ),
-                    _compactIconBtn(
-                      onPressed: _pitchX > 0 ? () => _nudge(0, -1) : null,
-                      icon: Icons.arrow_upward,
-                      tooltip: "上移",
-                    ),
-                    _compactIconBtn(
-                      onPressed: _pitchX > 0 ? () => _nudge(0, 1) : null,
-                      icon: Icons.arrow_downward,
-                      tooltip: "下移",
-                    ),
-                    _compactIconBtn(
-                      onPressed: _pitchX > 0 ? () => _nudge(1, 0) : null,
-                      icon: Icons.arrow_right,
-                      tooltip: "右移",
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed:
-                        _pitchX > 0 && _miniAnchor != null ? _goFrame : null,
-                    icon: const Icon(Icons.arrow_forward),
-                    label: const Text("下一步：框选主体"),
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-      ],
+    return AlignStep(
+      imageStage: _imageStage,
+      zoomStrip: _zoomStrip,
+      viewerCtrl: _viewerCtrl,
+      displaySize: _displaySize,
+      stageViewSize: () => _stageViewSize,
+      overlay: _mainOverlay(),
+      cornerPts: _useCornerAlign ? _cornerPts : null,
+      onCornerDrag: _onCornerDrag,
+      miniAnchor: _useCornerAlign ? null : _miniAnchor,
+      onMiniAnchor: (p) => setState(() => _miniAnchor = p),
+      useCorner: _useCornerAlign,
+      hint: _alignHint(),
+      pitchX: _pitchX,
+      recognizing: _recognizing,
+      blankEnable: _blankEnable,
+      colsCtrl: _colsCtrl,
+      rowsCtrl: _rowsCtrl,
+      onDimChanged: () => setState(() {}),
+      onSwitchMode: _switchAlignMode,
+      onResetCorners: _resetCorners,
+      onBlankChanged: (v) => setState(() => _blankEnable = v),
+      onAdjustPitch: _adjustPitch,
+      onNudge: _nudge,
+      onRecognize: _recognize,
+      onGoFrame: _goFrame,
     );
   }
 
@@ -3986,7 +2428,7 @@ class _RestorePageState extends State<RestorePage> {
     final pitchDx = _pitchX * ds.width / image.width;
     final pitchDy = _pitchY * ds.height / image.height;
     if (pitchDx < 2 || pitchDy < 2) {
-      return r; // 格距显示 <2px（与 _FrameGridPainter 绘制阈值一致：该区间
+      return r; // 格距显示 <2px（与 FrameGridPainter 绘制阈值一致：该区间
       // 格线/行列徽标都不画），吸附步进低于触摸精度，保持自由框选
     }
     double snap(double v, double origin, double pitch) =>
@@ -4031,21 +2473,16 @@ class _RestorePageState extends State<RestorePage> {
     return Rect.fromLTRB(l, t, rt, b);
   }
 
-  /// 自动检测主体区域：排除图例带 -> 行扫描密集行聚簇（内容桥接）->
-  /// 带内列扫描 -> 包围盒（含主体周围一圈豆行豆列）
-  ///
-  /// 主体 = 图例带上方非白像素密集的豆行豆列区（每行非白占比 >= dense）。
-  /// 聚簇行间的 gap 行只要有内容（nonWhite >= bridge）仍桥接——图案内
-  /// 的白豆行被格线打断仍残留内容，而图例与主体间的纯白隔离带不满足
-  /// 桥接条件被天然隔断（防把图例框进主体）。图例带取图例选区（或载入
-  /// 时自动检测的带），无图例则整图视为候选区。返回吸附格线后的选区
-  /// （显示坐标）；吸附后行列数不在 4-400 返回 null（调用方提示手动框选）。
+  /// 自动检测主体区域：像素扫描/聚簇/数字边剔除的实现抽在
+  /// lib/core/subject_detect.dart `detectSubjectBBox`（与图例检测同范式
+  /// 的纯函数）。图例带取图例选区（或载入时自动检测的带），无图例则
+  /// 整图视为候选区。返回吸附格线后的选区（显示坐标）；吸附后行列数
+  /// 不在 4-400 返回 null（调用方提示手动框选）。
   Rect? _autoDetectSubject() {
     final image = _image;
     if (image == null || _pitchX <= 0 || _pitchY <= 0) {
       return null;
     }
-    const step = 2, dense = 0.22, bridge = 0.03, maxGap = 60;
     final w = image.width, h = image.height;
     // 图例带顶（图片坐标）：优先图例选区，其次自动检测的图例带；两皆无
     // 不排除（整图候选）
@@ -4059,247 +2496,30 @@ class _RestorePageState extends State<RestorePage> {
         legendTop = autoLegend.top * h / _displaySize().height;
       }
     }
-    var scanBottom = math.min(h, legendTop.round());
-    // 列序尺封底：图例检测失败（无图例图/漏检）时 scanBottom=图底，板底
-    // 尺下方的页脚/导航条内容会泄进主体 bbox——尺顶是不依赖图例的板底
-    // 硬边界（只在 scanBottom 上方 120px 窗内找，画稿区假阳性够不着；
-    // 原理与阈值见 lib/core/board_detect.dart）
-    final rulerTop = detectRulerTop(image, scanBottom);
-    if (rulerTop != null && rulerTop < scanBottom) {
-      scanBottom = rulerTop;
-    }
-    // 行扫描：每行非白占比（RGB>>4 量化，与图例检测同款白判定）。
-    // 贴行缘的非白游程（页边框，wx1 两侧 ~290px 黑边）跳过不计——否则
-    // 每行占比 0.30 起步、全页皆密集行，聚簇失效主体框成整页
-    int qAt(int x, int y) {
-      final p = image.getPixel(x, y);
-      return ((p.r.toInt() >> 4) << 8) |
-          ((p.g.toInt() >> 4) << 4) |
-          (p.b.toInt() >> 4);
-    }
-
-    final rowNw = <int, double>{};
-    for (var y = 0; y < scanBottom; y += step) {
-      var x0 = 0;
-      while (x0 < w && !_qWhite(qAt(x0, y))) {
-        x0++;
-      }
-      var x1 = w - 1;
-      while (x1 > x0 && !_qWhite(qAt(x1, y))) {
-        x1--;
-      }
-      if (x0 > x1) {
-        rowNw[y] = 1.0; // 整行找不到白像素：按全内容行处理
-        continue;
-      }
-      var nw = 0;
-      for (var x = x0; x <= x1; x++) {
-        if (!_qWhite(qAt(x, y))) {
-          nw++;
-        }
-      }
-      rowNw[y] = nw / w;
-    }
-    // 密集行聚簇：相邻直连；gap 行全部有内容才桥接（隔断纯白带），桥接
-    // 距离上限 maxGap 防跨大空白误并；取内容量和最大的簇为主体
-    final denseYs = [
-      for (final e in rowNw.entries)
-        if (e.value >= dense) e.key,
-    ]..sort();
-    if (denseYs.isEmpty) {
+    final bbox = detectSubjectBBox(
+      image,
+      legendTop: legendTop,
+      pitchX: _pitchX,
+      pitchY: _pitchY,
+    );
+    if (bbox == null) {
       return null;
     }
-    final rowClusters = <List<int>>[
-      [denseYs.first, denseYs.first]
-    ];
-    for (final y in denseYs.skip(1)) {
-      var bridged = true;
-      for (var gy = rowClusters.last[1] + step; gy < y; gy += step) {
-        if ((rowNw[gy] ?? 0) < bridge) {
-          bridged = false;
-          break;
-        }
-      }
-      if (y - rowClusters.last[1] <= 2 * step ||
-          (y - rowClusters.last[1] <= maxGap && bridged)) {
-        rowClusters.last[1] = y;
-      } else {
-        rowClusters.add([y, y]);
-      }
-    }
-    List<int> main = rowClusters.first;
-    var bestMass = -1.0;
-    for (final c in rowClusters) {
-      var mass = 0.0;
-      for (var y = c[0]; y <= c[1]; y += step) {
-        mass += rowNw[y] ?? 0;
-      }
-      if (mass > bestMass) {
-        bestMass = mass;
-        main = c;
-      }
-    }
-    final yTop = main[0].toDouble(), yBot = main[1].toDouble();
-    // 带内列扫描同法（外圈豆行豆列的左右边界）。贴图上下缘的非白整列
-    // （页边框，wx1 黑边整列全高）不计：从图顶/图底向内找首个白像素，
-    // 计数仅在 [yTop, yBot] 与之的交集内——否则边框列恒 1.0 密集，主体
-    // 框横向撑满整页
-    final colNw = <int, double>{};
-    final nRows = ((yBot - yTop) / step).floor() + 1;
-    for (var x = 0; x < w; x += step) {
-      var y0 = 0;
-      while (y0 < h && !_qWhite(qAt(x, y0))) {
-        y0++;
-      }
-      var y1 = h - 1;
-      while (y1 > y0 && !_qWhite(qAt(x, y1))) {
-        y1--;
-      }
-      final lo = math.max(y0, yTop.toInt());
-      final hi = math.min(y1, yBot.toInt());
-      var nw = 0;
-      for (var y = lo; y <= hi; y += step) {
-        if (!_qWhite(qAt(x, y))) {
-          nw++;
-        }
-      }
-      colNw[x] = nw / nRows;
-    }
-    final denseXs = [
-      for (final e in colNw.entries)
-        if (e.value >= dense) e.key,
-    ]..sort();
-    if (denseXs.isEmpty) {
-      return null;
-    }
-    final colClusters = <List<int>>[
-      [denseXs.first, denseXs.first]
-    ];
-    for (final x in denseXs.skip(1)) {
-      var bridged = true;
-      for (var gx = colClusters.last[1] + step; gx < x; gx += step) {
-        if ((colNw[gx] ?? 0) < bridge) {
-          bridged = false;
-          break;
-        }
-      }
-      if (x - colClusters.last[1] <= 2 * step ||
-          (x - colClusters.last[1] <= maxGap && bridged)) {
-        colClusters.last[1] = x;
-      } else {
-        colClusters.add([x, x]);
-      }
-    }
-    List<int> mainX = colClusters.first;
-    var bestMassX = -1.0;
-    for (final c in colClusters) {
-      var mass = 0.0;
-      for (var x = c[0]; x <= c[1]; x += step) {
-        mass += colNw[x] ?? 0;
-      }
-      if (mass > bestMassX) {
-        bestMassX = mass;
-        mainX = c;
-      }
-    }
-    // 四侧行列数字边剔除：图纸主体四周常印一圈行列编号小数字，数字行与
-    // 主体豆行间没有干净白行时聚簇桥接，bbox 会把数字带一并框进去。从
-    // bbox 每边由外向内按半格步进检查（上限 4 带）：墨覆盖率低且彩色墨
-    // 占比低的带 = 纯数字带，剔除；近乎全白（cov<0.02）= 缝隙白隙穿越
-    // 继续；高覆盖或彩色的带 = 豆带，停。半格带跨界（半格数字+半格豆行
-    // 边缘）墨覆盖可到 0.55-0.7，覆盖上限取 0.7——过冲 < 半格由
-    // _snapSelToGrid 吸附格线归位（离线合成验证：贴边数字带剔后误差
-    // <3px，无数字原图零误剪）
-    final halfX = _pitchX * 0.5, halfY = _pitchY * 0.5;
-    (double, double) bandStats(double x0, double y0, double x1, double y1) {
-      var tot = 0, nw = 0, ch = 0;
-      for (var y = y0.toInt(); y < y1; y += 2) {
-        for (var x = x0.toInt(); x < x1; x += 2) {
-          if (x < 0 || x >= w || y < 0 || y >= h) {
-            continue;
-          }
-          final p = image.getPixel(x, y);
-          final r = p.r.toInt(), g = p.g.toInt(), b = p.b.toInt();
-          tot++;
-          final white = r >= 240 && g >= 240 && b >= 240;
-          if (white) {
-            continue;
-          }
-          nw++;
-          final mx = math.max(r, math.max(g, b));
-          final mn = math.min(r, math.min(g, b));
-          if (mx - mn >= 45) {
-            ch++; // 彩色墨（彩色豆带特征；灰黑印刷数字不命中）
-          }
-        }
-      }
-      final cov = tot == 0 ? 1.0 : nw / tot;
-      final cf = nw == 0 ? 0.0 : ch / nw;
-      return (cov, cf);
-    }
-
-    int trimBands(Rect Function(int) band) {
-      var n = 0;
-      for (var k = 0; k < 4; k++) {
-        final r = band(k);
-        final (cov, cf) = bandStats(r.left, r.top, r.right, r.bottom);
-        if (cov < 0.02) {
-          n++;
-          continue;
-        }
-        if (!(cov <= 0.7 && cf <= 0.35)) {
-          break;
-        }
-        n++;
-      }
-      return n;
-    }
-
-    var bxL = mainX[0].toDouble(), bxT = yTop;
-    var bxR = mainX[1].toDouble(), bxB = yBot;
-    var n = trimBands(
-      (k) =>
-          Rect.fromLTRB(bxL + k * halfX, bxT, bxL + (k + 1) * halfX, bxB + 1),
-    );
-    bxL += n * halfX;
-    n = trimBands(
-      (k) =>
-          Rect.fromLTRB(bxL, bxT + k * halfY, bxR + 1, bxT + (k + 1) * halfY),
-    );
-    bxT += n * halfY;
-    n = trimBands(
-      (k) => Rect.fromLTRB(
-        bxR + 1 - (k + 1) * halfX,
-        bxT,
-        bxR + 1 - k * halfX,
-        bxB + 1,
-      ),
-    );
-    bxR -= n * halfX;
-    n = trimBands(
-      (k) => Rect.fromLTRB(
-        bxL,
-        bxB + 1 - (k + 1) * halfY,
-        bxR + 1,
-        bxB + 1 - k * halfY,
-      ),
-    );
-    bxB -= n * halfY;
     // 图片坐标包围盒 -> 显示坐标 -> 吸附格线 -> 行列数校验
     final ds = _displaySize();
     var sel = Rect.fromLTRB(
-      bxL * ds.width / w,
-      bxT * ds.height / h,
-      bxR * ds.width / w,
-      bxB * ds.height / h,
+      bbox.left * ds.width / w,
+      bbox.top * ds.height / h,
+      bbox.right * ds.width / w,
+      bbox.bottom * ds.height / h,
     );
     sel = _snapSelToGrid(sel);
     final cr = _plannedColsRows(sel);
     // 【临时调试】自动框选结果打 logcat（对拍 sim/排查吸附偏移），正式版移除
     debugPrint(
       "【临时调试】autoDetectSubject img=$w x $h legendTop=${legendTop.toStringAsFixed(0)} "
-      "bbox=[${mainX[0]},${yTop.toInt()} ${mainX[1]},${yBot.toInt()}] "
-      "trim=[$bxL,$bxT $bxR,$bxB] "
+      "bbox=[${bbox.rawLeft},${bbox.rawTop.toInt()} ${bbox.rawRight},${bbox.rawBottom.toInt()}] "
+      "trim=[${bbox.left},${bbox.top} ${bbox.right},${bbox.bottom}] "
       "rowsCols=${cr == null ? "null" : "${cr.$2}x${cr.$1}"}",
     );
     if (cr == null) {
@@ -4319,84 +2539,26 @@ class _RestorePageState extends State<RestorePage> {
     AppSnackBar.show(context, "已自动框选主体，可拖动调整");
   }
 
-  /// 阶段③：框选主体区域（九宫格已定格距，本步只做框选——拖画/挪框/
-  /// 把手调大小）。选区四边吸附格线（相位锚定九宫格锚点）：框的一切
-  /// 变化都是整格增减，框到哪格就是哪格；覆盖层只在选区内铺格线并在
-  /// 框上方实时显示行列数（不再全图画虚线格——标定只用来约束框选，
-  /// 图面保持干净）
+  /// 阶段③：框选主体区域（面板实现在 steps/frame_step.dart；本步只做
+  /// 框选——拖画/挪框/把手调大小，选区四边吸附格线由页面落状态时执行）
   Widget _buildFrame() {
-    return Column(
-      children: [
-        Expanded(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: _imageStage(
-              sel: _selDisplay,
-              onSel: (r) => setState(() => _selDisplay = _snapSelToGrid(r)),
-              overlay: _frameOverlay(),
-            ),
-          ),
-        ),
-        _zoomStrip(
-          _viewerCtrl,
-          _displaySize,
-          viewport: () => _stageViewSize,
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(_frameHint(), style: Theme.of(context).textTheme.bodySmall),
-              const SizedBox(height: 8),
-              // 显式自动框选入口（与①「自动框选图例区」同范式）：进本步已
-              // 自动尝试过一次，检测失败/想重跑时点这里（有选区后隐藏——
-              // 重选直接拖新框覆盖即可）
-              if (_selDisplay == null || _selDisplay!.width <= 8) ...[
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: _autoSelectSubject,
-                    icon: const Icon(Icons.auto_awesome, size: 18),
-                    label: const Text("自动框选主体"),
-                  ),
-                ),
-                const SizedBox(height: 8),
-              ],
-              Row(
-                children: [
-                  Expanded(
-                    child: SwitchListTile(
-                      dense: true,
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text(
-                        "偏色过大识别为空白格",
-                        style: TextStyle(fontSize: 13),
-                      ),
-                      value: _blankEnable,
-                      onChanged: (v) => setState(() => _blankEnable = v),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed: _recognizing ? null : _recognize,
-                      icon: _recognizing
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.document_scanner),
-                      label: Text(_recognizing ? "识别中…" : "开始识别"),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ],
+    final sel = _selDisplay;
+    return FrameStep(
+      imageStage: _imageStage,
+      zoomStrip: _zoomStrip,
+      viewerCtrl: _viewerCtrl,
+      displaySize: _displaySize,
+      stageViewSize: () => _stageViewSize,
+      sel: sel,
+      overlay: _frameOverlay(),
+      hint: _frameHint(),
+      showAutoSelect: sel == null || sel.width <= 8,
+      recognizing: _recognizing,
+      blankEnable: _blankEnable,
+      onSel: (r) => setState(() => _selDisplay = _snapSelToGrid(r)),
+      onAutoSelect: _autoSelectSubject,
+      onBlankChanged: (v) => setState(() => _blankEnable = v),
+      onRecognize: _recognize,
     );
   }
 
@@ -4417,7 +2579,7 @@ class _RestorePageState extends State<RestorePage> {
       return null;
     }
     final ds = _displaySize();
-    return _FrameGridPainter(
+    return FrameGridPainter(
       sel: sel,
       pitchDx: _pitchX * ds.width / image.width,
       pitchDy: _pitchY * ds.height / image.height,
@@ -4437,256 +2599,32 @@ class _RestorePageState extends State<RestorePage> {
         : "将按 ${cr.$2} 行 × ${cr.$1} 列切分主体，点「开始识别」";
   }
 
-  /// 阶段四：按色号分组复核 + 手工归类 + 图例数量对账
-  ///
-  /// 筛选关闭（-2）显示总览豆图；选中色号切换为该色全部格子的截图墙
-  /// （截图取自原图同位置，肉眼核对印刷色号/颜色，错认的点击选中后
-  /// 重新归类）
+  /// 阶段四：按色号分组复核 + 手工归类 + 图例数量对账（面板实现在
+  /// steps/review_step.dart：总览豆图/截图墙/chips/操作条）
   Widget _buildReview() {
-    final model = _model!;
-    final counts = model.countByColor();
-    final blankCount =
-        model.cellCount - counts.values.fold<int>(0, (a, b) => a + b);
-    final order = counts.keys.toList()..sort((a, b) => counts[b]! - counts[a]!);
-    return Column(
-      children: [
-        _buildReviewChips(order, counts, blankCount),
-        Expanded(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: _reviewColor == -2
-                ? _buildReviewOverview()
-                : _buildCellGallery(),
-          ),
-        ),
-        _zoomStrip(_reviewCtrl, () => _reviewCanvasSize, maxScale: 12),
-        _buildReviewActions(order, counts, blankCount),
-      ],
-    );
-  }
-
-  /// 总览：整幅豆图（长按拖动缩放、点选格子）
-  Widget _buildReviewOverview() {
-    final model = _model!;
-    return Stack(
-      children: [
-        Center(
-          child: InteractiveViewer(
-            maxScale: 12,
-            transformationController: _reviewCtrl,
-            child: AspectRatio(
-              aspectRatio: model.width / model.height,
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final cellW = constraints.maxWidth / model.width;
-                  final cellH = constraints.maxHeight / model.height;
-                  // 速记画布内容尺寸（无 setState，build 期间赋值）——
-                  // ZoomControls 缩放边界计算用
-                  _reviewCanvasSize = Size(
-                    constraints.maxWidth,
-                    constraints.maxHeight,
-                  );
-                  return GestureDetector(
-                    onTapUp: (d) {
-                      if (_reviewColor == -2) {
-                        return;
-                      }
-                      final cx = (d.localPosition.dx / cellW).floor();
-                      final cy = (d.localPosition.dy / cellH).floor();
-                      if (cx < 0 ||
-                          cx >= model.width ||
-                          cy < 0 ||
-                          cy >= model.height) {
-                        return;
-                      }
-                      setState(() {
-                        final i = cy * model.width + cx;
-                        _picked.contains(i)
-                            ? _picked.remove(i)
-                            : _picked.add(i);
-                      });
-                    },
-                    child: Stack(
-                      children: [
-                        CustomPaint(
-                          size: Size.infinite,
-                          painter: GridPainter(
-                            model: model,
-                            palette: _palette,
-                            selectedColorIndex: -1,
-                            highlightIndex:
-                                _reviewColor >= 0 ? _reviewColor : null,
-                          ),
-                        ),
-                        if (_reviewColor == -1)
-                          Positioned.fill(
-                            child: CustomPaint(
-                              painter: _BlankMarksPainter(model: model),
-                            ),
-                          ),
-                        if (_picked.isNotEmpty)
-                          Positioned.fill(
-                            child: CustomPaint(
-                              painter: _ReviewMarksPainter(
-                                model: model,
-                                picked: _picked,
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  );
-                },
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  /// 截图墙：当前复核色全部格子的原图截图（_cellRects 与 grid 扁平索引
-  /// 同序），点击选中/取消，配合「归类到…」或点目标色号 chip 重新分配
-  Widget _buildCellGallery() {
-    final model = _model!;
-    final src = _cellSrc;
-    final cells = [
-      for (var i = 0; i < model.grid.length; i++)
-        if (model.grid[i] == _reviewColor) i,
-    ];
-    if (src == null) {
-      return Center(
-        child: Text(
-          "截图加载中…（共 ${cells.length} 格）",
-          style: const TextStyle(fontSize: 13, color: Colors.black45),
-        ),
-      );
-    }
-    final image = _image!;
-    final scaleX = src.width / image.width;
-    final scaleY = src.height / image.height;
-    final srcBounds = Rect.fromLTWH(
-      0,
-      0,
-      src.width.toDouble(),
-      src.height.toDouble(),
-    );
-    return GridView.builder(
-      padding: const EdgeInsets.all(4),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 6,
-        mainAxisSpacing: 4,
-        crossAxisSpacing: 4,
-      ),
-      itemCount: cells.length,
-      itemBuilder: (_, k) {
-        final i = cells[k];
-        // 格矩形（原图坐标）-> 截图源坐标（_cellSrc 是限幅显示版，按比例
-        // 换算），intersect 源界防超界（四角模式角点拖出图界时矩形越界，
-        // drawImageRect srcRect 越界直接抛异常）
-        Rect? srcRect;
-        if (i < _cellRects.length) {
-          final cr = _cellRects[i];
-          final r = Rect.fromLTWH(
-            cr.left * scaleX,
-            cr.top * scaleY,
-            cr.width * scaleX,
-            cr.height * scaleY,
-          ).intersect(srcBounds);
-          if (!r.isEmpty) {
-            srcRect = r;
-          }
-        }
-        final picked = _picked.contains(i);
-        return GestureDetector(
-          onTap: () => setState(() {
-            _picked.contains(i) ? _picked.remove(i) : _picked.add(i);
-          }),
-          child: Container(
-            decoration: BoxDecoration(
-              border: Border.all(
-                color: picked ? Colors.blue : Colors.black12,
-                width: picked ? 2.5 : 1,
-              ),
-            ),
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                if (srcRect != null)
-                  ClipRect(
-                    child: CustomPaint(
-                      painter: _CellThumbPainter(src: src, srcRect: srcRect),
-                      size: Size.infinite,
-                    ),
-                  ),
-                // 右下角行列号（1 起）：错认截图回报位置用
-                Positioned(
-                  right: 1,
-                  bottom: 1,
-                  child: Container(
-                    color: Colors.black45,
-                    padding: const EdgeInsets.symmetric(horizontal: 2),
-                    child: Text(
-                      "${i % model.width + 1},${i ~/ model.width + 1}",
-                      style: const TextStyle(fontSize: 8, color: Colors.white),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  /// 复核色号 chips（空白 + 各色 + 图例数量对账）
-  Widget _buildReviewChips(
-    List<int> order,
-    Map<int, int> counts,
-    int blankCount,
-  ) {
-    return SizedBox(
-      height: 44,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        children: [
-          _reviewChip(
-            lead: Container(
-              width: 20,
-              height: 20,
-              decoration: BoxDecoration(
-                border: Border.all(color: Colors.black38),
-              ),
-              child: const Icon(Icons.close, size: 14),
-            ),
-            label: "空白 $blankCount",
-            selected: _reviewColor == -1,
-            onTap: () => _reviewChipTap(-1),
-          ),
-          for (final idx in order)
-            () {
-              final c = _palette.colors[idx];
-              final expected = _expectedOf(idx);
-              final actual = counts[idx] ?? 0;
-              final ok = expected == null ? null : actual == expected;
-              return _reviewChip(
-                lead: Container(
-                  width: 20,
-                  height: 20,
-                  color: Color.fromARGB(255, c.r, c.g, c.b),
-                ),
-                label: expected == null
-                    ? "${c.id} $actual"
-                    : "${c.id} $actual/$expected",
-                selected: _reviewColor == idx,
-                ok: ok,
-                onTap: () => _reviewChipTap(idx),
-              );
-            }(),
-        ],
-      ),
+    return ReviewStep(
+      zoomStrip: _zoomStrip,
+      model: _model!,
+      palette: _palette,
+      legend: _legend,
+      cellRects: _cellRects,
+      cellSrc: _cellSrc,
+      image: _image!,
+      reviewColor: _reviewColor,
+      picked: _picked,
+      reviewCtrl: _reviewCtrl,
+      reviewCanvasSize: () => _reviewCanvasSize,
+      onCanvasSize: (s) => _reviewCanvasSize = s,
+      onChipTap: _reviewChipTap,
+      onTogglePick: (i) => setState(() {
+        _picked.contains(i) ? _picked.remove(i) : _picked.add(i);
+      }),
+      onSelectAll: _selectAllOfCurrent,
+      onClearPicked: () => setState(() => _picked.clear()),
+      onReassign: _reassignPicked,
+      hasClassifyTarget: _hasClassifyTarget(),
+      onSave: _saveWork,
+      onOpenEditor: _openEditor,
     );
   }
 
@@ -4702,678 +2640,4 @@ class _RestorePageState extends State<RestorePage> {
       _picked.clear();
     });
   }
-
-  Widget _reviewChip({
-    required Widget lead,
-    required String label,
-    required bool selected,
-    bool? ok,
-    VoidCallback? onTap,
-  }) {
-    final border = ok == false
-        ? Colors.orange
-        : ok == true
-            ? Colors.green
-            : (selected ? Colors.blue : Colors.black26);
-    return Padding(
-      padding: const EdgeInsets.only(right: 8),
-      child: InkWell(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          decoration: BoxDecoration(
-            border: Border.all(color: border, width: selected ? 2 : 1),
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Row(
-            children: [
-              lead,
-              const SizedBox(width: 4),
-              Text(label, style: const TextStyle(fontSize: 12)),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// 复核操作条：对账状态 + 选中操作 + 进编辑器
-  Widget _buildReviewActions(
-    List<int> order,
-    Map<int, int> counts,
-    int blankCount,
-  ) {
-    var mismatch = 0;
-    var accounted = 0;
-    for (final e in _legend) {
-      final expected = e.expectedCount;
-      if (expected != null) {
-        accounted++;
-        if ((counts[e.paletteIndex] ?? 0) != expected) {
-          mismatch++;
-        }
-      }
-    }
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            "④ 点色号筛选看该色格子截图 → 点截图选中 → 归类到图例色号或空白；再点同一色号回总览",
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          const SizedBox(height: 4),
-          if (accounted > 0)
-            Text(
-              mismatch == 0 ? "✓ 数量一致" : "⚠ $mismatch 项数量有误（实际/图例）",
-              style: TextStyle(
-                fontSize: 12,
-                color: mismatch == 0 ? Colors.green : Colors.orange,
-              ),
-            ),
-          const SizedBox(height: 8),
-          // Wrap 折行代替 Row 单行：三按钮总宽超屏（用户实测「归类到…」
-          // 被裁出手机界面右侧），窄屏/大字体下自动折行不再溢出
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              OutlinedButton(
-                onPressed: _reviewColor == -2 ? null : _selectAllOfCurrent,
-                child: const Text("全选当前色"),
-              ),
-              OutlinedButton(
-                onPressed: _picked.isEmpty
-                    ? null
-                    : () => setState(() => _picked.clear()),
-                child: Text("清除选中(${_picked.length})"),
-              ),
-              OutlinedButton.icon(
-                onPressed: _picked.isEmpty || !_hasClassifyTarget()
-                    ? null
-                    : _reassignPicked,
-                icon: const Icon(Icons.drive_file_move_outline, size: 18),
-                label: const Text("归类到…"),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed: _saveWork,
-                  icon: const Icon(Icons.save_outlined),
-                  label: const Text("保存作品"),
-                ),
-              ),
-              const SizedBox(width: 8),
-              OutlinedButton.icon(
-                onPressed: _openEditor,
-                icon: const Icon(Icons.edit),
-                label: const Text("进编辑器"),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// 选区绘制：外部半透明遮罩 + 蓝色边框
-
-/// 图区手势上下文：build 闭包里的回调/选区/角点/约束打包，
-/// 供 Listener 的四个指针处理方法共用（避免长参数表）
-class _StageCtx {
-  final void Function(Rect) onSel;
-
-  ///< 选区变更回调（图坐标）
-  final Rect? sel;
-
-  ///< 当前选区（角点校正模式下为 null）
-  final List<Offset>? cornerPts;
-
-  ///< 角点校正模式的四角点（null=非角点模式）
-  final void Function(int, Offset)? onCornerDrag;
-
-  ///< 角点拖拽回调（索引, 图坐标）
-  final BoxConstraints cons;
-
-  ///< 图区 viewport 约束（平移/捏合 clamp 用）
-  final Offset? miniAnchor;
-
-  ///< 九宫格标定框锚点（null=非九宫格模式）
-  final void Function(Offset)? onMiniAnchor;
-
-  ///< 九宫格锚点变更回调（图坐标）
-  final bool panFallback;
-
-  ///< 未命中九宫格/无选区时的拖动=true 平移画面查看（对齐步），
-  ///false 画选区（框选步）——两步拆分后手势单一化的分派开关
-
-  const _StageCtx(
-    this.onSel,
-    this.sel,
-    this.cornerPts,
-    this.onCornerDrag,
-    this.cons,
-    this.miniAnchor,
-    this.onMiniAnchor,
-    this.panFallback,
-  );
-}
-
-class _SelPainter extends CustomPainter {
-  final Rect rect;
-
-  _SelPainter(this.rect);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final mask = Paint()
-      ..color = Colors.black.withValues(alpha: 0.35)
-      ..style = PaintingStyle.fill;
-    final border = Paint()
-      ..color = Colors.lightBlueAccent
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
-
-    // 框外略暗遮罩：整图挖掉选区（difference 两个独立 path，不能用
-    // addPath 叠进同一个 path——nonzero 填充规则下重叠区 winding=2 仍
-    // 被填充，遮罩会盖住选区内部，框内外无明暗区分）
-    final outer = Path()..addRect(Rect.fromLTWH(0, 0, size.width, size.height));
-    final inner = Path()..addRect(rect);
-    canvas.drawPath(
-      Path.combine(PathOperation.difference, outer, inner),
-      mask,
-    );
-    canvas.drawRect(rect, border);
-    // 8 个编辑把手（四角+四边中点）：白底橙圈，可拖动扩大缩小选区
-    final handlePts = [
-      rect.topLeft,
-      Offset(rect.center.dx, rect.top),
-      rect.topRight,
-      Offset(rect.left, rect.center.dy),
-      Offset(rect.right, rect.center.dy),
-      rect.bottomLeft,
-      Offset(rect.center.dx, rect.bottom),
-      rect.bottomRight,
-    ];
-    final fill = Paint()..color = Colors.white;
-    final stroke = Paint()
-      ..color = const Color(0xFFE65100)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
-    for (final p in handlePts) {
-      canvas.drawCircle(p, 6, fill);
-      canvas.drawCircle(p, 6, stroke);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _SelPainter oldDelegate) =>
-      oldDelegate.rect != rect;
-}
-
-/// 【临时调试】OCR 元素叠加层：绿框=色号、蓝框=颗数、红线=配对连线
-///
-/// 画布尺寸与放大图 1:1（外层 SizedBox 定死 imgW×imgH），元素框直接绘制。
-/// 正式版随调试功能一起移除。
-class _OcrDebugPainter extends CustomPainter {
-  final List<_OcrElem> elems;
-
-  _OcrDebugPainter(this.elems);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    canvas.clipRect(Offset.zero & size);
-    final codeP = Paint()
-      ..color = Colors.green
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
-    final numP = Paint()
-      ..color = Colors.blue
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
-    final lineP = Paint()
-      ..color = Colors.red
-      ..strokeWidth = 2;
-    for (final e in elems) {
-      if (e.rect.width <= 0 || e.rect.height <= 0) {
-        continue; // 几何框退化的元素画不了框
-      }
-      canvas.drawRect(e.rect, e.code != null ? codeP : numP);
-      final other = e.pairedWith;
-      if (e.code != null && other != null && other.rect.width > 0) {
-        canvas.drawLine(e.rect.center, other.rect.center, lineP);
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _OcrDebugPainter oldDelegate) => true;
-}
-
-/// 网格覆盖层：把识别网格线画在图上，肉眼核对是否压住真实格线
-class _GridOverlayPainter extends CustomPainter {
-  final int cols;
-  final int rows;
-  final double originDx;
-
-  ///< 第一根竖线 x（显示坐标）
-  final double originDy;
-
-  ///< 第一根横线 y（显示坐标）
-  final double pitchDx;
-
-  ///< 横向格距（显示坐标）
-  final double pitchDy;
-
-  ///< 纵向格距（显示坐标）
-
-  _GridOverlayPainter({
-    required this.cols,
-    required this.rows,
-    required this.originDx,
-    required this.originDy,
-    required this.pitchDx,
-    required this.pitchDy,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final line = Paint()
-      ..color = Colors.lightBlueAccent.withValues(alpha: 0.75)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1;
-    for (var i = 0; i <= cols; i++) {
-      final x = originDx + i * pitchDx;
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), line);
-    }
-    for (var i = 0; i <= rows; i++) {
-      final y = originDy + i * pitchDy;
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), line);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _GridOverlayPainter oldDelegate) =>
-      oldDelegate.cols != cols ||
-      oldDelegate.rows != rows ||
-      oldDelegate.originDx != originDx ||
-      oldDelegate.originDy != originDy ||
-      oldDelegate.pitchDx != pitchDx ||
-      oldDelegate.pitchDy != pitchDy;
-}
-
-/// 四角对齐覆盖层：双线性网格线 + 四角大把手（显示坐标）
-///
-/// 网格交点全部经 [_bilinearQuad] 反求——与识别采样同源，
-/// 蓝线压住哪格，识别就采哪格（所见即所采）。
-class _CornerGridPainter extends CustomPainter {
-  final List<Offset> pts;
-
-  ///< 四角（显示坐标）：左上/右上/右下/左下
-  final int cols;
-  final int rows;
-
-  _CornerGridPainter(
-      {required this.pts, required this.cols, required this.rows});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    canvas.clipRect(Offset.zero & size);
-    final line = Paint()
-      ..color = Colors.lightBlueAccent.withValues(alpha: 0.8)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2;
-    // 竖线：每条经 rows+1 个交点折线连接（双线性下相邻交点连线即格线）
-    for (var i = 0; i <= cols; i++) {
-      final u = i / cols;
-      final start = _bilinearQuad(pts, u, 0);
-      final path = Path()..moveTo(start.dx, start.dy);
-      for (var j = 1; j <= rows; j++) {
-        final p = _bilinearQuad(pts, u, j / rows);
-        path.lineTo(p.dx, p.dy);
-      }
-      canvas.drawPath(path, line);
-    }
-    // 横线
-    for (var j = 0; j <= rows; j++) {
-      final v = j / rows;
-      final path = Path();
-      final start = _bilinearQuad(pts, 0, v);
-      path.moveTo(start.dx, start.dy);
-      for (var i = 1; i <= cols; i++) {
-        final p = _bilinearQuad(pts, i / cols, v);
-        path.lineTo(p.dx, p.dy);
-      }
-      canvas.drawPath(path, line);
-    }
-    // 四角大把手：白底橙圈（比选区把手大，透视拖拽目标）
-    final fill = Paint()..color = Colors.white;
-    final stroke = Paint()
-      ..color = const Color(0xFF7B1FA2)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3;
-    for (final p in pts) {
-      canvas.drawCircle(p, 10, fill);
-      canvas.drawCircle(p, 10, stroke);
-    }
-    // 四边形轮廓
-    final outline = Paint()
-      ..color = const Color(0xFF7B1FA2)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
-    final quad = Path()
-      ..moveTo(pts[0].dx, pts[0].dy)
-      ..lineTo(pts[1].dx, pts[1].dy)
-      ..lineTo(pts[2].dx, pts[2].dy)
-      ..lineTo(pts[3].dx, pts[3].dy)
-      ..close();
-    canvas.drawPath(quad, outline);
-  }
-
-  @override
-  bool shouldRepaint(covariant _CornerGridPainter oldDelegate) =>
-      oldDelegate.pts != pts ||
-      oldDelegate.cols != cols ||
-      oldDelegate.rows != rows;
-}
-
-/// 九宫格标定覆盖层：3×3 标定框（细线）+ 全图同相位虚线延伸格 +
-/// 左上/右下双缩放把手（仅「② 九宫格对齐」步使用；框选主体步的
-/// 选区内格线见 _FrameGridPainter）
-///
-/// 识别切分的格距与格线相位全部由这个框导出（格距 = 边长/3，锚点 =
-/// 左上角即第一根格线交点）。虚线延伸格从锚点按格距铺满全图、与九宫格
-/// 同相位——比对齐不必只盯着 9 格：外围任何一格的虚线压住图纸格线即
-/// 对齐成功。线宽/把手尺寸按当前视图缩放补偿（除以 scale）：放大后
-/// 视觉尺寸恒定，粗线不糊掉格线、大把手不遮挡内容不误触。
-class _MiniGridPainter extends CustomPainter {
-  final Rect grid;
-
-  ///< 3×3 框（显示坐标）
-  final double scale;
-
-  ///< 当前视图缩放倍数（InteractiveViewer 矩阵，尺寸补偿用）
-
-  _MiniGridPainter({required this.grid, required this.scale});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    canvas.clipRect(Offset.zero & size);
-    final pitchDx = grid.width / 3;
-    final pitchDy = grid.height / 3;
-    if (pitchDx < 2 || pitchDy < 2) {
-      return;
-    }
-    // 全图同相位虚线格：x/y 起点取锚点对格距取模（与九宫格共用原点），
-    // 段长 = 格距/3、空隙 = 格距/6（视觉密度随格距自适应），全部收进
-    // 一个 Path 一次 stroke。alpha/线宽加强（用户实测原 0.35/0.8 在
-    // 彩色图纸上几乎看不见，对齐无从核对）
-    final dashP = Paint()
-      ..color = const Color(0xFFE65100).withValues(alpha: 0.75)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2 / scale;
-    final path = Path();
-    var x0 = grid.left % pitchDx;
-    if (x0 < 0) {
-      x0 += pitchDx;
-    }
-    final dashY = pitchDy / 3;
-    final stepY = dashY + pitchDy / 6;
-    for (var x = x0; x <= size.width; x += pitchDx) {
-      for (var y = 0.0; y < size.height;) {
-        path.moveTo(x, y);
-        path.lineTo(x, math.min(y + dashY, size.height));
-        y += stepY;
-      }
-    }
-    var y0 = grid.top % pitchDy;
-    if (y0 < 0) {
-      y0 += pitchDy;
-    }
-    final dashX = pitchDx / 3;
-    final stepX = dashX + pitchDx / 6;
-    for (var y = y0; y <= size.height; y += pitchDy) {
-      for (var x = 0.0; x < size.width;) {
-        path.moveTo(x, y);
-        path.lineTo(math.min(x + dashX, size.width), y);
-        x += stepX;
-      }
-    }
-    canvas.drawPath(path, dashP);
-    // 3×3 实线框（细）：粗线在格距 ~22 显示px 时占格边 9%，压住图纸
-    // 格线没法比对是否重叠（用户实测反馈），细到 1.4/scale 视觉恒定
-    final outline = Paint()
-      ..color = const Color(0xFFE65100)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.4 / scale;
-    canvas.drawRect(grid, outline);
-    // 内部十字线：2 竖 + 2 横（1/3、2/3 处）
-    final inner = Paint()
-      ..color = const Color(0xFFE65100).withValues(alpha: 0.8)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.9 / scale;
-    for (var i = 1; i <= 2; i++) {
-      final x = grid.left + grid.width * i / 3;
-      canvas.drawLine(Offset(x, grid.top), Offset(x, grid.bottom), inner);
-      final y = grid.top + grid.height * i / 3;
-      canvas.drawLine(Offset(grid.left, y), Offset(grid.right, y), inner);
-    }
-    // 左上/右下双缩放把手：拖右下=左上角（锚点）不动调格距；拖左上=
-    // 右下角不动。白底橙圈，半径随缩放补偿（放大后不会变巨误触）
-    final fill = Paint()..color = Colors.white;
-    final stroke = Paint()
-      ..color = const Color(0xFFE65100)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.8 / scale;
-    for (final handle in [grid.topLeft, grid.bottomRight]) {
-      canvas.drawCircle(handle, 8 / scale, fill);
-      canvas.drawCircle(handle, 8 / scale, stroke);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _MiniGridPainter oldDelegate) =>
-      oldDelegate.grid != grid || oldDelegate.scale != scale;
-}
-
-/// 框选主体覆盖层：选区内格线（相位锚定九宫格锚点，选区四边已吸附
-/// 格线——所见格数 = 识别切分格数）+ 选区上缘行列数徽标（拖框/缩放
-/// 实时跟手，格数超识别范围 4-400 转红提醒）
-///
-/// 九宫格标定只负责定格距与相位（对齐步完成），本层不再全图画虚线
-/// 格——框外区域保持干净，格线只铺在选区内。徽标/字号按当前视图缩放
-/// 补偿（除以 scale）：放大后视觉尺寸恒定。
-class _FrameGridPainter extends CustomPainter {
-  final Rect sel;
-
-  ///< 选区（显示坐标，四边已吸附格线）
-  final double pitchDx;
-
-  ///< 横向格距（显示坐标）
-  final double pitchDy;
-
-  ///< 纵向格距（显示坐标）
-  final double scale;
-
-  ///< 当前视图缩放倍数（尺寸补偿用）
-
-  _FrameGridPainter({
-    required this.sel,
-    required this.pitchDx,
-    required this.pitchDy,
-    required this.scale,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    canvas.clipRect(Offset.zero & size);
-    if (pitchDx < 2 || pitchDy < 2) {
-      return;
-    }
-    final cols = (sel.width / pitchDx).round();
-    final rows = (sel.height / pitchDy).round();
-    // 选区内格线：选区四边本身就是格线（吸附），从左上铺 cols+1 竖线、
-    // rows+1 横线（计数循环防浮点漂移多画/漏画边缘线）
-    final line = Paint()
-      ..color = const Color(0xFFE65100).withValues(alpha: 0.55)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.0 / scale;
-    final path = Path();
-    for (var i = 0; i <= cols; i++) {
-      final x = sel.left + i * pitchDx;
-      path.moveTo(x, sel.top);
-      path.lineTo(x, sel.bottom);
-    }
-    for (var j = 0; j <= rows; j++) {
-      final y = sel.top + j * pitchDy;
-      path.moveTo(sel.left, y);
-      path.lineTo(sel.right, y);
-    }
-    canvas.drawPath(path, line);
-    // 行列数徽标：选区上缘外居中，出屏（框贴画布顶）收进框内；格数超
-    // 识别范围转红（底部引导文案同时说明原因）
-    final outOfRange = cols < 4 || rows < 4 || cols > 400 || rows > 400;
-    final tp = TextPainter(
-      text: TextSpan(
-        text: "$rows行 × $cols列",
-        style: TextStyle(
-          color: Colors.white,
-          fontSize: 12 / scale,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    final padH = 8 / scale;
-    final padV = 4 / scale;
-    final bw = tp.width + padH * 2;
-    final bh = tp.height + padV * 2;
-    final bx = (sel.center.dx - bw / 2)
-        .clamp(0.0, math.max(0.0, size.width - bw))
-        .toDouble();
-    final gap = 6 / scale;
-    final by = sel.top - bh - gap >= 0
-        ? sel.top - bh - gap
-        : math.min(sel.top + gap, math.max(0.0, size.height - bh));
-    final badge = RRect.fromRectAndRadius(
-      Rect.fromLTWH(bx, by, bw, bh),
-      Radius.circular(bh / 2),
-    );
-    canvas.drawRRect(
-      badge,
-      Paint()
-        ..color =
-            outOfRange ? const Color(0xFFC62828) : const Color(0xFFE65100),
-    );
-    tp.paint(canvas, Offset(bx + padH, by + padV));
-  }
-
-  @override
-  bool shouldRepaint(covariant _FrameGridPainter oldDelegate) =>
-      oldDelegate.sel != sel ||
-      oldDelegate.pitchDx != pitchDx ||
-      oldDelegate.pitchDy != pitchDy ||
-      oldDelegate.scale != scale;
-}
-
-/// 空白复核：空白格铺淡红色
-class _BlankMarksPainter extends CustomPainter {
-  final PatternModel model;
-
-  _BlankMarksPainter({required this.model});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final cell = size.width / model.width;
-    final paint = Paint()..color = Colors.red.withValues(alpha: 0.18);
-    for (var i = 0; i < model.grid.length; i++) {
-      if (model.grid[i] >= 0) {
-        continue;
-      }
-      final x = i % model.width, y = i ~/ model.width;
-      canvas.drawRect(Rect.fromLTWH(x * cell, y * cell, cell, cell), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _BlankMarksPainter oldDelegate) =>
-      oldDelegate.model != model;
-}
-
-/// 选中格标记：蓝色覆盖 + 右上角对勾
-class _ReviewMarksPainter extends CustomPainter {
-  final PatternModel model;
-  final Set<int> picked;
-
-  _ReviewMarksPainter({required this.model, required this.picked});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final cellW = size.width / model.width;
-    final cellH = size.height / model.height;
-    final fill = Paint()..color = Colors.blue.withValues(alpha: 0.3);
-    final border = Paint()
-      ..color = Colors.blue
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5;
-    final check = Paint()
-      ..color = Colors.white
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2
-      ..strokeCap = StrokeCap.round;
-    for (final i in picked) {
-      final x = i % model.width, y = i ~/ model.width;
-      final rect = Rect.fromLTWH(x * cellW, y * cellH, cellW, cellH);
-      canvas.drawRect(rect, fill);
-      canvas.drawRect(rect, border);
-      final cx = rect.center.dx, cy = rect.center.dy;
-      final s = cellW < cellH ? cellW : cellH;
-      canvas.drawLine(
-        Offset(cx - s * 0.2, cy),
-        Offset(cx - s * 0.05, cy + s * 0.18),
-        check,
-      );
-      canvas.drawLine(
-        Offset(cx - s * 0.05, cy + s * 0.18),
-        Offset(cx + s * 0.25, cy - s * 0.18),
-        check,
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _ReviewMarksPainter oldDelegate) =>
-      oldDelegate.picked != picked;
-}
-
-/// 复核截图墙的格子截图：从限幅显示版 ui.Image 按 srcRect 取格绘制
-class _CellThumbPainter extends CustomPainter {
-  final ui.Image src;
-
-  ///< 限幅显示版图（_displayBytes 解码）
-  final Rect srcRect;
-
-  ///< 取材区（src 坐标，已 intersect 源界）
-
-  _CellThumbPainter({required this.src, required this.srcRect});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    canvas.drawImageRect(
-      src,
-      srcRect,
-      Offset.zero & size,
-      Paint()..filterQuality = FilterQuality.medium,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant _CellThumbPainter oldDelegate) =>
-      oldDelegate.src != src || oldDelegate.srcRect != srcRect;
 }
