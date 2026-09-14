@@ -25,9 +25,12 @@ class LegendOcrRun {
 /// OCR 图例选区 -> [(印刷色号调色板索引, 印刷颗数)] 按阅读顺序
 ///
 /// 图纸图例每条目 = 色块 + 色号 + 颗数（印刷数字）；颗数有时跟在色号右侧同行，
-/// 有时印在色号/色块正下方。裁剪选区放大 3 倍喂 ML Kit，先收集全部色号/颗数
-/// element（带几何框），再走 [pairLegendOcr] 两轮配对。
-/// 异常 / 无配对时 pairs 为 null（调用方回退色块量化清单）。
+/// 有时印在色号/色块正下方，色号也可能直接印在色块内（深底白字）。裁剪选区
+/// 放大喂 ML Kit，收集全部色号/颗数 element（带几何框）走 [pairLegendOcr]
+/// 两轮配对，再与 [detectLegendBars]/[fuseLegendBars] 色条颜色识别融合
+/// （色号被 OCR 吞掉的条目由条色兜底、条下颗数按条几何归属）。
+/// OCR 环节抛异常时仍可由色条融合产清单；裁剪/写盘失败 pairs 为 null
+/// （调用方回退色块量化清单）。
 Future<LegendOcrRun> runLegendOcr(
   img.Image image,
   BeadPalette palette,
@@ -53,9 +56,12 @@ Future<LegendOcrRun> runLegendOcr(
     // 实测 480 目标时第三行 5 条目只读出 3 个色号（2026-08-27 pic4），
     // 提到 960 后字高 ~74px 识别稳定；同时按宽度 cap 防超 ML Kit 输入上限
     var scale = (960 / rh).clamp(3.0, 8.0);
-    final widthCap = 3800 / rw;
-    if (scale > widthCap) {
-      scale = widthCap;
+    // 长边（宽或高）cap 防超 ML Kit 输入上限：竖长条图例按高度放大曾到
+    // 4479px，processImage 直接抛异常整链回退量化（test_pic5 案例）；
+    // 横条按宽 cap 与原逻辑一致
+    final cap = 3800 / (rw > rh ? rw : rh);
+    if (scale > cap) {
+      scale = cap;
     }
     final scaled = img.copyResize(crop, width: (crop.width * scale).round());
     final tmp = File(
@@ -65,12 +71,6 @@ Future<LegendOcrRun> runLegendOcr(
     dbgPath = tmp.path; // 【临时调试】记下放大图，异常路径的快照也要能看图
     dbgW = scaled.width;
     dbgH = scaled.height;
-
-    final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
-    final recognized = await recognizer.processImage(
-      InputImage.fromFilePath(tmp.path),
-    );
-    await recognizer.close();
 
     // 精确 + 混淆变体查找表（图例 OCR 与格子 OCR 共用）
     final codeMap = buildCodeMap(palette);
@@ -112,77 +112,66 @@ Future<LegendOcrRun> runLegendOcr(
       return out;
     }
 
-    final elems = collect(recognized, 0);
-    // 掉字母色号修复：深底反白/浅底浅字色号被 ML Kit 吞掉首字母，读成
-    // 无括号纯数字 count（真颗数全部带括号 (N)）。当图内带括号颗数占绝对
-    // 多数（≥6 且 ≥2×无括号数）时，无括号纯数字判定为掉字母色号：按数字
-    // 后缀取色卡候选，用条目色块颜色（色号左侧最饱和区）最近匹配补全。
-    // 后缀候选多（如 16 有 A16~H16），颜色是唯一决定性约束——图例色块
-    // 印的就是该色号的实物色。
-    var fixedCount = 0;
-    final parenCount =
-        elems.where((e) => e.code == null && e.dbgText.contains("(")).length;
-    final bareCount =
-        elems.where((e) => e.code == null && !e.dbgText.contains("(")).length;
-    if (parenCount >= 6 && bareCount > 0 && bareCount * 2 <= parenCount) {
-      final bare = elems
-          .where((e) => e.code == null && !e.dbgText.contains("("))
-          .toList();
-      for (final e in bare) {
-        final best = fixCodeBySwatch(palette, e.count!, e.rect, scaled);
-        if (best == null) {
-          continue;
-        }
-        final fixed = OcrElem(e.seq, e.rect, best, null);
-        fixed.dbgText = "${e.dbgText}→${palette.colors[best].id}(色块补全)";
-        elems.remove(e);
-        elems.add(fixed);
-        fixedCount++;
-      }
-    }
-    // 孤儿颗数二次 OCR：带括号颗数的左侧同行/正上方近旁都没有色号元素，
-    // 说明该条目的色号整条被 ML Kit 吞掉（深底白字识别不稳定；H7 案例：
-    // (343) 正常读出而 H7 消失）。裁「左邻元素右缘 -> 颗数左缘」的空隙
-    // 小区放大后单独再识别（原图 + 反色两轮），读出的色号补回元素表参与
-    // 最终配对
+    final elems = <OcrElem>[];
     final orphanNotes = <String>[];
-    final gapFixed = await fixOrphanCountCodes(
-      palette,
-      elems,
-      scaled,
-      codeMap,
-      tmp.parent.path,
-      orphanNotes,
-    );
-    // 【临时调试】保存本次 OCR 快照（放大图 + 元素 + 配对前状态 + 框选区），正式版移除
-    final debug = OcrDebugInfo(
-      source,
-      tmp.path,
-      scaled.width,
-      scaled.height,
-      elems,
-      rx,
-      ry,
-      rw,
-      rh,
-    );
-    // 【临时调试】元素明细同时打 logcat 与写文件（个别环境 logcat 收不到
-    // flutter tag，文件可 adb pull，像素判读调试面板太费劲），正式版移除
-    final dbgLines = <String>[
-      "框选($source) $rx,$ry ${rw}x$rh elems=${elems.length}(色块补全$fixedCount, 空隙OCR$gapFixed, 括号颗数$parenCount/裸数字$bareCount) img=${scaled.width}x${scaled.height}"
-          "${orphanNotes.isEmpty ? "" : " 色卡外色号=[${orphanNotes.toSet().join(" ")}]"}",
-    ];
-    for (final e in elems) {
-      final kind = e.code != null
-          ? "code:${palette.colors[e.code!].id}"
-          : "count:${e.count}";
-      dbgLines.add(
-        "elem $kind raw=\"${e.dbgText}\" "
-        "rect=(${e.rect.left.toInt()},${e.rect.top.toInt()} "
-        "${e.rect.width.toInt()}x${e.rect.height.toInt()})",
+    var fixedCount = 0, gapFixed = 0, parenCount = 0, bareCount = 0;
+    var ocrFailed = false;
+    try {
+      final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+      final recognized = await recognizer.processImage(
+        InputImage.fromFilePath(tmp.path),
       );
+      await recognizer.close();
+      elems.addAll(collect(recognized, 0));
+      // 掉字母色号修复：深底反白/浅底浅字色号被 ML Kit 吞掉首字母，读成
+      // 无括号纯数字 count（真颗数全部带括号 (N)）。当图内带括号颗数占绝对
+      // 多数（≥6 且 ≥2×无括号数）时，无括号纯数字判定为掉字母色号：按数字
+      // 后缀取色卡候选，用条目色块颜色（色号左侧最饱和区）最近匹配补全。
+      // 后缀候选多（如 16 有 A16~H16），颜色是唯一决定性约束——图例色块
+      // 印的就是该色号的实物色。
+      parenCount = elems
+          .where((e) => e.code == null && e.dbgText.contains("("))
+          .length;
+      bareCount = elems
+          .where((e) => e.code == null && !e.dbgText.contains("("))
+          .length;
+      if (parenCount >= 6 && bareCount > 0 && bareCount * 2 <= parenCount) {
+        final bare = elems
+            .where((e) => e.code == null && !e.dbgText.contains("("))
+            .toList();
+        for (final e in bare) {
+          final best = fixCodeBySwatch(palette, e.count!, e.rect, scaled);
+          if (best == null) {
+            continue;
+          }
+          final fixed = OcrElem(e.seq, e.rect, best, null);
+          fixed.dbgText = "${e.dbgText}→${palette.colors[best].id}(色块补全)";
+          elems.remove(e);
+          elems.add(fixed);
+          fixedCount++;
+        }
+      }
+      // 孤儿颗数二次 OCR：带括号颗数的左侧同行/正上方近旁都没有色号元素，
+      // 说明该条目的色号整条被 ML Kit 吞掉（深底白字识别不稳定；H7 案例：
+      // (343) 正常读出而 H7 消失）。裁「左邻元素右缘 -> 颗数左缘」的空隙
+      // 小区放大后单独再识别（原图 + 反色两轮），读出的色号补回元素表参与
+      // 最终配对
+      gapFixed = await fixOrphanCountCodes(
+        palette,
+        elems,
+        scaled,
+        codeMap,
+        tmp.parent.path,
+        orphanNotes,
+      );
+    } catch (_) {
+      // ML Kit 抛异常（如输入超限）或修复环节出错：OCR 无元素，色条颜色
+      // 融合仍可产清单，不再整链作废（test_pic5 竖排图例案例）
+      ocrFailed = true;
     }
-    final paired = pairLegendOcr(elems).toList();
+    final paired = ocrFailed
+        ? <(int, int)>[]
+        : pairLegendOcr(elems).toList();
     // 配对后兜底：仍未消费的裸数字若命中混淆变体（掉字母色号 "81"→B1
     // 型），回落为色号条目（颗数 0，进未配色号提示让用户手填）。先配对
     // 后兜底的顺序保证 "H7 81" 型同行的 81 优先成为左侧色号的颗数，
@@ -202,13 +191,60 @@ Future<LegendOcrRun> runLegendOcr(
       elems.add(fixed);
       paired.add((hit, 0));
     }
+    // 色条颜色识别融合：检测高饱和色条 -> 条色最近色卡色号候选；OCR 元素
+    // 按色条几何归属。补两类 OCR 盲区：色号印深色条内读不出的条目由颜色
+    // 兜底、颗数在色条正下方超出按字高估计的配对窗口时由条几何归属补。
+    // OCR 读出的色号/配对颗数一律优先于颜色猜测；无色条时结果不变
+    final bars = detectLegendBars(scaled);
+    final fused = fuseLegendBars(palette, elems, paired, bars);
+    // 【临时调试】保存本次 OCR 快照（放大图 + 元素 + 色条 + 框选区），正式版移除
+    final debug = OcrDebugInfo(
+      ocrFailed ? "$source（OCR异常）" : source,
+      tmp.path,
+      scaled.width,
+      scaled.height,
+      elems,
+      rx,
+      ry,
+      rw,
+      rh,
+      bars,
+    );
+    // 【临时调试】元素明细同时打 logcat 与写文件（个别环境 logcat 收不到
+    // flutter tag，文件可 adb pull，像素判读调试面板太费劲），正式版移除
+    final dbgLines = <String>[
+      "框选($source) $rx,$ry ${rw}x$rh elems=${elems.length}(色块补全$fixedCount, 空隙OCR$gapFixed, 括号颗数$parenCount/裸数字$bareCount) 色条${bars.length}条 img=${scaled.width}x${scaled.height}${ocrFailed ? " OCR异常" : ""}"
+          "${orphanNotes.isEmpty ? "" : " 色卡外色号=[${orphanNotes.toSet().join(" ")}]"}",
+    ];
+    for (final e in elems) {
+      final kind = e.code != null
+          ? "code:${palette.colors[e.code!].id}"
+          : "count:${e.count}";
+      dbgLines.add(
+        "elem $kind raw=\"${e.dbgText}\" "
+        "rect=(${e.rect.left.toInt()},${e.rect.top.toInt()} "
+        "${e.rect.width.toInt()}x${e.rect.height.toInt()})",
+      );
+    }
+    for (final b in bars) {
+      final cand = b.colorIdx == null ? "✗" : palette.colors[b.colorIdx!].id;
+      final ce = b.codeElem == null
+          ? ""
+          : " 色号:${palette.colors[b.codeElem!.code!].id}";
+      final cn = b.countElem == null ? "" : " 颗数:${b.countElem!.count}";
+      dbgLines.add(
+        "bar 颜色候选$cand rgb=(${b.r},${b.g},${b.b}) "
+        "rect=(${b.rect.left.toInt()},${b.rect.top.toInt()} "
+        "${b.rect.width.toInt()}x${b.rect.height.toInt()})$ce$cn",
+      );
+    }
     final unpaired = elems
         .where((e) => e.code != null && e.pairedCount == null)
         .map((e) => "${palette.colors[e.code!].id}(${e.dbgText})")
         .join(" ");
     dbgLines.add(
-      "result=${paired.length}对 未配色号=[${unpaired.isEmpty ? "无" : unpaired}] ${[
-        for (final (idx, n) in paired) "${palette.colors[idx].id}=$n"
+      "result=${fused.length}对 未配色号=[${unpaired.isEmpty ? "无" : unpaired}] ${[
+        for (final (idx, n) in fused) "${palette.colors[idx].id}=$n"
       ].join(" ")}",
     );
     for (final l in dbgLines) {
@@ -217,7 +253,7 @@ Future<LegendOcrRun> runLegendOcr(
     File("${tmp.parent.path}/legend_ocr_log.txt").writeAsStringSync(
       dbgLines.join("\n"),
     );
-    return LegendOcrRun(paired, debug, orphanNotes);
+    return LegendOcrRun(fused, debug, orphanNotes);
   } catch (_) {
     // 【临时调试】识别抛异常也记快照（source 标"异常"）：调试视图能看到放大图 + 0 个
     // 元素——比入口直接消失更有排障价值；放大图都没产出（crop 就失败）则保持 null

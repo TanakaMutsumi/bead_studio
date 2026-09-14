@@ -1540,7 +1540,7 @@ class _RestorePageState extends State<RestorePage> {
                 onPressed: () {
                   final dbg = _ocrDebug;
                   if (dbg != null) {
-                    showOcrDebugSheet(context, dbg);
+                    showOcrDebugSheet(context, dbg, _palette);
                   }
                 },
                 icon: const Icon(Icons.bug_report),

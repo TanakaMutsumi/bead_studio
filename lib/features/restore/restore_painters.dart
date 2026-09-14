@@ -82,7 +82,10 @@ class SelPainter extends CustomPainter {
 class OcrDebugPainter extends CustomPainter {
   final List<OcrElem> elems;
 
-  OcrDebugPainter(this.elems);
+  final List<LegendBar> bars;
+
+  ///< 检测到的色条（橙色框，颜色融合调试用）
+  OcrDebugPainter(this.elems, [this.bars = const []]);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -98,6 +101,13 @@ class OcrDebugPainter extends CustomPainter {
     final lineP = Paint()
       ..color = Colors.red
       ..strokeWidth = 2;
+    final barP = Paint()
+      ..color = Colors.deepOrange
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3;
+    for (final b in bars) {
+      canvas.drawRect(b.rect, barP);
+    }
     for (final e in elems) {
       if (e.rect.width <= 0 || e.rect.height <= 0) {
         continue; // 几何框退化的元素画不了框

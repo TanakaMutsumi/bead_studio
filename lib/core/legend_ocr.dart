@@ -54,6 +54,9 @@ class OcrDebugInfo {
   final double selX, selY, selW, selH;
 
   ///< 框选区（原图坐标）——复现框选用
+  final List<LegendBar> bars;
+
+  ///< 检测到的色条（颜色融合调试用）
   OcrDebugInfo(
     this.source,
     this.imgPath,
@@ -63,8 +66,29 @@ class OcrDebugInfo {
     this.selX,
     this.selY,
     this.selW,
-    this.selH,
-  );
+    this.selH, [
+    this.bars = const [],
+  ]);
+}
+
+/// 检测到的图例色条（颜色识别融合用）
+class LegendBar {
+  final Rect rect;
+
+  ///< 色条框（放大图坐标系）
+  final int r, g, b;
+
+  ///< 条内高饱和像素均值（黑/白文字与白底已排除）
+  int? colorIdx;
+
+  ///< 颜色最近匹配的调色板索引（超色差阈值时 null）
+  OcrElem? codeElem;
+
+  ///< 几何归属的 OCR 色号元素（印在条内/条近旁）
+  OcrElem? countElem;
+
+  ///< 几何归属的 OCR 颗数元素（条下方/右侧最近）
+  LegendBar(this.rect, this.r, this.g, this.b);
 }
 
 /// OCR 常见字符混淆表（色号匹配用：印刷小字 0/O、1/I/L、2/Z、5/S、6/G、8/B、4/A 互混）
@@ -295,6 +319,313 @@ List<(int, int)> pairInSeqOrder(List<OcrElem> codes, List<OcrElem> nums) {
     }
   }
   return pairs;
+}
+
+/// 像素是否高饱和（色条实心区）：黑白文字与白底饱和度低天然排除
+bool _saturatedPixel(img.Pixel p) {
+  final r = p.r.toInt(), g = p.g.toInt(), b = p.b.toInt();
+  final mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+  final mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+  return mx - mn >= 40 && mx >= 80;
+}
+
+/// 检测图例色条：行投影切行带（竖排图例每带一条、横排一带多条，条间
+/// 白底/颗数行天然是低饱和间隔），行带内再列投影切单个色条；条色取
+/// 条内高饱和像素均值。返回阅读顺序（先上后下、同行先左后右）。
+/// 白/黑色块无饱和度检测不出（靠融合时的孤立 OCR 色号保住这类条目）。
+List<LegendBar> detectLegendBars(img.Image image) {
+  final w = image.width, h = image.height;
+  if (w < 12 || h < 12) {
+    return const [];
+  }
+  final mask = List<Uint8List>.generate(h, (_) => Uint8List(w));
+  for (var y = 0; y < h; y++) {
+    for (var x = 0; x < w; x++) {
+      if (_saturatedPixel(image.getPixel(x, y))) {
+        mask[y][x] = 1;
+      }
+    }
+  }
+  final rowCnt = List<int>.filled(h, 0);
+  for (var y = 0; y < h; y++) {
+    var c = 0;
+    for (var x = 0; x < w; x++) {
+      c += mask[y][x];
+    }
+    rowCnt[y] = c;
+  }
+  // 行带：连续高饱和行（容忍 2 行边缘噪声缺口）
+  final rowTh = math.max(3, w ~/ 16);
+  final bands = <(int, int)>[];
+  var top = -1;
+  var gap = 0;
+  for (var y = 0; y <= h; y++) {
+    final on = y < h && rowCnt[y] >= rowTh;
+    if (on) {
+      if (top < 0) top = y;
+      gap = 0;
+    } else if (top >= 0 && ++gap > 2) {
+      bands.add((top, y - gap));
+      top = -1;
+      gap = 0;
+    }
+  }
+  if (top >= 0) {
+    bands.add((top, h - 1)); // 色条顶到图边的行带（尾带不会被间隙关上）
+  }
+  final bars = <LegendBar>[];
+  for (final (by0, by1) in bands) {
+    final bh = by1 - by0 + 1;
+    if (bh < 6) {
+      continue; // 噪声薄带
+    }
+    final colCnt = List<int>.filled(w, 0);
+    for (var y = by0; y <= by1; y++) {
+      final row = mask[y];
+      for (var x = 0; x < w; x++) {
+        colCnt[x] += row[x];
+      }
+    }
+    // 色条段：行带内连续高饱和列（列数须过行带高一半以上才是实心条）
+    final colTh = math.max(2, bh * 2 ~/ 5);
+    var x0 = -1;
+    gap = 0;
+    for (var x = 0; x <= w; x++) {
+      final on = x < w && colCnt[x] >= colTh;
+      if (on) {
+        if (x0 < 0) x0 = x;
+        gap = 0;
+      } else if (x0 >= 0 && ++gap > 3) {
+        _addBar(image, mask, bars, x0, x - gap, by0, by1);
+        x0 = -1;
+        gap = 0;
+      }
+    }
+    if (x0 >= 0) {
+      _addBar(image, mask, bars, x0, w - 1, by0, by1); // 顶到图边的色条
+    }
+  }
+  return bars;
+}
+
+/// 色条落表：宽度过滤 + 条内高饱和像素均值作条色
+void _addBar(
+  img.Image image,
+  List<Uint8List> mask,
+  List<LegendBar> out,
+  int x0,
+  int x1,
+  int y0,
+  int y1,
+) {
+  if (x1 - x0 + 1 < 8) {
+    return; // 过窄（噪声/边线）
+  }
+  var sr = 0, sg = 0, sb = 0, n = 0;
+  for (var y = y0; y <= y1; y++) {
+    for (var x = x0; x <= x1; x++) {
+      if (mask[y][x] == 0) {
+        continue;
+      }
+      final p = image.getPixel(x, y);
+      sr += p.r.toInt();
+      sg += p.g.toInt();
+      sb += p.b.toInt();
+      n++;
+    }
+  }
+  if (n < 20) {
+    return; // 采样点太少不可信
+  }
+  out.add(
+    LegendBar(
+      Rect.fromLTRB(x0.toDouble(), y0.toDouble(), x1 + 1.0, y1 + 1.0),
+      sr ~/ n,
+      sg ~/ n,
+      sb ~/ n,
+    ),
+  );
+}
+
+/// 融合清单的锚点（一个锚点 = 清单一条）
+class _Anchor {
+  final Rect rect;
+
+  ///< 锚点位置（色条框或色号框，排序用）
+  final int code;
+
+  ///< 色号（调色板索引）
+  final int count;
+
+  ///< 颗数（无来源时 0，用户清单里手改）
+  final bool ocr;
+
+  ///< 色号来自 OCR（false = 色条颜色猜测，去重时让位 OCR 版）
+  _Anchor(this.rect, this.code, this.count, this.ocr);
+}
+
+/// 色条颜色识别与 OCR 融合：[paired] 为 pairLegendOcr 的配对结果
+/// （OCR 主结果，经典布局下已回归验证），融合补两类 OCR 盲区——
+/// 1. OCR 整条吞掉的条目（色号印深色条内对比度差读不出，如 test_pic5
+///    竖排图例）：色条量化色 -> 色卡最近色号兜底，颗数按色条几何归属
+///    （条正下方/条右侧最近数字）；
+/// 2. 色号读出但颗数在色条正下方、超出按字高估计的配对窗口（条高远
+///    大于字高的布局）：同样按色条几何归属补颗数。
+/// 锚点 = 色条 + 未落在任何色条近旁的孤立色号；OCR 读出的色号/配对
+/// 颗数一律优先于颜色猜测。色条为空时原样返回 [paired]（零回归路径）。
+List<(int, int)> fuseLegendBars(
+  BeadPalette palette,
+  List<OcrElem> elems,
+  List<(int, int)> paired,
+  List<LegendBar> bars,
+) {
+  if (bars.isEmpty) {
+    return paired;
+  }
+  final heights = [
+    for (final e in elems)
+      if (e.rect.height > 0) e.rect.height,
+  ];
+  final avgH = heights.isEmpty
+      ? bars.first.rect.height * 0.5
+      : heights.reduce((a, b) => a + b) / heights.length;
+
+  // 色号归属：中心印在条内（test_pic5 布局）或紧贴条右缘（经典布局）
+  // 才归属。不能用中心-矩形距离：密集横排里下一个色块的色号离上一块
+  // 的右缘比自己的更近，会链式错位
+  double codeDist(OcrElem e, Rect r) {
+    final c = e.rect.center;
+    if (c.dx >= r.left && c.dx <= r.right && c.dy >= r.top && c.dy <= r.bottom) {
+      return 0; // 印在条内
+    }
+    if (c.dy >= r.top - avgH && c.dy <= r.bottom + avgH) {
+      // 条右侧近旁（经典布局）：允许少量压条右缘（色号印在条缘内）
+      if (e.rect.left >= r.right - r.height * 0.3) {
+        return math.max(0.0, e.rect.left - r.right);
+      }
+      // 条左侧近旁：必须完全在条左缘外——压左缘的更可能是左邻条的
+      // 右侧色号（否则密集横排里它会以更近的距离抢走邻条的归属）
+      if (e.rect.right <= r.left) {
+        return r.left - e.rect.right;
+      }
+    }
+    return double.infinity;
+  }
+
+  for (final e in elems) {
+    if (e.code == null) {
+      continue;
+    }
+    LegendBar? best;
+    var bestD = double.infinity;
+    for (final b in bars) {
+      if (b.codeElem != null) {
+        continue;
+      }
+      final d = codeDist(e, b.rect);
+      if (d < bestD) {
+        bestD = d;
+        best = b;
+      }
+    }
+    if (best != null && bestD >= 0 && bestD <= avgH * 2.5) {
+      best.codeElem = e;
+    }
+  }
+
+  // 颗数归属：条正下方最近优先（条下颗数布局），条右侧兜底（同行布局，
+  // 此时 pairLegendOcr 通常已配好，归属只影响未配上颗数的条目）
+  for (final e in elems) {
+    if (e.count == null) {
+      continue;
+    }
+    LegendBar? best;
+    var bestD = double.infinity;
+    final cx = e.rect.center.dx;
+    for (final b in bars) {
+      final r = b.rect;
+      final below = e.rect.top >= r.bottom - r.height * 0.25 &&
+          e.rect.top - r.bottom <= math.max(r.height, avgH) * 2.2 &&
+          cx >= r.left - e.rect.width &&
+          cx <= r.right + e.rect.width;
+      final right = e.rect.left >= r.right - r.height * 0.3 &&
+          e.rect.left - r.right <= avgH * 4 &&
+          e.rect.center.dy >= r.top - avgH &&
+          e.rect.center.dy <= r.bottom + avgH;
+      if (below || right) {
+        // 下方布局优先：右侧兜底距离加惩罚，正下方的颗数不被斜上方抢走
+        final d = below ? e.rect.top - r.bottom : e.rect.left - r.right + avgH * 2;
+        if (d < bestD) {
+          bestD = d;
+          best = b;
+        }
+      }
+    }
+    if (best != null) {
+      best.countElem ??= e;
+    }
+  }
+
+  // 条色 -> 色卡最近色号候选（超色差阈值不猜，宁缺毋滥——错色号入清单
+  // 比缺一条更难被发现）。阈值与 fixCodeBySwatch 一致
+  for (final b in bars) {
+    var best = -1;
+    var bestD = 1 << 30;
+    for (var i = 0; i < palette.colors.length; i++) {
+      final c = palette.colors[i];
+      final d = (c.r - b.r) * (c.r - b.r) +
+          (c.g - b.g) * (c.g - b.g) +
+          (c.b - b.b) * (c.b - b.b);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    b.colorIdx = best >= 0 && bestD <= 120 * 120 * 3 ? best : null;
+  }
+
+  // 锚点：色条（色号 = 归属 OCR 色号 ?? 颜色候选；颗数 = OCR 配对颗数
+  // ?? 条几何归属颗数）+ 未归属任何色条的孤立色号（经典配对结果原样）
+  final anchors = <_Anchor>[];
+  for (final b in bars) {
+    final ce = b.codeElem;
+    final idx = ce?.code ?? b.colorIdx;
+    if (idx == null) {
+      continue; // 颜色对不上色卡且 OCR 没读出色号：不可信不入清单
+    }
+    anchors.add(
+      _Anchor(b.rect, idx, ce?.pairedCount ?? b.countElem?.count ?? 0, ce != null),
+    );
+  }
+  final barElems = {for (final b in bars) b.codeElem};
+  for (final e in elems) {
+    if (e.code == null || barElems.contains(e)) {
+      continue;
+    }
+    anchors.add(_Anchor(e.rect, e.code!, e.pairedCount ?? 0, true));
+  }
+  // 去重：颜色猜测的锚点与近旁 OCR 锚点（条内/条右/条下没归属上的色号）
+  // 是同一条目——锚点位置纵向重叠且横向在一个条宽内视为同条目，保
+  // OCR 版（读出的色号权威），颜色猜测让位
+  anchors.removeWhere(
+    (g) =>
+        !g.ocr &&
+        anchors.any(
+          (o) =>
+              o.ocr &&
+              o.rect.top < g.rect.bottom + avgH &&
+              o.rect.bottom > g.rect.top - avgH &&
+              o.rect.left < g.rect.right + g.rect.width,
+        ),
+  );
+  // 阅读顺序输出（与 pairLegendOcr 的排序口径一致）
+  anchors.sort((a, b) {
+    final dy = a.rect.top - b.rect.top;
+    return dy.abs() > avgH * 0.7
+        ? (dy > 0 ? 1 : -1)
+        : a.rect.left.compareTo(b.rect.left);
+  });
+  return [for (final a in anchors) (a.code, a.count)];
 }
 
 /// 全色卡「精确 + 混淆变体」查找表：variant -> 调色板索引（图例 OCR
