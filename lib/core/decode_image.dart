@@ -1,10 +1,14 @@
-/// 健壮图片解码：纯 Dart image 包优先，失败回退 Skia 引擎（dart:ui）
+/// 健壮图片解码：Skia 引擎（dart:ui，libjpeg-turbo）优先，失败回退纯
+/// Dart image 包
 ///
-/// 背景：微信导出的 JPEG 常为渐进式编码、含 RST 重启标记等特殊变体，
-/// 纯 Dart image 包对它们可能"返回 null"也可能"直接抛异常"
-/// （如 ImageException: Unknown JPEG marker d1）——两种失败都要落入
-/// Skia 回退（引擎自带的 libjpeg-turbo 全支持）。两条路都失败才抛
-/// FormatException。
+/// 背景（2026-09-14 口径反转，原为纯 Dart 优先）：image 包的 JPEG 解码器
+/// 与 libjpeg-turbo 存在系统性像素差，直接影响游程法图例/主体检测——
+/// - wx2：直接抛 ImageException: Unknown JPEG marker d3 解不了；
+/// - wx5：浅色图例色片解码偏亮，右侧 x1118-1391 色片被判白丢失；
+/// - u1：像素漂移使图例带边界移 2px，翻转薄带判定（<24px）触发上走
+///   越界。三者换成 libjpeg-turbo 口径（PIL/Skia 同源）全部与真值吻合。
+/// 引擎解码在 Flutter 运行时始终可用；无引擎环境（纯 Dart 测试/CLI）
+/// instantiateImageCodec 抛异常，自动落回 image 包。
 library;
 
 import 'dart:typed_data';
@@ -15,21 +19,11 @@ import 'package:image/image.dart' as img;
 
 /// 解码图片字节（支持 JPG/PNG/WebP/BMP/GIF 等）
 ///
-/// 先走 image 包（纯 Dart、同步、无引擎依赖）；返回 null（不认识格式/编码）
-/// 或抛异常（微信 JPEG 的 RST marker 触发 ImageException）时，都回退
-/// ui.instantiateImageCodec 用 Skia 解，再转 image 包的 Image 结构。
+/// 先走 ui.instantiateImageCodec 用 Skia（libjpeg-turbo）解，再转 image
+/// 包的 Image 结构；引擎不可用或解码失败（含微信渐进式 JPEG 等边角字节
+/// 流）时回退纯 Dart image 包。两条路都失败才抛 FormatException。
 Future<img.Image> decodeImageRobust(Uint8List bytes) async {
-  try {
-    final decoded = img.decodeImage(bytes);
-    if (decoded != null) {
-      return decoded;
-    }
-  } catch (_) {
-    // image 包对特殊 JPEG 抛异常而非返回 null（如 Unknown JPEG marker d1），
-    // 与返回 null 同等对待：落入下方 Skia 回退
-  }
-
-  // Skia 回退
+  // Skia 优先（像素口径 = libjpeg-turbo，与调参基准 PIL 一致）
   try {
     final codec = await ui.instantiateImageCodec(bytes);
     final frame = await codec.getNextFrame();
@@ -37,14 +31,23 @@ Future<img.Image> decodeImageRobust(Uint8List bytes) async {
       format: ui.ImageByteFormat.rawRgba,
     );
     if (rgba == null) {
-      throw const FormatException("Skia 解码返回空数据");
+      throw StateError("Skia 解码返回空数据");
     }
     return _fromRawRgba(rgba, frame.image.width, frame.image.height);
-  } on FormatException {
-    rethrow;
+  } catch (_) {
+    // 无引擎环境（纯 Dart 测试/CLI）或引擎解不了：落入下方纯 Dart 回退
+  }
+
+  // 纯 Dart image 包回退
+  try {
+    final decoded = img.decodeImage(bytes);
+    if (decoded != null) {
+      return decoded;
+    }
   } catch (e) {
     throw FormatException("无法解码图片（支持 JPG/PNG/WebP/BMP）: $e");
   }
+  throw const FormatException("无法解码图片（支持 JPG/PNG/WebP/BMP）");
 }
 
 /// 显示位图长边上限：模拟器 GLES 纹理上限常见 2048（GL_MAX_TEXTURE_SIZE），

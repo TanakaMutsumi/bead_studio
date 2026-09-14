@@ -48,7 +48,9 @@ UI 自动化测试走 `full-flow-test` skill（adb 驱动全流程：坐标表�
 | `lib/core/quantizer.dart` | Lab 距离最近色量化 |
 | `lib/core/palette_registry.dart` | 色卡注册与切换（MARD 等，色号 id 如 H7/A16） |
 | `lib/core/draft_store.dart` | 作品/豆板持久化 |
-| `lib/core/decode_image.dart` | 显示层重编码 JPEG + 长边限幅（识别/裁剪仍用原始像素） |
+| `lib/core/legend_detect.dart` | 图例区检测 v9（行游程法，app/模拟器唯一实现；canonical：宽 [1000,2048] native，窗外缩 1440） |
+| `lib/core/board_detect.dart` | 列序尺检测 detectRulerTop（板底硬边界，主体检测封底用） |
+| `lib/core/decode_image.dart` | 解码 Skia 优先 + 纯 Dart 回退（decodeImageRobust）；显示层重编码 JPEG + 长边限幅 |
 
 ### restore_page.dart 内关键算法（排查问题先看这些）
 
@@ -93,5 +95,7 @@ UI 自动化测试走 `full-flow-test` skill（adb 驱动全流程：坐标表�
 |------|------|
 | `.claude/skills/full-flow-test.md` | 全流程测试手册（**走测试前必读**） |
 | `.test/full_flow_test.md` | 问题清单与坐标总表（测试沉淀，还有没修的看这里） |
-| `.test/legend_detect_sim.py` | 游程法 Python 复刻（离线对拍用，换输入文件名即可） |
+| `.test/wx_replica6.py` | 游程法 v9 PIL 复刻（调参真相源，对拍用） |
+| `docs/vision_tuning_notes.md` | 视觉检测调参笔记（v1→v9 演进/教训/方法论——动检测规则前先读） |
+| `.test/ruler_detect.py` / `row_probe6.py` / `annotate_q.py` | 列序尺原型 / 行特征探针 / 标注图生成 |
 | `.test/test_pic5.png` | 基准测试图（1440×2100，16 色图例，md5 `de94dca48fe2dc334f08b2655b6fc6ec`） |

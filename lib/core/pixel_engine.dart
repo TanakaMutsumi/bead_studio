@@ -29,7 +29,7 @@ class PixelEngine {
   /// [kernel] 抖动核（none = 每像素独立最近色）
   /// [sourceRect] 可选裁剪区域（像素坐标，null = 取中心最大正方形）
   ///
-  /// 解码走 decodeImageRobust（image 包优先 + Skia 回退，兼容微信渐进式 JPEG）
+  /// 解码走 decodeImageRobust（Skia 优先 + image 包回退，像素口径=libjpeg-turbo）
   Future<PatternModel> convert({
     required Uint8List bytes,
     required int boardSize,

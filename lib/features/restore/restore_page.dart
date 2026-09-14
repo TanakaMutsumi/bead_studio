@@ -17,6 +17,8 @@ import '../../core/app_snack_bar.dart';
 import '../../core/decode_image.dart';
 import '../../core/draft_store.dart';
 import '../../core/grid_detector.dart';
+import '../../core/board_detect.dart';
+import '../../core/legend_detect.dart';
 import '../../core/palette.dart';
 import '../../core/palette_registry.dart';
 import '../../core/pattern_model.dart';
@@ -590,184 +592,31 @@ class _RestorePageState extends State<RestorePage> {
 
   // ==================== 图例区自动检测 ====================
 
-  /// 量化色是否白背景：近白含浅灰底——三通道 nibble 全 >=11（原值 >=176）
-  /// 且极差 <=1（平灰）。部分图纸（微信图 wx1）用 ~187-214 平灰做版底/
-  /// 数字带底，按纯白（>=240）判会把灰底当内容：灰底被 JPEG 抖动切成大量
-  /// >=20px 游程，数字带整行 45+「块」混成图例行，全页聚成巨带被高度上限
-  /// 整体拒绝（2026-09-11 wx1 实测）。主体检测的行/列密度同样受益
-  static bool _qWhite(int q) {
-    final r = (q >> 8) & 15, g = (q >> 4) & 15, b = q & 15;
-    final mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
-    final mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
-    return mn >= 11 && mx - mn <= 1;
-  }
+  /// 量化色是否白背景（近白含平灰底）——实现见 legend_detect.dart
+  /// `qWhite`（2026-09-14 抽共享库，app/离线模拟器唯一实现）
+  static bool _qWhite(int q) => qWhite(q);
 
-  /// 自动检测图例条带：游程法（test_pic5 / wx1 两张实测图验证）
-  ///
-  /// 原理：图例色块是 20px+ 的纯色矩形（长游程），豆图每颗豆之间被格线
-  /// 打断（游程 <= 豆宽），整行纯色背景/边框则只有 1 个超长游程——三者
-  /// 按「块数 >= 3 且最长 <= 35% 行宽 且（最长 >= 60 或 多色且带白隙）」
-  /// 区分出图例行；图例行聚簇成带，带高 <= 15% 图高，且带外必须是低信息
-  /// 行（白隙或纯色隔离带，豆图大块同色区上下仍是密集豆行，据此排除）。
-  /// 贴行缘的游程（页边装饰框/黑边）不计块、不计内容占比、不撑选区横向
-  /// 范围——wx1 两侧 ~290px 黑边让每行白送 2 块，任何行加 1 个游程就
-  /// 混成图例行。打分含色数项（图例是小色板拼条，带内颜色种类远多于
-  /// 单色数字带/大色块主体）。
+  /// 自动检测图例条带：游程法——实现抽在 lib/core/legend_detect.dart
+  /// `detectLegendCanonical`（app 与 tool/legend_sim.dart 离线模拟器共用
+  /// 同一份，消灭双端口径漂移；原理注释见该文件。canonical：主流截图宽
+  /// [1000,2048] 直接 native 跑，窗外尺寸缩到 1440 宽检测再映射回原图）。
   /// 返回显示坐标选区；找不到返回 null（调用方静默或提示手动框选）。
   Rect? _autoDetectLegend() {
     final image = _image;
     if (image == null) {
       return null;
     }
-    const step = 2, runMin = 20;
-    final w = image.width, h = image.height;
-    // 逐采样行：颜色量化(RGB>>4 打包)游程扫描
-    final feats = <int, _RowFeat>{};
-    for (var y = 0; y < h; y += step) {
-      var nonWhite = 0, nBlocks = 0, maxLen = 0;
-      var minX = 1 << 30, maxX = -(1 << 30);
-      final colors = <int>{};
-      var runCol = -1, runLen = 0, runStart = 0;
-      // 游程收尾统一结算（末游程 touchesRight 只有循环后那次可能为真）。
-      // 贴行缘的非白游程 = 页边框：像素也不算内容（否则 ~290px 黑边让
-      // 每行非白占比 0.30 起步，quiet 判定全线失效）
-      void flush(bool touchesRight) {
-        if (_qWhite(runCol)) {
-          return;
-        }
-        if (runStart == 0 || touchesRight) {
-          nonWhite -= runLen;
-          return;
-        }
-        if (runLen < runMin) {
-          return;
-        }
-        nBlocks++;
-        maxLen = maxLen < runLen ? runLen : maxLen;
-        colors.add(runCol);
-        if (runStart < minX) {
-          minX = runStart;
-        }
-        if (runStart + runLen > maxX) {
-          maxX = runStart + runLen;
-        }
-      }
-
-      for (var x = 0; x < w; x++) {
-        final p = image.getPixel(x, y);
-        final q = ((p.r.toInt() >> 4) << 8) |
-            ((p.g.toInt() >> 4) << 4) |
-            (p.b.toInt() >> 4);
-        if (q == runCol) {
-          runLen++;
-          if (!_qWhite(q)) {
-            nonWhite++;
-          }
-        } else {
-          flush(false);
-          runCol = q;
-          runLen = 1;
-          runStart = x;
-          if (!_qWhite(q)) {
-            nonWhite++;
-          }
-        }
-      }
-      flush(true);
-      feats[y] = _RowFeat(nBlocks, maxLen, nonWhite / w, colors, minX, maxX);
-    }
-    // 图例行判定
-    final legendRows = <int, _RowFeat>{};
-    feats.forEach((y, f) {
-      final ok = f.nBlocks >= 3 &&
-          f.maxLen <= w * 0.35 &&
-          (f.maxLen >= 60 || (f.colors.length >= 3 && f.nonWhite <= 0.75));
-      if (ok) {
-        legendRows[y] = f;
-      }
-    });
-    if (legendRows.isEmpty) {
+    final r = detectLegendCanonical(image);
+    if (r == null) {
       return null;
     }
-    // 聚簇成带（图例行间白隙 <= 60px 同带）
-    final ys = legendRows.keys.toList()..sort();
-    final bands = <List<int>>[
-      [ys.first, ys.first]
-    ];
-    for (final y in ys.skip(1)) {
-      if (y - bands.last[1] <= 60) {
-        bands.last[1] = y;
-      } else {
-        bands.add([y, y]);
-      }
-    }
-    // 带外低信息检查（图例是独立区块，上下必有白隙/纯色隔离）
-    bool quietOutside(int edge, bool below) {
-      for (final d in [step, step * 2, step * 3]) {
-        final y = below ? edge + d : edge - d;
-        final f = feats[y];
-        if (f == null) {
-          return true; // 出图
-        }
-        if (f.nonWhite <= 0.10 || f.nBlocks <= 2) {
-          return true;
-        }
-      }
-      return false;
-    }
-
-    // 打分取最优带：块数和 + 底部位置加分（图例惯例在图纸底部）
-    var bestScore = -1.0;
-    Rect? bestRect;
-    for (final b in bands) {
-      if (b[1] - b[0] > h * 0.15) {
-        continue;
-      }
-      if (!quietOutside(b[0], false) || !quietOutside(b[1], true)) {
-        continue;
-      }
-      var nSum = 0, minX = 1 << 30, maxX = -(1 << 30);
-      final bandColors = <int>{};
-      legendRows.forEach((y, f) {
-        if (y >= b[0] && y <= b[1]) {
-          nSum += f.nBlocks;
-          bandColors.addAll(f.colors);
-          if (f.minX < minX) {
-            minX = f.minX;
-          }
-          if (f.maxX > maxX) {
-            maxX = f.maxX;
-          }
-        }
-      });
-      // 色数项：图例带是小色板拼条（几十种色），单色数字带/大色块主体
-      // 只有几种——wx1 顶部数字带 nSum 接近但色数 5 vs 图例 46
-      final score =
-          nSum + bandColors.length * 15 + (b[0] + b[1]) / 2 / h * 50;
-      if (score > bestScore) {
-        bestScore = score;
-        // 原图坐标 rect（上下 +10 余量；左右不加 pad——识别链按选区宽定
-        // 放大倍率（3800 宽 cap），框得越宽小字放大越小，pic4 的 F5 在
-        // pad 后 978 宽/scale3.88 下 ML Kit 漏读、948 宽/scale4.0 稳定）
-        bestRect = Rect.fromLTRB(
-          minX.clamp(0, w - 4).toDouble(),
-          (b[0] - 10).clamp(0, h - 4).toDouble(),
-          maxX.clamp(4, w).toDouble(),
-          (b[1] + 10 + step).clamp(4, h).toDouble(),
-        );
-      }
-    }
-    // 原图 -> 显示坐标
-    final rect = bestRect;
-    if (rect == null) {
-      return null;
-    }
-    final scale = _displaySize().width / w;
+    // 原图 -> 显示坐标（上下 +10 余量与左右不加 pad 的理由见共享实现）
+    final scale = _displaySize().width / image.width;
     return Rect.fromLTWH(
-      rect.left * scale,
-      rect.top * scale,
-      rect.width * scale,
-      rect.height * scale,
+      r.left * scale,
+      r.top * scale,
+      (r.right - r.left) * scale,
+      (r.bottom - r.top) * scale,
     );
   }
 
@@ -2301,7 +2150,7 @@ class _RestorePageState extends State<RestorePage> {
       return;
     }
     final now = DateTime.now();
-    final two = (int v) => v.toString().padLeft(2, "0");
+    String two(int v) => v.toString().padLeft(2, "0");
     final ctrl = TextEditingController(
       text:
           "图案 ${now.month}${two(now.day)}日 ${two(now.hour)}:${two(now.minute)}",
@@ -4210,7 +4059,15 @@ class _RestorePageState extends State<RestorePage> {
         legendTop = autoLegend.top * h / _displaySize().height;
       }
     }
-    final scanBottom = math.min(h, legendTop.round());
+    var scanBottom = math.min(h, legendTop.round());
+    // 列序尺封底：图例检测失败（无图例图/漏检）时 scanBottom=图底，板底
+    // 尺下方的页脚/导航条内容会泄进主体 bbox——尺顶是不依赖图例的板底
+    // 硬边界（只在 scanBottom 上方 120px 窗内找，画稿区假阳性够不着；
+    // 原理与阈值见 lib/core/board_detect.dart）
+    final rulerTop = detectRulerTop(image, scanBottom);
+    if (rulerTop != null && rulerTop < scanBottom) {
+      scanBottom = rulerTop;
+    }
     // 行扫描：每行非白占比（RGB>>4 量化，与图例检测同款白判定）。
     // 贴行缘的非白游程（页边框，wx1 两侧 ~290px 黑边）跳过不计——否则
     // 每行占比 0.30 起步、全页皆密集行，聚簇失效主体框成整页
@@ -4966,29 +4823,6 @@ class _RestorePageState extends State<RestorePage> {
 }
 
 /// 选区绘制：外部半透明遮罩 + 蓝色边框
-/// 一行的游程特征（长游程 = 图例色块；豆子/文字游程短），图例自动检测用
-class _RowFeat {
-  final int nBlocks;
-
-  ///< 长游程块数
-  final int maxLen;
-
-  ///< 最长游程
-  final double nonWhite;
-
-  ///< 非白像素占比
-  final Set<int> colors;
-
-  ///< 块颜色集合
-  final int minX;
-
-  ///< 块起点最小 x
-  final int maxX;
-
-  ///< 块终点最大 x
-  const _RowFeat(this.nBlocks, this.maxLen, this.nonWhite, this.colors,
-      this.minX, this.maxX);
-}
 
 /// 图区手势上下文：build 闭包里的回调/选区/角点/约束打包，
 /// 供 Listener 的四个指针处理方法共用（避免长参数表）
