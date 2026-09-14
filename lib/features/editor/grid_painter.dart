@@ -70,8 +70,7 @@ class GridPainter extends CustomPainter {
         }
         // 分板模式：当前底板外的格子大幅降透明
         final br = boardRect;
-        final outsideBoard =
-            br != null &&
+        final outsideBoard = br != null &&
             (x < br.left || x >= br.right || y < br.top || y >= br.bottom);
         if (outsideBoard) {
           color = color.withValues(alpha: 0.18);

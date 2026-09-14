@@ -13,11 +13,11 @@ import '../../core/pattern_model.dart';
 import '../../core/quantizer.dart';
 import '../preview/preview_page.dart';
 import '../stats/stats_page.dart';
+import 'board_split.dart';
+import 'editor_bars.dart';
+import 'editor_undo.dart';
 import 'grid_painter.dart';
 import 'sheets.dart';
-
-/// 工具类型
-enum _Tool { brush, eraser, bucket, eyedropper, select }
 
 /// 撤销快照（含尺寸：改尺寸/旋转后网格长度会变）
 class _Snapshot {
@@ -53,19 +53,12 @@ class EditorPage extends StatefulWidget {
 }
 
 class _EditorPageState extends State<EditorPage> {
-  static const _maxUndo = 50;
-  static const _brushSizes = [1, 2, 3, 5];
-  static const _boardSizes = [26, 29, 52];
-
-  ///< 常见拼豆板边长
-
   late PatternModel _model;
   final _revision = ValueNotifier<int>(0);
 
   ///< 网格内容版本号，驱动画布重绘
-  final List<_Snapshot> _undoStack = [];
-  final List<_Snapshot> _redoStack = [];
-  var _tool = _Tool.brush;
+  final _history = SnapshotHistory<_Snapshot>();
+  var _tool = EditorTool.brush;
   var _brushSize = 1;
   var _currentColor = 9;
 
@@ -96,38 +89,10 @@ class _EditorPageState extends State<EditorPage> {
   int get _boardCount => _boardsAcross * _boardsDown;
 
   /// 第 [index] 块板的格子范围（clamp 到图案边界）
-  Rect _boardRectOf(int index) {
-    final left = (index % _boardsAcross) * _boardSize;
-    final top = (index ~/ _boardsAcross) * _boardSize;
-    var right = left + _boardSize;
-    var bottom = top + _boardSize;
-    if (right > _model.width) {
-      right = _model.width;
-    }
-    if (bottom > _model.height) {
-      bottom = _model.height;
-    }
-    return Rect.fromLTRB(
-      left.toDouble(),
-      top.toDouble(),
-      right.toDouble(),
-      bottom.toDouble(),
-    );
-  }
+  Rect _boardRectOf(int index) => boardRectOf(_model, _boardSize, index);
 
   /// 本板用料统计
-  Map<int, int> _boardCounts(Rect r) {
-    final counts = <int, int>{};
-    for (var y = r.top.toInt(); y < r.bottom.toInt(); y++) {
-      for (var x = r.left.toInt(); x < r.right.toInt(); x++) {
-        final v = _model.cell(x, y);
-        if (v >= 0) {
-          counts[v] = (counts[v] ?? 0) + 1;
-        }
-      }
-    }
-    return counts;
-  }
+  Map<int, int> _boardCounts(Rect r) => boardCounts(_model, r);
 
   /// 切换板尺寸：索引 clamp 到新板数
   void _setBoardSize(int size) {
@@ -160,13 +125,7 @@ class _EditorPageState extends State<EditorPage> {
   _Snapshot _snapshot() =>
       _Snapshot(_model.copyGrid(), _model.width, _model.height);
 
-  void _pushUndo() {
-    _undoStack.add(_snapshot());
-    if (_undoStack.length > _maxUndo) {
-      _undoStack.removeAt(0);
-    }
-    _redoStack.clear();
-  }
+  void _pushUndo() => _history.push(_snapshot());
 
   void _restore(_Snapshot s) {
     if (s.width != _model.width || s.height != _model.height) {
@@ -186,22 +145,20 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   void _undo() {
-    if (_undoStack.isEmpty) {
-      return;
-    }
     setState(() {
-      _redoStack.add(_snapshot());
-      _restore(_undoStack.removeLast());
+      final s = _history.undo(_snapshot());
+      if (s != null) {
+        _restore(s);
+      }
     });
   }
 
   void _redo() {
-    if (_redoStack.isEmpty) {
-      return;
-    }
     setState(() {
-      _undoStack.add(_snapshot());
-      _restore(_redoStack.removeLast());
+      final s = _history.redo(_snapshot());
+      if (s != null) {
+        _restore(s);
+      }
     });
   }
 
@@ -234,17 +191,17 @@ class _EditorPageState extends State<EditorPage> {
     }
 
     switch (_tool) {
-      case _Tool.brush:
-      case _Tool.eraser:
+      case EditorTool.brush:
+      case EditorTool.eraser:
         if (isStart) {
           _pushUndo();
         }
-        final value = _tool == _Tool.brush ? _currentColor : -1;
+        final value = _tool == EditorTool.brush ? _currentColor : -1;
         _paintSquare(x, y, value);
         _revision.value++;
         break;
 
-      case _Tool.bucket:
+      case EditorTool.bucket:
         if (isStart) {
           _pushUndo();
           _model.floodFill(x, y, _currentColor);
@@ -252,21 +209,21 @@ class _EditorPageState extends State<EditorPage> {
         }
         break;
 
-      case _Tool.eyedropper:
+      case EditorTool.eyedropper:
         if (isStart) {
           final v = _model.cell(x, y);
           if (v >= 0) {
             setState(() {
               _currentColor = v;
-              if (_tool != _Tool.brush) {
-                _tool = _Tool.brush;
+              if (_tool != EditorTool.brush) {
+                _tool = EditorTool.brush;
               }
             });
           }
         }
         break;
 
-      case _Tool.select:
+      case EditorTool.select:
         if (isStart) {
           _selX0 = _selX1 = x;
           _selY0 = _selY1 = y;
@@ -559,12 +516,12 @@ class _EditorPageState extends State<EditorPage> {
         title: Text("编辑 ${_model.width}×${_model.height} · $usedColors 色"),
         actions: [
           IconButton(
-            onPressed: _undoStack.isEmpty ? null : _undo,
+            onPressed: _history.canUndo ? _undo : null,
             icon: const Icon(Icons.undo),
             tooltip: "撤销",
           ),
           IconButton(
-            onPressed: _redoStack.isEmpty ? null : _redo,
+            onPressed: _history.canRedo ? _redo : null,
             icon: const Icon(Icons.redo),
             tooltip: "重做",
           ),
@@ -630,45 +587,25 @@ class _EditorPageState extends State<EditorPage> {
           _buildOpsRow(),
           if (_boardMode) _buildBoardBar(),
           if (_assembleMode)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-              child: Builder(
-                builder: (ctx) {
-                  final (done, total) = _assembleProgress();
-                  final hi = _highlightIndex;
-                  final remainTxt = hi == null
-                      ? "先点下方颜色选择要拼的色"
-                      : () {
-                          final counts = _boardMode
-                              ? _boardCounts(_boardRectOf(_boardIndex))
-                              : _model.countByColor();
-                          final remain = _remainOf(hi, counts);
-                          return "${widget.palette.colors[hi].id} 剩 $remain/${counts[hi] ?? 0} 颗";
-                        }();
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              "拼装 $done/$total · 点格子标记已放，再点取消 · $remainTxt",
-                              style: Theme.of(ctx).textTheme.bodySmall,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 3),
-                      LinearProgressIndicator(
-                        value: total > 0 ? done / total : 0,
-                        minHeight: 4,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ],
-                  );
-                },
-              ),
+            Builder(
+              builder: (ctx) {
+                final (done, total) = _assembleProgress();
+                final hi = _highlightIndex;
+                final remainTxt = hi == null
+                    ? "先点下方颜色选择要拼的色"
+                    : () {
+                        final counts = _boardMode
+                            ? _boardCounts(_boardRectOf(_boardIndex))
+                            : _model.countByColor();
+                        final remain = _remainOf(hi, counts);
+                        return "${widget.palette.colors[hi].id} 剩 $remain/${counts[hi] ?? 0} 颗";
+                      }();
+                return EditorAssembleProgress(
+                  done: done,
+                  total: total,
+                  remainText: remainTxt,
+                );
+              },
             ),
           _buildColorBar(
             _boardMode
@@ -682,88 +619,28 @@ class _EditorPageState extends State<EditorPage> {
 
   /// 工具行：五工具 + 笔刷大小
   Widget _buildToolRow() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-      child: Row(
-        children: [
-          Expanded(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: SegmentedButton<_Tool>(
-                segments: const [
-                  ButtonSegment(
-                    value: _Tool.brush,
-                    icon: Icon(Icons.brush),
-                    label: Text("画笔"),
-                  ),
-                  ButtonSegment(
-                    value: _Tool.eraser,
-                    icon: Icon(Icons.delete_outline),
-                    label: Text("橡皮"),
-                  ),
-                  ButtonSegment(
-                    value: _Tool.bucket,
-                    icon: Icon(Icons.format_color_fill),
-                    label: Text("油漆桶"),
-                  ),
-                  ButtonSegment(
-                    value: _Tool.eyedropper,
-                    icon: Icon(Icons.colorize),
-                    label: Text("吸管"),
-                  ),
-                  ButtonSegment(
-                    value: _Tool.select,
-                    icon: Icon(Icons.crop_free),
-                    label: Text("选区"),
-                  ),
-                ],
-                selected: {_tool},
-                onSelectionChanged: (sel) => setState(() {
-                  _tool = sel.first;
-                  if (_tool != _Tool.select) {
-                    _clearSelection();
-                  }
-                }),
-              ),
-            ),
-          ),
-          if (_tool == _Tool.brush || _tool == _Tool.eraser) ...[
-            const SizedBox(width: 8),
-            SegmentedButton<int>(
-              showSelectedIcon: false,
-              style: const ButtonStyle(visualDensity: VisualDensity.compact),
-              segments: [
-                for (final s in _brushSizes)
-                  ButtonSegment(value: s, label: Text("$s")),
-              ],
-              selected: {_brushSize},
-              onSelectionChanged: (sel) =>
-                  setState(() => _brushSize = sel.first),
-            ),
-          ],
-        ],
-      ),
+    return EditorToolRow(
+      tool: _tool,
+      brushSize: _brushSize,
+      onSelectTool: (t) => setState(() {
+        _tool = t;
+        if (t != EditorTool.select) {
+          _clearSelection();
+        }
+      }),
+      onSelectBrushSize: (s) => setState(() => _brushSize = s),
     );
   }
 
   /// 选区操作条
   Widget _buildSelectionBar() {
     final sel = _selRectCells!;
-    final w = sel.width.toInt(), h = sel.height.toInt();
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
-      child: Row(
-        children: [
-          Text("选区 $w×$h", style: Theme.of(context).textTheme.labelMedium),
-          const SizedBox(width: 4),
-          TextButton(
-            onPressed: _saveSelectionAsNew,
-            child: const Text("另存为图案"),
-          ),
-          TextButton(onPressed: _fillSelection, child: const Text("填充当前色")),
-          TextButton(onPressed: _clearSelection, child: const Text("取消")),
-        ],
-      ),
+    return EditorSelectionBar(
+      selW: sel.width.toInt(),
+      selH: sel.height.toInt(),
+      onSave: _saveSelectionAsNew,
+      onFill: _fillSelection,
+      onCancel: _clearSelection,
     );
   }
 
@@ -814,193 +691,58 @@ class _EditorPageState extends State<EditorPage> {
 
   /// 整图操作行
   Widget _buildOpsRow() {
-    return SizedBox(
-      height: 44,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        children: [
-          ActionChip(
-            avatar: const Icon(Icons.flip_outlined, size: 18),
-            label: const Text("左右翻转"),
-            onPressed: () => _transform(
-              () => flipHorizontal(_model.grid, _model.width, _model.height),
-            ),
-          ),
-          ActionChip(
-            avatar: const Icon(Icons.flip),
-            label: const Text("上下翻转"),
-            onPressed: () => _transform(
-              () => flipVertical(_model.grid, _model.width, _model.height),
-            ),
-          ),
-          ActionChip(
-            avatar: const Icon(Icons.rotate_right_outlined),
-            label: const Text("旋转90°"),
-            onPressed: () => _transform(
-              () => rotate90(_model.grid, _model.width, _model.height),
-            ),
-          ),
-          ActionChip(
-            avatar: const Icon(Icons.photo_size_select_large),
-            label: const Text("改尺寸"),
-            onPressed: _openResizeSheet,
-          ),
-          ActionChip(
-            avatar: const Icon(Icons.auto_fix_high),
-            label: const Text("降噪"),
-            onPressed: _openDenoiseSheet,
-          ),
-          ActionChip(
-            avatar: const Icon(Icons.palette_outlined),
-            label: const Text("限制色数"),
-            onPressed: _openLimitColorsSheet,
-          ),
-          ActionChip(
-            avatar: const Icon(Icons.swap_horiz),
-            label: const Text("全局换色"),
-            onPressed: _openReplaceColorSheet,
-          ),
-        ],
+    return EditorOpsRow(
+      onFlipH: () => _transform(
+        () => flipHorizontal(_model.grid, _model.width, _model.height),
       ),
+      onFlipV: () => _transform(
+        () => flipVertical(_model.grid, _model.width, _model.height),
+      ),
+      onRotate: () => _transform(
+        () => rotate90(_model.grid, _model.width, _model.height),
+      ),
+      onResize: _openResizeSheet,
+      onDenoise: _openDenoiseSheet,
+      onLimitColors: _openLimitColorsSheet,
+      onReplaceColor: _openReplaceColorSheet,
     );
   }
 
   /// 分板控制条：板尺寸 + 板导航 + 本板颗数
   Widget _buildBoardBar() {
-    final rect = _boardRectOf(_boardIndex);
-    final counts = _boardCounts(rect);
+    final counts = _boardCounts(_boardRectOf(_boardIndex));
     final total = counts.values.fold(0, (a, b) => a + b);
-    final row = _boardIndex ~/ _boardsAcross + 1;
-    final col = _boardIndex % _boardsAcross + 1;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
-      child: Row(
-        children: [
-          SegmentedButton<int>(
-            showSelectedIcon: false,
-            style: const ButtonStyle(visualDensity: VisualDensity.compact),
-            segments: [
-              for (final s in _boardSizes)
-                ButtonSegment(value: s, label: Text("$s")),
-            ],
-            selected: {_boardSize},
-            onSelectionChanged: (sel) => _setBoardSize(sel.first),
-          ),
-          const SizedBox(width: 8),
-          IconButton(
-            onPressed: _boardIndex > 0 ? () => _stepBoard(-1) : null,
-            icon: const Icon(Icons.chevron_left),
-          ),
-          Text(
-            "${_boardIndex + 1}/$_boardCount",
-            style: Theme.of(context).textTheme.labelMedium,
-          ),
-          IconButton(
-            onPressed:
-                _boardIndex < _boardCount - 1 ? () => _stepBoard(1) : null,
-            icon: const Icon(Icons.chevron_right),
-          ),
-          const SizedBox(width: 4),
-          Expanded(
-            child: Text(
-              "第$row行·第$col列 · 本板 $total 颗",
-              style: Theme.of(context).textTheme.bodySmall,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ],
-      ),
+    return EditorBoardBar(
+      boardSize: _boardSize,
+      boardIndex: _boardIndex,
+      boardCount: _boardCount,
+      boardsAcross: _boardsAcross,
+      totalBeads: total,
+      onSelectSize: _setBoardSize,
+      onStep: _stepBoard,
     );
   }
 
   /// 底部颜色选择条（拼装模式下兼作高亮选择器，显示每色用量）
   Widget _buildColorBar(Map<int, int> counts) {
-    return SizedBox(
-      height: 76,
-      child: ListView.builder(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        itemCount: widget.palette.colors.length,
-        itemBuilder: (context, i) {
-          final c = widget.palette.colors[i];
-          final count = counts[i] ?? 0;
-          final remain = _assembleMode ? _remainOf(i, counts) : 0;
-          final selected =
-              _assembleMode ? i == _highlightIndex : i == _currentColor;
-          // 拼装模式：该色放完 = 绿框（一眼看出哪色收工）；选中蓝框优先
-          final borderColor = selected
-              ? Colors.blue
-              : (_assembleMode && count > 0 && remain == 0)
-                  ? const Color(0xFF2E7D32)
-                  : Colors.black26;
-          return GestureDetector(
-            onTap: () => setState(() {
-              if (_assembleMode) {
-                // 拼装模式：切换高亮（再点同色取消），不改绘画色
-                _highlightIndex = _highlightIndex == i ? null : i;
-                return;
-              }
-              _currentColor = i;
-              if (_tool == _Tool.eraser) {
-                _tool = _Tool.brush;
-              }
-            }),
-            child: Container(
-              width: 48,
-              height: 60,
-              margin: const EdgeInsets.symmetric(horizontal: 4),
-              decoration: BoxDecoration(
-                color: Color.fromARGB(255, c.r, c.g, c.b),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: borderColor,
-                  width: selected ? 3 : 1,
-                ),
-              ),
-              child: _assembleMode
-                  ? Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(
-                          c.id.replaceFirst("P", ""),
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: _isLightColor(c)
-                                ? Colors.black54
-                                : Colors.white70,
-                          ),
-                        ),
-                        Text(
-                          "$remain/$count",
-                          style: TextStyle(
-                            fontSize: 9,
-                            color: _isLightColor(c)
-                                ? Colors.black45
-                                : Colors.white60,
-                          ),
-                        ),
-                      ],
-                    )
-                  : Center(
-                      child: Text(
-                        c.id.replaceFirst("P", ""),
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: _isLightColor(c)
-                              ? Colors.black54
-                              : Colors.white70,
-                        ),
-                      ),
-                    ),
-            ),
-          );
-        },
-      ),
+    return EditorColorBar(
+      palette: widget.palette,
+      counts: counts,
+      assembleMode: _assembleMode,
+      highlightIndex: _highlightIndex,
+      currentColor: _currentColor,
+      remainOf: _remainOf,
+      onTap: (i) => setState(() {
+        if (_assembleMode) {
+          // 拼装模式：切换高亮（再点同色取消），不改绘画色
+          _highlightIndex = _highlightIndex == i ? null : i;
+          return;
+        }
+        _currentColor = i;
+        if (_tool == EditorTool.eraser) {
+          _tool = EditorTool.brush;
+        }
+      }),
     );
   }
-
-  /// 粗略判断浅色（决定色块上文字颜色）
-  bool _isLightColor(BeadColor c) =>
-      (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) > 150;
 }
