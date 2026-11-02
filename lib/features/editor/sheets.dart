@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/app_snack_bar.dart';
 import '../../core/palette.dart';
+import '../palette_picker.dart';
 
 /// 通用弹窗外壳
 Widget _sheet(BuildContext context, String title, Widget child) {
@@ -212,7 +213,8 @@ Future<void> showLimitColorsSheet(
   );
 }
 
-/// 色板横向单选行（换色弹窗用）
+/// 色号选择行（换色弹窗用）：点开色卡网格选择——大色卡横向单选条要滚
+/// 几百格还难定位，统一走带字母目录+搜索的选择器
 class _PaletteRow extends StatelessWidget {
   final BeadPalette palette;
   final int selected;
@@ -228,53 +230,42 @@ class _PaletteRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isBlank = selected < 0 || selected >= palette.colors.length;
+    final c = isBlank ? null : palette.colors[selected];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(label, style: Theme.of(context).textTheme.labelMedium),
         const SizedBox(height: 6),
         SizedBox(
-          height: 52,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            itemCount: palette.colors.length + 1, // +1 = 空格（擦除）
-            separatorBuilder: (_, __) => const SizedBox(width: 6),
-            itemBuilder: (context, i) {
-              final isBlank = i == palette.colors.length;
-              final sel = selected == (isBlank ? -1 : i);
-              final c = isBlank ? null : palette.colors[i];
-              return GestureDetector(
-                onTap: () => onPicked(isBlank ? -1 : i),
-                child: Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: c != null
-                        ? Color.fromARGB(255, c.r, c.g, c.b)
-                        : Colors.white,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: sel ? Colors.blue : Colors.black26,
-                      width: sel ? 3 : 1,
-                    ),
-                  ),
-                  child: isBlank
-                      ? const Icon(Icons.block, size: 20, color: Colors.black38)
-                      : Center(
-                          child: Text(
-                            c!.id.replaceFirst("P", ""),
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) >
-                                      150
-                                  ? Colors.black54
-                                  : Colors.white70,
-                            ),
-                          ),
-                        ),
-                ),
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: () async {
+              final i = await showPaletteColorPicker(
+                context,
+                palette: palette,
+                withBlank: true, // 空格（擦除）也可选
+                title: label,
               );
+              if (i != null) {
+                onPicked(i);
+              }
             },
+            icon: c != null
+                ? Container(
+                    width: 22,
+                    height: 22,
+                    decoration: BoxDecoration(
+                      color: Color.fromARGB(255, c.r, c.g, c.b),
+                      borderRadius: BorderRadius.circular(5),
+                      border: Border.all(color: Colors.black26),
+                    ),
+                  )
+                : const Icon(Icons.block, size: 20, color: Colors.black38),
+            label: Text(
+              c != null ? "${c.id} ${c.name} · 点击更换" : "空格（擦除）",
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
         ),
       ],

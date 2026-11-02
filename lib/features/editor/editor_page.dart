@@ -11,6 +11,7 @@ import '../../core/grid_ops.dart';
 import '../../core/palette.dart';
 import '../../core/pattern_model.dart';
 import '../../core/quantizer.dart';
+import '../palette_picker.dart';
 import '../preview/preview_page.dart';
 import '../stats/stats_page.dart';
 import 'board_split.dart';
@@ -39,6 +40,9 @@ class EditorPage extends StatefulWidget {
   final Set<int> placed;
 
   ///< 拼装进度（作品库打开时恢复；新建为空）
+  final String? sortMode;
+
+  ///< 信息排序模式（作品 meta 携带，用料统计沿用；null = 默认颗数降序）
 
   const EditorPage({
     super.key,
@@ -46,6 +50,7 @@ class EditorPage extends StatefulWidget {
     required this.palette,
     this.sourceFile,
     this.placed = const <int>{},
+    this.sortMode,
   });
 
   @override
@@ -60,9 +65,10 @@ class _EditorPageState extends State<EditorPage> {
   final _history = SnapshotHistory<_Snapshot>();
   var _tool = EditorTool.brush;
   var _brushSize = 1;
-  var _currentColor = 9;
+  int? _currentColor;
 
-  ///< 默认选中红色（显眼）
+  ///< 当前绘画色（null = 未选色：画笔/油漆桶/选区填充一律不落笔，
+  ///< 必须点下方选色按钮或用吸管取色指定）
 
   // 拼装模式：点颜色条 = 高亮该色全部格子（其余色降饱和），辅助对照实物拼豆；
   // 点画布格子 = 标记已放（半透明白罩+对勾，剩余颗数递减），进度随作品保存
@@ -164,22 +170,22 @@ class _EditorPageState extends State<EditorPage> {
 
   // ==================== 画布交互 ====================
 
-  /// 局部坐标 -> 格子坐标
-  int _cellX(Offset local, double canvasSide) =>
-      (local.dx / (canvasSide / _model.width)).floor().clamp(
+  /// 局部坐标 -> 格子坐标（画布宽高随图案宽高比走，横纵格边长可不同）
+  int _cellX(Offset local, double canvasW) =>
+      (local.dx / (canvasW / _model.width)).floor().clamp(
             0,
             _model.width - 1,
           );
 
-  int _cellY(Offset local, double canvasSide) =>
-      (local.dy / (canvasSide / _model.height)).floor().clamp(
+  int _cellY(Offset local, double canvasH) =>
+      (local.dy / (canvasH / _model.height)).floor().clamp(
             0,
             _model.height - 1,
           );
 
-  void _applyAt(Offset local, double canvasSide, {required bool isStart}) {
-    final x = _cellX(local, canvasSide);
-    final y = _cellY(local, canvasSide);
+  void _applyAt(Offset local, Size canvasSize, {required bool isStart}) {
+    final x = _cellX(local, canvasSize.width);
+    final y = _cellY(local, canvasSize.height);
 
     // 拼装模式画布只做标记：点格=放/取消一颗（拖动不连标，防误触），
     // 绘制工具全部旁路——拼装中途不可能误改图案
@@ -193,18 +199,32 @@ class _EditorPageState extends State<EditorPage> {
     switch (_tool) {
       case EditorTool.brush:
       case EditorTool.eraser:
+        final color = _currentColor;
+        if (_tool == EditorTool.brush && color == null) {
+          // 未选色不落笔：先在颜色条指定颜色（拖动中不重复提示）
+          if (isStart) {
+            AppSnackBar.show(context, "先点下方按钮选择颜色，再绘制");
+          }
+          return;
+        }
         if (isStart) {
           _pushUndo();
         }
-        final value = _tool == EditorTool.brush ? _currentColor : -1;
-        _paintSquare(x, y, value);
+        _paintSquare(x, y, _tool == EditorTool.brush ? color! : -1);
         _revision.value++;
         break;
 
       case EditorTool.bucket:
+        final color = _currentColor;
+        if (color == null) {
+          if (isStart) {
+            AppSnackBar.show(context, "先点下方按钮选择颜色，再填充");
+          }
+          return;
+        }
         if (isStart) {
           _pushUndo();
-          _model.floodFill(x, y, _currentColor);
+          _model.floodFill(x, y, color);
           _revision.value++;
         }
         break;
@@ -358,10 +378,15 @@ class _EditorPageState extends State<EditorPage> {
     if (sel == null) {
       return;
     }
+    final color = _currentColor;
+    if (color == null) {
+      AppSnackBar.show(context, "先点下方按钮选择颜色");
+      return;
+    }
     _pushUndo();
     for (var y = sel.top.toInt(); y < sel.bottom.toInt(); y++) {
       for (var x = sel.left.toInt(); x < sel.right.toInt(); x++) {
-        _model.setCell(x, y, _currentColor);
+        _model.setCell(x, y, color);
       }
     }
     _revision.value++;
@@ -444,8 +469,9 @@ class _EditorPageState extends State<EditorPage> {
     showReplaceColorSheet(
       context,
       palette: widget.palette,
-      initialFrom: _currentColor,
-      initialTo: (_currentColor + 1).clamp(0, widget.palette.colors.length - 1),
+      initialFrom: _currentColor ?? 0,
+      initialTo: ((_currentColor ?? 0) + 1)
+          .clamp(0, widget.palette.colors.length - 1),
       onApply: (from, to) {
         _pushUndo();
         final count = replaceColor(_model.grid, from, to);
@@ -471,6 +497,7 @@ class _EditorPageState extends State<EditorPage> {
       _model,
       overwrite: widget.sourceFile,
       placed: _placed,
+      sortMode: widget.sortMode,
     );
     if (mounted) {
       AppSnackBar.show(
@@ -514,6 +541,8 @@ class _EditorPageState extends State<EditorPage> {
     return Scaffold(
       appBar: AppBar(
         title: Text("编辑 ${_model.width}×${_model.height} · $usedColors 色"),
+        // 窄屏放不下九个图标按钮（会与返回键互相遮挡）：常驻撤销/重做/
+        // 保存，其余收进 ⋮ 菜单
         actions: [
           IconButton(
             onPressed: _history.canUndo ? _undo : null,
@@ -530,52 +559,85 @@ class _EditorPageState extends State<EditorPage> {
             icon: const Icon(Icons.save_outlined),
             tooltip: "保存草稿",
           ),
-          IconButton(
-            onPressed: _exportPng,
-            icon: const Icon(Icons.download),
-            tooltip: "导出PNG",
-          ),
-          IconButton(
-            onPressed: () => setState(() {
-              _assembleMode = !_assembleMode;
-              _highlightIndex = null;
-            }),
-            icon: Icon(
-              _assembleMode ? Icons.visibility : Icons.visibility_outlined,
-            ),
-            tooltip: _assembleMode ? "退出拼装模式" : "拼装模式",
-          ),
-          IconButton(
-            onPressed: () => setState(() {
-              _boardMode = !_boardMode;
-              if (_boardMode) {
-                _boardIndex = _boardIndex.clamp(0, _boardCount - 1);
+          PopupMenuButton<String>(
+            tooltip: "更多",
+            onSelected: (k) {
+              switch (k) {
+                case 'export':
+                  _exportPng();
+                case 'assemble':
+                  setState(() {
+                    _assembleMode = !_assembleMode;
+                    _highlightIndex = null;
+                  });
+                case 'board':
+                  setState(() {
+                    _boardMode = !_boardMode;
+                    if (_boardMode) {
+                      _boardIndex = _boardIndex.clamp(0, _boardCount - 1);
+                    }
+                  });
+                case 'preview':
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          PreviewPage(model: _model, palette: widget.palette),
+                    ),
+                  );
+                case 'stats':
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => StatsPage(
+                        model: _model,
+                        palette: widget.palette,
+                        sortMode: widget.sortMode,
+                      ),
+                    ),
+                  );
               }
-            }),
-            icon: Icon(
-              _boardMode ? Icons.view_module : Icons.view_module_outlined,
-            ),
-            tooltip: _boardMode ? "退出分板模式" : "分板拼装",
-          ),
-          IconButton(
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) =>
-                    PreviewPage(model: _model, palette: widget.palette),
+            },
+            itemBuilder: (_) => [
+              const PopupMenuItem(
+                value: 'export',
+                child: Row(
+                  children: [
+                    Icon(Icons.download),
+                    SizedBox(width: 12),
+                    Text("导出PNG"),
+                  ],
+                ),
               ),
-            ),
-            icon: const Icon(Icons.view_in_ar_outlined),
-            tooltip: "预览",
-          ),
-          IconButton(
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) =>
-                    StatsPage(model: _model, palette: widget.palette),
+              CheckedPopupMenuItem(
+                value: 'assemble',
+                checked: _assembleMode,
+                child: const Text("拼装模式"),
               ),
-            ),
-            icon: const Icon(Icons.list_alt),
-            tooltip: "用料统计",
+              CheckedPopupMenuItem(
+                value: 'board',
+                checked: _boardMode,
+                child: const Text("分板拼装"),
+              ),
+              const PopupMenuItem(
+                value: 'preview',
+                child: Row(
+                  children: [
+                    Icon(Icons.view_in_ar_outlined),
+                    SizedBox(width: 12),
+                    Text("预览"),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'stats',
+                child: Row(
+                  children: [
+                    Icon(Icons.list_alt),
+                    SizedBox(width: 12),
+                    Text("用料统计"),
+                  ],
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -607,11 +669,16 @@ class _EditorPageState extends State<EditorPage> {
                 );
               },
             ),
-          _buildColorBar(
-            _boardMode
-                ? _boardCounts(_boardRectOf(_boardIndex))
-                : _model.countByColor(),
-          ),
+          // 拼装模式：色条兼高亮选择器（显示每色用量/剩余）；编辑模式：
+          // 点按钮展开色卡网格选绘画色（与图例"添加色号"同一选择器）
+          if (_assembleMode)
+            _buildColorBar(
+              _boardMode
+                  ? _boardCounts(_boardRectOf(_boardIndex))
+                  : _model.countByColor(),
+            )
+          else
+            _buildColorPickerEntry(),
         ],
       ),
     );
@@ -644,16 +711,23 @@ class _EditorPageState extends State<EditorPage> {
     );
   }
 
-  /// 画布
+  /// 画布：尺寸随图案宽高比适配可用区域（先前固定正方形，竖版图案
+  /// 网格总高超出画布——底部横线画到画布外被底部控件盖住，且点击
+  /// 映射跟着错位）
   Widget _buildCanvas() {
     return Center(
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final side = constraints.biggest.shortestSide * 0.96;
-          final canvasSize = Size.square(side);
+          final area = constraints.biggest * 0.96;
+          final aspect = _model.width / _model.height;
+          final canvasSize = area.aspectRatio > aspect
+              ? Size(area.height * aspect, area.height)
+              : Size(area.width, area.width / aspect);
           return GestureDetector(
-            onPanDown: (d) => _applyAt(d.localPosition, side, isStart: true),
-            onPanUpdate: (d) => _applyAt(d.localPosition, side, isStart: false),
+            onPanDown: (d) =>
+                _applyAt(d.localPosition, canvasSize, isStart: true),
+            onPanUpdate: (d) =>
+                _applyAt(d.localPosition, canvasSize, isStart: false),
             child: CustomPaint(
               size: canvasSize,
               painter: GridPainter(
@@ -721,6 +795,57 @@ class _EditorPageState extends State<EditorPage> {
       onSelectSize: _setBoardSize,
       onStep: _stepBoard,
     );
+  }
+
+  /// 底部选色入口（编辑模式）：点开才展开全部色号网格——常驻整条色卡
+  /// 在大色卡（291 色）下又长又难找，与图例"添加色号"统一交互
+  Widget _buildColorPickerEntry() {
+    final idx = _currentColor;
+    final c = idx != null && idx < widget.palette.colors.length
+        ? widget.palette.colors[idx]
+        : null;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+      child: SizedBox(
+        width: double.infinity,
+        child: OutlinedButton.icon(
+          onPressed: _pickPaintColor,
+          icon: c == null
+              ? const Icon(Icons.palette_outlined, size: 22)
+              : Container(
+                  width: 24,
+                  height: 24,
+                  decoration: BoxDecoration(
+                    color: Color.fromARGB(255, c.r, c.g, c.b),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: Colors.black26),
+                  ),
+                ),
+          label: Text(
+            c == null ? "选择颜色" : "${c.id} ${c.name} · 点击换色",
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 弹色卡网格选绘画色（吸管/色条同源：选完自动从橡皮切回画笔）
+  Future<void> _pickPaintColor() async {
+    final i = await showPaletteColorPicker(
+      context,
+      palette: widget.palette,
+      title: "选择绘画颜色",
+    );
+    if (i == null || i < 0 || !mounted) {
+      return;
+    }
+    setState(() {
+      _currentColor = i;
+      if (_tool == EditorTool.eraser) {
+        _tool = EditorTool.brush;
+      }
+    });
   }
 
   /// 底部颜色选择条（拼装模式下兼作高亮选择器，显示每色用量）

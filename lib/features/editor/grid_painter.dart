@@ -9,9 +9,9 @@ import '../../core/pattern_model.dart';
 class GridPainter extends CustomPainter {
   final PatternModel model;
   final BeadPalette palette;
-  final int selectedColorIndex;
+  final int? selectedColorIndex;
 
-  ///< 当前选中色（画布上描高亮框提示）
+  ///< 当前绘画色（null = 未选色；仅参与重绘判定）
   final Rect? selectionRect;
 
   ///< 矩形选区（画布坐标，null = 无）
@@ -38,7 +38,10 @@ class GridPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final cell = size.width / model.width;
+    // 横纵分开算：画布尺寸由页面按图案宽高比适配（理论上相等，防比例
+    // 失配时网格越界画布——底部横线被裁正是这么来的）
+    final cellW = size.width / model.width;
+    final cellH = size.height / model.height;
     final gridPaint = Paint()..style = PaintingStyle.fill;
     final linePaint = Paint()
       ..style = PaintingStyle.stroke
@@ -77,7 +80,7 @@ class GridPainter extends CustomPainter {
         }
         gridPaint.color = color;
         canvas.drawRect(
-          Rect.fromLTWH(x * cell, y * cell, cell, cell),
+          Rect.fromLTWH(x * cellW, y * cellH, cellW, cellH),
           gridPaint,
         );
       }
@@ -85,7 +88,7 @@ class GridPainter extends CustomPainter {
 
     // 网格线（每 10 格加粗，拼豆板数行习惯）
     for (var x = 0; x <= model.width; x++) {
-      final p = (x * cell);
+      final p = (x * cellW);
       canvas.drawLine(
         Offset(p, 0),
         Offset(p, size.height),
@@ -93,7 +96,7 @@ class GridPainter extends CustomPainter {
       );
     }
     for (var y = 0; y <= model.height; y++) {
-      final p = (y * cell);
+      final p = (y * cellH);
       canvas.drawLine(
         Offset(0, p),
         Offset(size.width, p),
@@ -117,17 +120,17 @@ class GridPainter extends CustomPainter {
           continue; // 编辑后失效的进度索引跳过
         }
         final x = i % model.width, y = i ~/ model.width;
-        final rect = Rect.fromLTWH(x * cell, y * cell, cell, cell);
+        final rect = Rect.fromLTWH(x * cellW, y * cellH, cellW, cellH);
         canvas.drawRect(rect, veil);
         final cx = rect.center.dx, cy = rect.center.dy;
         canvas.drawLine(
-          Offset(cx - cell * 0.22, cy),
-          Offset(cx - cell * 0.05, cy + cell * 0.2),
+          Offset(cx - cellW * 0.22, cy),
+          Offset(cx - cellW * 0.05, cy + cellH * 0.2),
           check,
         );
         canvas.drawLine(
-          Offset(cx - cell * 0.05, cy + cell * 0.2),
-          Offset(cx + cell * 0.28, cy - cell * 0.2),
+          Offset(cx - cellW * 0.05, cy + cellH * 0.2),
+          Offset(cx + cellW * 0.28, cy - cellH * 0.2),
           check,
         );
       }

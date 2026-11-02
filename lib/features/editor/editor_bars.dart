@@ -33,60 +33,63 @@ class EditorToolRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 工具条与笔刷粗细并入同一条横向滚动：先前 Row+Expanded 把工具条
+    // 压到粗细条底下（窄屏两者互相遮挡），同一条里各自按固有宽度排、
+    // 放不下整体滚动，互不挤压
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-      child: Row(
-        children: [
-          Expanded(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: SegmentedButton<EditorTool>(
-                segments: const [
-                  ButtonSegment(
-                    value: EditorTool.brush,
-                    icon: Icon(Icons.brush),
-                    label: Text("画笔"),
-                  ),
-                  ButtonSegment(
-                    value: EditorTool.eraser,
-                    icon: Icon(Icons.delete_outline),
-                    label: Text("橡皮"),
-                  ),
-                  ButtonSegment(
-                    value: EditorTool.bucket,
-                    icon: Icon(Icons.format_color_fill),
-                    label: Text("油漆桶"),
-                  ),
-                  ButtonSegment(
-                    value: EditorTool.eyedropper,
-                    icon: Icon(Icons.colorize),
-                    label: Text("吸管"),
-                  ),
-                  ButtonSegment(
-                    value: EditorTool.select,
-                    icon: Icon(Icons.crop_free),
-                    label: Text("选区"),
-                  ),
-                ],
-                selected: {tool},
-                onSelectionChanged: (sel) => onSelectTool(sel.first),
-              ),
-            ),
-          ),
-          if (tool == EditorTool.brush || tool == EditorTool.eraser) ...[
-            const SizedBox(width: 8),
-            SegmentedButton<int>(
-              showSelectedIcon: false,
-              style: const ButtonStyle(visualDensity: VisualDensity.compact),
-              segments: [
-                for (final s in brushSizes)
-                  ButtonSegment(value: s, label: Text("$s")),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            SegmentedButton<EditorTool>(
+              segments: const [
+                ButtonSegment(
+                  value: EditorTool.brush,
+                  icon: Icon(Icons.brush),
+                  label: Text("画笔"),
+                ),
+                ButtonSegment(
+                  value: EditorTool.eraser,
+                  icon: Icon(Icons.delete_outline),
+                  label: Text("橡皮"),
+                ),
+                ButtonSegment(
+                  value: EditorTool.bucket,
+                  icon: Icon(Icons.format_color_fill),
+                  label: Text("油漆桶"),
+                ),
+                ButtonSegment(
+                  value: EditorTool.eyedropper,
+                  icon: Icon(Icons.colorize),
+                  label: Text("吸管"),
+                ),
+                ButtonSegment(
+                  value: EditorTool.select,
+                  icon: Icon(Icons.crop_free),
+                  label: Text("选区"),
+                ),
               ],
-              selected: {brushSize},
-              onSelectionChanged: (sel) => onSelectBrushSize(sel.first),
+              selected: {tool},
+              onSelectionChanged: (sel) => onSelectTool(sel.first),
             ),
+            if (tool == EditorTool.brush || tool == EditorTool.eraser) ...[
+              const SizedBox(width: 8),
+              SegmentedButton<int>(
+                showSelectedIcon: false,
+                style: const ButtonStyle(
+                  visualDensity: VisualDensity.compact,
+                ),
+                segments: [
+                  for (final s in brushSizes)
+                    ButtonSegment(value: s, label: Text("$s")),
+                ],
+                selected: {brushSize},
+                onSelectionChanged: (sel) => onSelectBrushSize(sel.first),
+              ),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
@@ -322,7 +325,9 @@ class EditorColorBar extends StatelessWidget {
   ///< 用量（分板模式为本板用量）
   final bool assembleMode;
   final int? highlightIndex;
-  final int currentColor;
+  final int? currentColor;
+
+  ///< 当前绘画色（null = 未选色，色条全不高亮）
   final int Function(int colorIndex, Map<int, int> counts) remainOf;
 
   ///< 该色剩余颗数（拼装模式显示 remain/count）
