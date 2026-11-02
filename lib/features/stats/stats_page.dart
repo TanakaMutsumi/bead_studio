@@ -97,11 +97,9 @@ class _StatsPageState extends State<StatsPage> {
   Widget build(BuildContext context) {
     final counts = widget.model.countByColor();
     // 排序：默认（含旧作品 null）颗数降序；带 meta.sortMode 时沿用图例
-    // 核对步的选择（position = map 插入序 = 图格扫描序；"reading" 是
-    // 位置序的旧名，兼容旧作品存档）
-    final mode = widget.sortMode == "reading"
-        ? LegendSort.position
-        : LegendSort.values.asNameMap()[widget.sortMode ?? ""];
+    // 核对步的选择（position = map 插入序 = 图格扫描序；旧名 "reading"
+    // 兼容见 legendSortFromName）
+    final mode = legendSortFromName(widget.sortMode);
     final entries = counts.entries.toList();
     if (mode == null || mode == LegendSort.countDesc) {
       entries.sort((a, b) => b.value.compareTo(a.value));

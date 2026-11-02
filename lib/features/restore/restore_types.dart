@@ -57,6 +57,15 @@ const Map<LegendSort, String> legendSortLabels = {
   LegendSort.position: "位置序",
 };
 
+/// 存档排序名（meta.sortMode）-> 排序模式：null/未知名返回 null
+/// （调用方各自给默认）。旧作品存的 "reading" 是位置序的前身，兼容
+LegendSort? legendSortFromName(String? name) {
+  if (name == "reading") {
+    return LegendSort.position;
+  }
+  return LegendSort.values.asNameMap()[name ?? ""];
+}
+
 /// 图例清单排序比较器（LegendStep 列表与 ReviewStep chips 共用）：
 /// [sort] 模式 + 参与排序的颗数取值函数（图例步传 expectedCount，
 /// 复核步传 图例颗数 ?? 实际颗数）。position 模式即列表原始顺序

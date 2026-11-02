@@ -5,6 +5,7 @@ import '../../core/board_config.dart';
 import '../../core/draft_store.dart';
 import '../../core/palette.dart';
 import '../../core/zoom_controls.dart';
+import '../restore/restore_types.dart';
 import 'board_painter.dart';
 import 'major_color_picker.dart';
 import 'placed_work.dart';
@@ -16,6 +17,10 @@ import 'placed_work.dart';
 ///（色条与高亮只算所选作品，点格也只标记它；选中色后范围外作品整体
 /// 压灰为"未选中"观感）；双击色号 = 范围内该色一次性全部标记已放
 ///（再双击撤销）。placed 按作品分账，保存时写回各自作品文件
+///
+/// 色条排序（orderAssembleColors）：完成的色（范围内剩余 0）整段垫后
+/// 摆，段内按所选模式排（图例核对步同款四模式，初始沿用作品
+/// meta.sortMode，本会话内可切不回写）
 ///
 /// 后续拼豆辅助操作（本页为基座）在此基础上扩展
 class AssemblePage extends StatefulWidget {
@@ -58,6 +63,36 @@ class _AssemblePageState extends State<AssemblePage> {
   Size _canvasSize = Size.zero;
 
   ///< 画布内容尺寸速记（LayoutBuilder builder 内赋值供缩放边界计算用）
+  late LegendSort _colorSort = _initColorSort();
+
+  ///< 色条排序模式（完成色垫后的段内排序）：初始沿用作品 meta.sortMode
+  ///<（首个非空的作品），全空/未知名回落颗数降序 = 原行为。切换只在
+  ///< 本会话生效不回写——拼豆色条是板级视图（多作品合并），写回会让
+  ///< 各作品的信息排序偏好互相覆盖
+  late final Map<String, int> _codeOrder = _buildCodeOrder();
+
+  ///< 色号 -> 调色板自然序索引（A1→A2→…→B1…，色号序用；先到的作品
+  ///< 优先——同注册表下各作品一致，跨注册表混摆属退化场景取首个）
+  LegendSort _initColorSort() {
+    for (final w in widget.works) {
+      final m = legendSortFromName(w.entry.sortMode);
+      if (m != null) {
+        return m;
+      }
+    }
+    return LegendSort.countDesc;
+  }
+
+  Map<String, int> _buildCodeOrder() {
+    final m = <String, int>{};
+    for (final w in widget.works) {
+      final cs = w.palette.colors;
+      for (var i = 0; i < cs.length; i++) {
+        m.putIfAbsent(cs[i].id, () => i);
+      }
+    }
+    return m;
+  }
 
   @override
   void initState() {
@@ -404,6 +439,9 @@ class _AssemblePageState extends State<AssemblePage> {
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ),
+                  // 色条排序（与图例核对步同款四模式单选菜单）：完成色
+                  //（剩余 0）恒垫后由排序函数保证，这里只管段内次序
+                  _sortPopup(),
                 ],
               ),
             ),
@@ -582,11 +620,66 @@ class _AssemblePageState extends State<AssemblePage> {
     );
   }
 
+  /// 色条排序下拉（摘要行内，图例核对步 _sortPopup 同款样式）：四模式
+  /// 单选，当前模式带勾。完成色垫后不归它管（恒生效），见
+  /// orderAssembleColors
+  Widget _sortPopup() {
+    return PopupMenuButton<LegendSort>(
+      tooltip: "色条排序",
+      initialValue: _colorSort,
+      onSelected: (s) => setState(() => _colorSort = s),
+      itemBuilder: (_) => [
+        for (final e in LegendSort.values)
+          PopupMenuItem(
+            value: e,
+            child: Row(
+              children: [
+                Icon(
+                  Icons.check,
+                  size: 16,
+                  color: e == _colorSort ? Colors.blue : Colors.transparent,
+                ),
+                const SizedBox(width: 4),
+                Text(legendSortLabels[e]!),
+              ],
+            ),
+          ),
+      ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          border: Border.all(color: Colors.black26),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.sort, size: 14, color: Colors.black54),
+            const SizedBox(width: 2),
+            Text(
+              legendSortLabels[_colorSort]!,
+              style: const TextStyle(fontSize: 12, color: Colors.black87),
+            ),
+            const Icon(Icons.arrow_drop_down, size: 16, color: Colors.black54),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// 底部颜色条：范围内用到的色（按色号合并）+ 剩余颗数
-  ///（单击选色高亮；双击整色标记已放；放完绿框）
+  ///（单击选色高亮；双击整色标记已放；放完绿框并排到条尾）
   Widget _buildColorBar(Map<String, int> totals, int? scope) {
-    final used = totals.keys.toList()
-      ..sort((a, b) => totals[b]!.compareTo(totals[a]!));
+    // 剩余颗数一次算全：垫后判定与条目绿框/文案复用（范围随 scope）
+    final remain = {
+      for (final id in totals.keys) id: _remainOf(id, totals, scope),
+    };
+    final used = orderAssembleColors(
+      totals.keys.toList(),
+      totals,
+      remain,
+      _colorSort,
+      (id) => _codeOrder[id] ?? 1 << 30,
+    );
     return SizedBox(
       height: 76,
       child: ListView.builder(
@@ -597,11 +690,11 @@ class _AssemblePageState extends State<AssemblePage> {
           final id = used[idx];
           final c = _colorOf(id);
           final count = totals[id] ?? 0;
-          final remain = _remainOf(id, totals, scope);
+          final left = remain[id] ?? 0;
           final selected = id == _highlightId;
           final borderColor = selected
               ? Colors.blue
-              : (count > 0 && remain == 0)
+              : (count > 0 && left == 0)
                   ? const Color(0xFF2E7D32)
                   : Colors.black26;
           final light =
@@ -639,7 +732,7 @@ class _AssemblePageState extends State<AssemblePage> {
                     ),
                   ),
                   Text(
-                    "$remain/$count",
+                    "$left/$count",
                     style: TextStyle(
                       fontSize: 9,
                       color: light ? Colors.black45 : Colors.white60,
@@ -653,4 +746,47 @@ class _AssemblePageState extends State<AssemblePage> {
       ),
     );
   }
+}
+
+/// 色条排序：完成的色（[remain] 为 0）整段垫后——拼豆进行中没拼完的
+/// 色留在手边，翻到尾才是拼完的；段内按 [sort]（图例核对步同款四
+/// 模式：[totals] 取颗数、[codeOf] 取色号自然序）。position 模式段内
+/// 保持 [ids] 传入序（= totals 插入序 = 跨作品网格扫描首现序，与用料
+/// 统计页同口径——图例物理位置序未随作品存档，无从还原）
+List<String> orderAssembleColors(
+  List<String> ids,
+  Map<String, int> totals,
+  Map<String, int> remain,
+  LegendSort sort,
+  int Function(String) codeOf,
+) {
+  final undone = <String>[];
+  final done = <String>[];
+  for (final id in ids) {
+    ((remain[id] ?? 0) <= 0 ? done : undone).add(id);
+  }
+  int byCode(String a, String b) => codeOf(a).compareTo(codeOf(b));
+  int Function(String, String) cmp;
+  switch (sort) {
+    case LegendSort.countDesc:
+      cmp = (a, b) {
+        final d = totals[b]!.compareTo(totals[a]!);
+        return d != 0 ? d : byCode(a, b);
+      };
+    case LegendSort.countAsc:
+      cmp = (a, b) {
+        final d = totals[a]!.compareTo(totals[b]!);
+        return d != 0 ? d : byCode(a, b);
+      };
+    case LegendSort.code:
+      cmp = byCode;
+    case LegendSort.position:
+      cmp = (a, b) => 0;
+  }
+  // position 不调 sort（List.sort 非稳定，比较器返回 0 保不住传入序）
+  if (sort != LegendSort.position) {
+    undone.sort(cmp);
+    done.sort(cmp);
+  }
+  return [...undone, ...done];
 }
