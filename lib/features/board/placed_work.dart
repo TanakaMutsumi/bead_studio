@@ -123,10 +123,19 @@ class PlacedWork {
   /// 作品是否完全放进板内（按变换后尺寸）
   bool fits(int bw, int bh) => _model.width <= bw && _model.height <= bh;
 
-  /// 把偏移 clamp 进板合法范围（超板作品落 (0,0)，按变换后尺寸）
+  /// 把偏移 clamp 进可达范围：放得下的作品 [0, 板边-作品边]；超板作品
+  /// 允许负偏移（[板边-作品边, 0]，出界部分悬挂板外左/上），拖动可选
+  /// 哪一段落在板内
   void clampTo(int bw, int bh) {
-    ox = ox.clamp(0, math.max(0, bw - _model.width)).toInt();
-    oy = oy.clamp(0, math.max(0, bh - _model.height)).toInt();
+    ox = ox
+        .clamp(math.min(0, bw - _model.width), math.max(0, bw - _model.width))
+        .toInt();
+    oy = oy
+        .clamp(
+          math.min(0, bh - _model.height),
+          math.max(0, bh - _model.height),
+        )
+        .toInt();
   }
 
   PlacedWork copyWith({BeadPalette? palette}) {

@@ -12,8 +12,10 @@ import 'placed_work.dart';
 /// 拼豆界面：豆板画布（多作品按各自偏移叠加）+ 点色高亮 + 点格标记已放 +
 /// 进度/剩余颗数 + 返回自动保存进度
 ///
-/// 选色与高亮按色号跨作品统一（同一色号在所有作品中一起高亮）；
-/// placed 按作品分账，保存时写回各自作品文件
+/// 高亮方案两档：按全部作品（同色号跨作品一起高亮/统计）/ 按单件作品
+///（色条与高亮只算所选作品，点格也只标记它；选中色后范围外作品整体
+/// 压灰为"未选中"观感）；双击色号 = 范围内该色一次性全部标记已放
+///（再双击撤销）。placed 按作品分账，保存时写回各自作品文件
 ///
 /// 后续拼豆辅助操作（本页为基座）在此基础上扩展
 class AssemblePage extends StatefulWidget {
@@ -34,6 +36,14 @@ class _AssemblePageState extends State<AssemblePage> {
     for (final w in widget.works) {...w.placed},
   ];
   String? _highlightId;
+  var _scopeAll = true;
+
+  ///< 高亮方案：true = 按全部作品（同色号跨作品一起高亮）；false =
+  ///< 按单件作品（只看/只标 [_scopeWork]）
+  int? _scopeWork;
+
+  ///< 单件作品方案的当前作品索引（多件作品时由分段选择激活）
+
   var _labelMode = LabelMode.id;
 
   ///< 格子文字层模式（选中色号后可切横向/竖向编号；默认只色号）
@@ -78,18 +88,17 @@ class _AssemblePageState extends State<AssemblePage> {
     return -1;
   }
 
-  /// 画布点按：先选色（高亮色号），再点该色格子标记/取消已放
+  /// 画布点按：未选色时点某颗豆 = 选中该豆的颜色（单件方案顺手切到该豆
+  /// 的作品）；已选色时点该色格子标记/取消已放
   void _toggleAt(Offset local, double canvasW, double canvasH) {
-    final hi = _highlightId;
-    if (hi == null) {
-      AppSnackBar.show(context, "先点下方颜色选择要拼的色，再点格子标记已放");
-      return;
-    }
     final b = widget.board;
     final bx = (local.dx / (canvasW / b.w)).floor();
     final by = (local.dy / (canvasH / b.h)).floor();
     final idx = _hitWorkIndex(bx, by);
     if (idx < 0) {
+      if (_highlightId == null) {
+        AppSnackBar.show(context, "点图上的豆可选中它的颜色，或点下方颜色条选择");
+      }
       return; // 点在板空区
     }
     final w = widget.works[idx];
@@ -101,6 +110,31 @@ class _AssemblePageState extends State<AssemblePage> {
     final i = y * m.width + x;
     final v = m.grid[i];
     final id = v >= 0 && v < m.paletteIds.length ? m.paletteIds[v] : null;
+    final hi = _highlightId;
+    if (hi == null) {
+      if (id == null) {
+        return; // 空白格：无可选的色
+      }
+      setState(() {
+        _highlightId = id;
+        // 单件方案下点到别的作品的豆 = 用户在看那件，切过去再高亮
+        if (!_scopeAll) {
+          _scopeWork = idx;
+        }
+      });
+      return;
+    }
+    if (!_scopeAll) {
+      final scope = _scopeWork;
+      if (scope != null && idx != scope) {
+        AppSnackBar.show(
+          context,
+          "当前按「${widget.works[scope].entry.name}」标记，"
+          "点的是别的作品——切换方案或改选作品",
+        );
+        return;
+      }
+    }
     if (id != hi) {
       return; // 非高亮色格子不响应
     }
@@ -109,13 +143,67 @@ class _AssemblePageState extends State<AssemblePage> {
     });
   }
 
+  /// 双击色号：范围内该色一次性全部标记已放；已全部标记时双击撤销
+  ///（整批放错重来的出口）。范围随高亮方案：全部作品 = 每件都标，
+  /// 单件作品 = 只标所选作品
+  void _completeColor(String id) {
+    final scope = _scope;
+    // 先判方向：范围内还有该色未标格 -> 补齐；否则撤销全部标记
+    var undo = true;
+    scan:
+    for (var i = 0; i < widget.works.length; i++) {
+      if (scope != null && i != scope) {
+        continue;
+      }
+      final m = widget.works[i].model;
+      for (var c = 0; c < m.grid.length; c++) {
+        final v = m.grid[c];
+        final cid = v >= 0 && v < m.paletteIds.length ? m.paletteIds[v] : null;
+        if (cid == id && !_placed[i].contains(c)) {
+          undo = false;
+          break scan;
+        }
+      }
+    }
+    var changed = 0;
+    setState(() {
+      for (var i = 0; i < widget.works.length; i++) {
+        if (scope != null && i != scope) {
+          continue;
+        }
+        final m = widget.works[i].model;
+        for (var c = 0; c < m.grid.length; c++) {
+          final v = m.grid[c];
+          final cid = v >= 0 && v < m.paletteIds.length ? m.paletteIds[v] : null;
+          if (cid != id) {
+            continue;
+          }
+          final ok = undo ? _placed[i].remove(c) : _placed[i].add(c);
+          if (ok) {
+            changed++;
+          }
+        }
+      }
+    });
+    AppSnackBar.show(
+      context,
+      undo ? "已撤销 $id 已放标记 $changed 颗" : "已标记 $id 完成 $changed 颗",
+    );
+  }
+
   // ==================== 统计 ====================
 
-  /// 全部作品豆数加和：色号 -> 颗数
-  Map<String, int> _totalStats() {
+  /// 当前高亮范围：null = 按全部作品；否则 = 单件方案的该作品索引
+  int? get _scope => _scopeAll ? null : _scopeWork;
+
+  /// 豆数统计：色号 -> 颗数（[only] = 只算该作品；null = 全部作品合并）
+  Map<String, int> _totalStats([int? only]) {
     final stats = <String, int>{};
-    for (final w in widget.works) {
-      final m = w.model;
+    for (var i = 0; i < widget.works.length; i++) {
+      if (only != null && i != only) {
+        continue;
+      }
+      final m = widget.works[i].model;
       m.countByColor().forEach((v, n) {
         final id = v < m.paletteIds.length ? m.paletteIds[v] : "?$v";
         stats[id] = (stats[id] ?? 0) + n;
@@ -124,10 +212,13 @@ class _AssemblePageState extends State<AssemblePage> {
     return stats;
   }
 
-  /// 该色号剩余颗数（总 - 全部作品中已放）
-  int _remainOf(String id, Map<String, int> totals) {
+  /// 该色号剩余颗数（范围内总数 - 范围内已放）
+  int _remainOf(String id, Map<String, int> totals, [int? only]) {
     var placedCount = 0;
     for (var i = 0; i < widget.works.length; i++) {
+      if (only != null && i != only) {
+        continue;
+      }
       final m = widget.works[i].model;
       for (final cell in _placed[i]) {
         if (cell < 0 || cell >= m.grid.length) {
@@ -211,7 +302,8 @@ class _AssemblePageState extends State<AssemblePage> {
 
   @override
   Widget build(BuildContext context) {
-    final totals = _totalStats();
+    final scope = _scope;
+    final totals = _totalStats(scope);
     final (done, total) = _progress();
     return PopScope(
       onPopInvokedWithResult: (didPop, _) {
@@ -337,7 +429,8 @@ class _AssemblePageState extends State<AssemblePage> {
                 ),
               ),
             ),
-            _buildColorBar(totals),
+            _buildScopeRow(),
+            _buildColorBar(totals, scope),
           ],
         ),
       ),
@@ -389,7 +482,17 @@ class _AssemblePageState extends State<AssemblePage> {
                             palette: widget.works[i].palette,
                             ox: widget.works[i].ox,
                             oy: widget.works[i].oy,
-                            highlightId: _highlightId,
+
+                            ///< 按作品方案：只有范围内作品带高亮，范围外
+                            ///< 作品整体压灰（同未选中观感——用户要看
+                            ///< 清"当前在拼哪件"）；全部方案维持同色号
+                            ///< 跨作品一起高亮。未选色时都不压灰
+                            highlightId: (_scope == null || i == _scope)
+                                ? _highlightId
+                                : null,
+                            dimAll: _scope != null &&
+                                i != _scope &&
+                                _highlightId != null,
                             placedCells: _placed[i],
                           ),
                       ],
@@ -404,8 +507,84 @@ class _AssemblePageState extends State<AssemblePage> {
     );
   }
 
-  /// 底部颜色条：全部作品用到的色（按色号合并）+ 剩余颗数（点选高亮；放完绿框）
-  Widget _buildColorBar(Map<String, int> totals) {
+  /// 高亮方案行（多件作品才有意义）：全部作品（同色号跨作品一起高亮/
+  /// 统计）/ 单件作品（下拉选作品——色条、高亮、点格与双击完成只算它）
+  Widget _buildScopeRow() {
+    if (widget.works.length < 2) {
+      return const SizedBox.shrink();
+    }
+    final sw = _scopeWork ?? 0;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 2),
+      child: Row(
+        children: [
+          SegmentedButton<bool>(
+            showSelectedIcon: false,
+            style: const ButtonStyle(visualDensity: VisualDensity.compact),
+            segments: const [
+              ButtonSegment(value: true, label: Text("全部作品")),
+              ButtonSegment(value: false, label: Text("单件作品")),
+            ],
+            selected: {_scopeAll},
+            onSelectionChanged: (s) => setState(() {
+              _scopeAll = s.first;
+              if (!_scopeAll) {
+                _scopeWork = (_scopeWork ?? 0).clamp(
+                  0,
+                  widget.works.length - 1,
+                );
+              }
+            }),
+          ),
+          if (!_scopeAll) ...[
+            const SizedBox(width: 8),
+            Expanded(
+              child: PopupMenuButton<int>(
+                tooltip: "选择作品",
+                initialValue: sw,
+                onSelected: (i) => setState(() => _scopeWork = i),
+                itemBuilder: (_) => [
+                  for (var i = 0; i < widget.works.length; i++)
+                    PopupMenuItem(
+                      value: i,
+                      child: Text(widget.works[i].entry.name),
+                    ),
+                ],
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 7,
+                  ),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.black26),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.filter_center_focus, size: 14),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          widget.works[sw].entry.name,
+                          style: Theme.of(context).textTheme.bodySmall,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      const Icon(Icons.arrow_drop_down, size: 18),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// 底部颜色条：范围内用到的色（按色号合并）+ 剩余颗数
+  ///（单击选色高亮；双击整色标记已放；放完绿框）
+  Widget _buildColorBar(Map<String, int> totals, int? scope) {
     final used = totals.keys.toList()
       ..sort((a, b) => totals[b]!.compareTo(totals[a]!));
     return SizedBox(
@@ -418,7 +597,7 @@ class _AssemblePageState extends State<AssemblePage> {
           final id = used[idx];
           final c = _colorOf(id);
           final count = totals[id] ?? 0;
-          final remain = _remainOf(id, totals);
+          final remain = _remainOf(id, totals, scope);
           final selected = id == _highlightId;
           final borderColor = selected
               ? Colors.blue
@@ -428,9 +607,13 @@ class _AssemblePageState extends State<AssemblePage> {
           final light =
               c != null && (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) > 150;
           return GestureDetector(
+            // 单击选色（注册了双击后单击会延迟一拍，属预期）
             onTap: () => setState(() {
               _highlightId = _highlightId == id ? null : id;
             }),
+
+            ///< 双击 = 范围内该色全部标记已放（已全完则撤销）
+            onDoubleTap: () => _completeColor(id),
             child: Container(
               width: 48,
               height: 60,

@@ -2,6 +2,8 @@
 /// 格子文字层（色号文本 / 高亮色行·列分组编号）
 library;
 
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../core/board_config.dart';
@@ -39,6 +41,10 @@ class BoardPaintItem {
   final String? highlightId;
 
   ///< 高亮色号（null = 关闭；其余色降饱和显示）
+  final bool dimAll;
+
+  ///< 整体压灰（拼豆页按作品方案的范围外作品：无高亮色可配对，
+  ///< 所有格按未选中同款幅度向深灰混，与高亮中未选中豆观感一致）
   final Set<int>? placedCells;
 
   ///< 拼装已放格（本作品格扁平索引；null = 关闭）
@@ -58,6 +64,7 @@ class BoardPaintItem {
     required this.ox,
     required this.oy,
     this.highlightId,
+    this.dimAll = false,
     this.placedCells,
     this.showBorder = false,
     this.selected = false,
@@ -110,13 +117,24 @@ class BoardPainter extends CustomPainter {
     if (items.isEmpty) {
       return const {};
     }
-    final hi = items.first.highlightId;
+    // 按作品方案下各 item 的 highlightId 可不同（范围内才有）——取第一个
+    // 非空的作高亮色号
+    String? hi;
+    for (final e in items) {
+      if (e.highlightId != null) {
+        hi = e.highlightId;
+        break;
+      }
+    }
+    if (hi == null) {
+      return const {};
+    }
     // 收集 (板x, 板y, key)，按模式分组编号（跨作品统一板坐标）
     final cells = <(int, int, int)>[];
     for (var i = 0; i < items.length; i++) {
       final item = items[i];
       if (item.highlightId != hi) {
-        continue; // 未开高亮（各 item 的 highlightId 一致）
+        continue; // 未参与当前高亮（无高亮/按作品方案的范围外作品）
       }
       final m = item.model;
       for (var c = 0; c < m.grid.length; c++) {
@@ -208,8 +226,8 @@ class BoardPainter extends CustomPainter {
             : const <int, int>{};
 
     // 板底：无高亮 = 白（空白格必须白底，不沉底变黑）；高亮中 = 中灰
-    //（空白区与其他色号豆一起变灰衬托选中色）。各 item 的 highlightId
-    // 一致，取任一判断即可
+    //（空白区与其他色号豆一起变灰衬托选中色）。任一 item 带高亮即算
+    //（按作品方案下仅范围内作品有）
     final hiOn = items.any((e) => e.highlightId != null);
     canvas.drawRect(
       Offset.zero & size,
@@ -230,7 +248,8 @@ class BoardPainter extends CustomPainter {
           }
           final c = item.palette.colors[v];
           var color = Color.fromARGB(255, c.r, c.g, c.b);
-          if (item.highlightId != null && c.id != item.highlightId) {
+          if (item.dimAll ||
+              item.highlightId != null && c.id != item.highlightId) {
             // 未选中豆大比例向深灰混（0.75：整体沉到深灰区衬托选中色，
             // 残留 25% 色相隐约可辨；早期 lerp 黑 0.78 连色相带层次全灭）
             color = Color.lerp(color, _dimGray, 0.75)!;
@@ -244,6 +263,44 @@ class BoardPainter extends CustomPainter {
             cellH,
           );
           canvas.drawRect(rect, gridPaint);
+        }
+      }
+    }
+
+    // 重叠标注：同一板格被两件作品同时占豆（两边都非空格）才铺浅红——
+    // 豆级判定，空豆位置的交叠不标也不拦开始拼豆；超板悬挂部分只在板内
+    // 标注。画在豆色块之后、格线/文字之前，豆色仍从半透明下透出可辨
+    if (items.length > 1) {
+      final overlapPaint = Paint()
+        ..color = const Color(0xFFFFCDD2).withValues(alpha: 0.55)
+        ..style = PaintingStyle.fill;
+      for (var i = 0; i < items.length; i++) {
+        for (var j = i + 1; j < items.length; j++) {
+          final a = items[i], b = items[j];
+          final x0 = math.max(math.max(a.ox, b.ox), 0);
+          final y0 = math.max(math.max(a.oy, b.oy), 0);
+          final x1 = math.min(
+            math.min(a.ox + a.model.width, b.ox + b.model.width),
+            board.w,
+          );
+          final y1 = math.min(
+            math.min(a.oy + a.model.height, b.oy + b.model.height),
+            board.h,
+          );
+          for (var by = y0; by < y1; by++) {
+            for (var bx = x0; bx < x1; bx++) {
+              final av =
+                  a.model.grid[(by - a.oy) * a.model.width + (bx - a.ox)];
+              final bv =
+                  b.model.grid[(by - b.oy) * b.model.width + (bx - b.ox)];
+              if (av >= 0 && bv >= 0) {
+                canvas.drawRect(
+                  Rect.fromLTWH(bx * cellW, by * cellH, cellW, cellH),
+                  overlapPaint,
+                );
+              }
+            }
+          }
         }
       }
     }

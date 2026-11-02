@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../core/app_snack_bar.dart';
@@ -17,6 +19,31 @@ Map<String, int> beadStats(List<PlacedWork> works) {
     });
   }
   return stats;
+}
+
+/// 板上是否有作品真压豆重叠：豆级判定——同一板格被两件作品同时占豆
+///（两边都非空格）才算冲突；矩形相交但交叠处是空豆的不碍事（开始
+/// 拼豆放行）。画布浅红标注同一口径，只标真冲突格
+bool boardHasOverlap(List<PlacedWork> works) {
+  for (var i = 0; i < works.length; i++) {
+    for (var j = i + 1; j < works.length; j++) {
+      final a = works[i], b = works[j];
+      final x0 = math.max(a.ox, b.ox);
+      final y0 = math.max(a.oy, b.oy);
+      final x1 = math.min(a.ox + a.model.width, b.ox + b.model.width);
+      final y1 = math.min(a.oy + a.model.height, b.oy + b.model.height);
+      for (var y = y0; y < y1; y++) {
+        for (var x = x0; x < x1; x++) {
+          final av = a.model.grid[(y - a.oy) * a.model.width + (x - a.ox)];
+          final bv = b.model.grid[(y - b.oy) * b.model.width + (x - b.ox)];
+          if (av >= 0 && bv >= 0) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
 }
 
 /// 色号查显示颜色（任一含该色的作品调色板）

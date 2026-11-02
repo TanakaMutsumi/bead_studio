@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -21,7 +22,10 @@ import 'placed_work.dart';
 ///
 /// 交互约定：点作品选中（再点空白取消），选中后单指拖动该作品、
 /// 右上角叉移除选中作品；未选中时单指平移画布、双指缩放。
-/// 作品之间不能相交：添加时找空位（无空位拒绝），拖动贴边滑动不产生重叠
+/// 摆放是软约束：添加永远成功（找不到互不重叠的空位就落左上角），
+/// 拖动自由摆放，压豆重叠处浅红标注；超板作品可拖动选哪一段落在板内。
+/// 开始拼豆前才硬性要求：全部作品完整在板内且互不压豆（空豆位置交叠
+/// 不碍事——判定按豆级，非矩形级）
 ///
 /// 豆板管理：右上菜单「新建空板 / 打开豆板 / 另存为 / 删除当前板」；
 /// 已命名豆板随增删/拖动/换板自动覆盖保存。「开始拼豆」与 back 退出都先弹
@@ -451,7 +455,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       _bw = w;
       _bh = h;
       for (final work in _works) {
-        work.clampTo(w, h); // 换板保留相对布局，只把出界作品拉回板内
+        work.clampTo(w, h); // 换板保留相对布局，出界作品拉回可达范围
       }
     });
     _persistBoard();
@@ -611,17 +615,9 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       return;
     }
     final spot = _findSpot(picked.model.width, picked.model.height);
-    if (spot == null) {
-      if (mounted) {
-        AppSnackBar.show(
-          context,
-          "放不下了：${picked.model.width}×${picked.model.height} 的作品在 "
-          "$_bw×$_bh 板上找不到不与其他作品相交的空位（或超出板面）",
-        );
-      }
-      return;
-    }
-    final (ox, oy) = spot;
+    // 找不到空位不拒绝：落 (0,0) 照常摆上（重叠处浅红标注，可再拖开）；
+    // 超板作品同样放行（出界部分悬挂板外右/下）
+    final (ox, oy) = spot ?? (0, 0);
     setState(() {
       _works.add(
         PlacedWork(
@@ -633,6 +629,9 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       );
       _selected = _works.length - 1;
     });
+    if (spot == null && mounted) {
+      AppSnackBar.show(context, "没找到空位：已放在左上角，重叠处浅红标注，可拖开");
+    }
     _resolvePalette(_works.length - 1);
     _persistBoard();
   }
@@ -640,7 +639,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
   /// 找第一个放得下的空位（行扫描，不与已摆作品矩形相交）
   ///
   /// 空板从 (0,0) 角落起排（多件堆排友好；居中会让第二件找不到空位）；
-  /// 超板或无空位返回 null（调用方提示并拒绝添加）
+  /// 超板或无空位返回 null（调用方落 (0,0) 重叠摆放，不再拒绝添加）
   (int, int)? _findSpot(int w, int h) {
     if (w > _bw || h > _bh) {
       return null;
@@ -657,9 +656,6 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     }
     return null;
   }
-
-  int _maxOf(int boardSide, int workSide) =>
-      boardSide - workSide > 0 ? boardSide - workSide : 0;
 
   ///< (nx,ny) 尺寸 (mw,mh) 的矩形是否与 skipIdx 之外的作品相交
   bool _wouldOverlap(int skipIdx, int nx, int ny, int mw, int mh) {
@@ -729,12 +725,10 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     }
     _lastScale = 1.0;
 
-    // 单指 + 选中：按格拖动选中作品（防相交：贴边滑动，不与其他作品重叠）
+    // 单指 + 选中：按格拖动选中作品（自由摆放：允许重叠，重叠处浅红
+    // 标注；超板作品允许负偏移，拖动选哪一段落在板内）
     if (_selected >= 0 && _selected < _works.length) {
       final w = _works[_selected];
-      if (!w.fits(_bw, _bh)) {
-        return; // 超板作品不给拖（先换大板）
-      }
       final scale = _viewerCtrl.value.getMaxScaleOnAxis();
       final cell = canvasW / _bw / scale;
       _accDx += d.focalPointDelta.dx;
@@ -747,23 +741,14 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       _accDx -= dx * cell;
       _accDy -= dy * cell;
       final m = w.model;
-      var nx = (w.ox + dx).clamp(0, _maxOf(_bw, m.width)).toInt();
-      var ny = (w.oy + dy).clamp(0, _maxOf(_bh, m.height)).toInt();
-      // 原位置不重叠时，新位置逐轴回退到贴边（贴着其他作品边缘滑走）；
-      // 原位置本就重叠（历史遗留/换小板收拢）则放开限制，允许直接拖出
-      if (!_wouldOverlap(_selected, w.ox, w.oy, m.width, m.height)) {
-        while (
-            nx != w.ox && _wouldOverlap(_selected, nx, ny, m.width, m.height)) {
-          nx += nx > w.ox ? -1 : 1;
-        }
-        while (
-            ny != w.oy && _wouldOverlap(_selected, nx, ny, m.width, m.height)) {
-          ny += ny > w.oy ? -1 : 1;
-        }
-        if (_wouldOverlap(_selected, nx, ny, m.width, m.height)) {
-          return; // 两轴都退无可退（正常拖动不会到这）
-        }
-      }
+      // 偏移可达范围与 clampTo 同口径：放得下 [0, 板边-作品边]；超板
+      // [板边-作品边, 0]（出界部分悬挂板外左/上）
+      final nx = (w.ox + dx)
+          .clamp(math.min(0, _bw - m.width), math.max(0, _bw - m.width))
+          .toInt();
+      final ny = (w.oy + dy)
+          .clamp(math.min(0, _bh - m.height), math.max(0, _bh - m.height))
+          .toInt();
       setState(() {
         w.ox = nx;
         w.oy = ny;
@@ -870,9 +855,23 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
 
   // ==================== 开始拼豆 ====================
 
+  /// 摆放是否就绪（开始拼豆的硬门槛）：全部作品完整在板内且互不压豆
+  ///（空豆位置交叠不算冲突）。摆放期间超板/压豆只是浅红提示，进入
+  /// 实际拼豆前必须收拾干净
+  bool _boardClean() =>
+      !_works.any((w) => !w.fits(_bw, _bh)) && !boardHasOverlap(_works);
+
   /// 开始拼豆：确认「保存并开始拼豆？」（是=保存后进入；否/点外部=留在本页）
   Future<void> _startAssemble() async {
-    if (_works.isEmpty || _works.any((w) => !w.fits(_bw, _bh))) {
+    if (_works.isEmpty) {
+      return;
+    }
+    if (_works.any((w) => !w.fits(_bw, _bh))) {
+      AppSnackBar.show(context, "有作品超出豆板（可换大板或自定义尺寸）");
+      return;
+    }
+    if (boardHasOverlap(_works)) {
+      AppSnackBar.show(context, "作品有压豆重叠（浅红标注处），拖开后再开始拼豆");
       return;
     }
     final save = await _confirmDialog("保存并开始拼豆？", "保存当前豆板后进入拼豆");
@@ -1135,13 +1134,12 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
   }
 
   Widget _buildBottomBar() {
-    final anyOverflow = _works.any((w) => !w.fits(_bw, _bh));
     return BoardBottomBar(
       works: _works,
       bw: _bw,
       bh: _bh,
       onAddWork: _openWorkPicker,
-      onStart: _works.isNotEmpty && !anyOverflow ? _startAssemble : null,
+      onStart: _works.isNotEmpty && _boardClean() ? _startAssemble : null,
     );
   }
 }
