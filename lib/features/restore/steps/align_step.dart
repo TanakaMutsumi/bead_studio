@@ -60,6 +60,12 @@ class AlignStep extends StatelessWidget {
   final VoidCallback onGoFrame;
 
   ///< 下一步：框选主体
+  final bool detecting;
+
+  ///< 九宫格自动检测进行中（重新识别按钮置灰）
+  final VoidCallback onRedetect;
+
+  ///< 重新识别：重跑全图格距自动检测、重放九宫格（手调废了重来）
 
   const AlignStep({
     super.key,
@@ -88,6 +94,8 @@ class AlignStep extends StatelessWidget {
     required this.onNudge,
     required this.onRecognize,
     required this.onGoFrame,
+    required this.detecting,
+    required this.onRedetect,
   });
 
   @override
@@ -260,14 +268,35 @@ class AlignStep extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 4),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed:
-                        pitchX > 0 && miniAnchor != null ? onGoFrame : null,
-                    icon: const Icon(Icons.arrow_forward),
-                    label: const Text("下一步：框选主体"),
-                  ),
+                // 重新识别：手调格距/微移越调越歪时重跑自动检测重放九宫格
+                //（与图例步的重新识别对位；进入本步时自动跑过一次，改动
+                // 后想重选即点这里）
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: detecting ? null : onRedetect,
+                        icon: detecting
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.refresh, size: 18),
+                        label: Text(detecting ? "检测中…" : "重新识别"),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      flex: 2,
+                      child: FilledButton.icon(
+                        onPressed:
+                            pitchX > 0 && miniAnchor != null ? onGoFrame : null,
+                        icon: const Icon(Icons.arrow_forward),
+                        label: const Text("下一步：框选主体"),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ],

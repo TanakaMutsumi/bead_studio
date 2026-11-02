@@ -22,8 +22,9 @@ import '../../core/pattern_model.dart';
 import '../../core/quantizer.dart';
 import '../../core/subject_detect.dart';
 import '../../core/zoom_controls.dart';
-import '../board/board_setup_page.dart';
 import '../editor/editor_page.dart';
+import '../palette_picker.dart';
+import '../works/works_page.dart';
 import 'legend_ocr_runner.dart';
 import 'ocr_debug_sheet.dart';
 import 'restore_painters.dart';
@@ -107,6 +108,9 @@ class _RestorePageState extends State<RestorePage> {
   var _panelExpanded = true;
 
   ///< 图例确认面板展开（收起后图片区变大，便于对照原图校对）
+  var _legendSort = LegendSort.code;
+
+  ///< 清单校对排序（仅展示视图，_legend 本身始终保持识别阅读序）
   // 【临时调试】最近一次图例 OCR 的调试信息（放大图/元素/配对），正式版随调试视图一起移除
   OcrDebugInfo? _ocrDebug;
   int _selHandleDrag = -1;
@@ -279,6 +283,10 @@ class _RestorePageState extends State<RestorePage> {
   List<Rect> _cellRects = const [];
 
   ///< 各格矩形（图片坐标，与 grid 扁平索引同序；复核截图取材用）
+  List<double> _cellScores = const [];
+
+  ///< 各格识别置信度 0-1（与 grid 同序；复核截图墙按低分优先排序）
+
   ui.Image? _cellSrc;
 
   ///< 复核截图数据源（_displayBytes 限幅版解码的 ui.Image）
@@ -353,6 +361,7 @@ class _RestorePageState extends State<RestorePage> {
         _pitchX = 0;
         _model = null;
         _cellRects = const [];
+        _cellScores = const [];
         _reviewSeenColors = {};
         _cellSrc?.dispose();
         _cellSrc = null;
@@ -530,22 +539,43 @@ class _RestorePageState extends State<RestorePage> {
           LegendEntry(entry.key),
       ];
       var ocrHit = 0;
+      var countHit = 0;
+      var dupDropped = 0;
       if (pairs != null && pairs.length >= 3) {
-        final byOcr = <LegendEntry>[];
-        final seen = <int>{};
+        // 同一色号多锚点（图例重复印刷/OCR 重复读出）：不能一律取首条——
+        // 首条若是颗数 0 的锚点，会把后面带颗数的挤掉，清单整列变 0。
+        // 优先保留带颗数的；都有颗数保首条。map 保插入序 = 阅读序
+        final byIdx = <int, LegendEntry>{};
         for (final (idx, count) in pairs) {
-          if (!seen.add(idx)) {
-            continue; // 同一色号多次出现（图例重复/误读），取首条
+          final old = byIdx[idx];
+          if (old == null) {
+            final e = LegendEntry(idx);
+            e.countCtrl.text = count.toString();
+            byIdx[idx] = e;
+            continue;
           }
-          final e = LegendEntry(idx);
-          e.countCtrl.text = count.toString();
-          byOcr.add(e);
+          dupDropped++;
+          final oldCount = int.tryParse(old.countCtrl.text) ?? 0;
+          if (oldCount == 0 && count > 0) {
+            old.countCtrl.text = count.toString();
+            debugPrint(
+              "【临时调试】图例重复色号 ${_palette.colors[idx].id}=$count 覆盖 0 值锚点",
+            );
+          } else {
+            debugPrint(
+              "【临时调试】图例重复色号 ${_palette.colors[idx].id}=$count 被去重丢弃（图例重复印刷/误读）",
+            );
+          }
         }
+        final byOcr = [for (final idx in byIdx.keys) byIdx[idx]!];
         for (final e in entries) {
           e.countCtrl.dispose(); // fallback 条目被 OCR 清单取代
         }
         entries = byOcr;
         ocrHit = byOcr.length;
+        countHit = byOcr
+            .where((e) => (int.tryParse(e.countCtrl.text) ?? 0) > 0)
+            .length;
       }
       setState(() {
         _legendBusy = false;
@@ -559,7 +589,9 @@ class _RestorePageState extends State<RestorePage> {
       if (ocrHit > 0) {
         AppSnackBar.show(
           context,
-          "已按图例印刷色号识别 $ocrHit 色，颗数自动读取 $ocrHit 条，请对照原图核对",
+          "已按图例印刷色号识别 $ocrHit 色，颗数自动读取 $countHit 条"
+          "${ocrHit - countHit > 0 ? "（${ocrHit - countHit} 条颗数待手填）" : ""}"
+          "${dupDropped > 0 ? "，重复色号 $dupDropped 条已合并" : ""}，请对照原图核对",
         );
       } else if (pairs != null) {
         AppSnackBar.show(
@@ -614,85 +646,19 @@ class _RestorePageState extends State<RestorePage> {
     return run.pairs;
   }
 
-  /// 弹色卡选色器（修正图例色号 / 添加颜色 / 复核归类共用）
-  ///
-  /// [allowed] 非空时只显示集合内的色号（复核归类限定图例色 + 识别结果
-  /// 中出现过的色——识别候选本就来自图例，归到图例外的色会让图例对账
-  /// 口径混入外色）；[withBlank] 为 true 时首格是「空白」（归类到空白
-  /// 用，点中返回 -1；返回 null 一律表示取消）。
+  /// 弹色卡选色器（修正图例色号 / 添加颜色 / 复核归类共用；弹窗本体
+  /// 已抽到 palette_picker.dart 与编辑器共用，语义注释见彼处）
   Future<int?> _pickColorIndex({
     Set<int>? allowed,
     bool withBlank = false,
     String title = "选择色号",
   }) {
-    final indices = <int>[
-      if (withBlank) -1,
-      for (var i = 0; i < _palette.colors.length; i++)
-        if (allowed == null || allowed.contains(i)) i,
-    ];
-    return showDialog<int>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(title),
-        content: SizedBox(
-          width: double.maxFinite,
-          height: 420,
-          child: GridView.count(
-            crossAxisCount: 6,
-            children: [
-              for (final i in indices)
-                InkWell(
-                  onTap: () => Navigator.pop(ctx, i),
-                  // FittedBox 防格子竖向溢出：大色卡(291 色)行高较矮 + 系统字体
-                  // 缩放时 Column(色块+文字) 放不下会渲染 "BOTTOM OVERFLOWED"
-                  // 溢出条（用户看到的 "BOTTOM OV" 就是它），scaleDown 整体缩放兜底
-                  child: FittedBox(
-                    fit: BoxFit.scaleDown,
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        if (i < 0)
-                          Container(
-                            width: 34,
-                            height: 34,
-                            decoration: BoxDecoration(
-                              border: Border.all(color: Colors.black38),
-                            ),
-                            child: const Icon(
-                              Icons.close,
-                              size: 20,
-                              color: Colors.black45,
-                            ),
-                          )
-                        else
-                          Container(
-                            width: 34,
-                            height: 34,
-                            color: Color.fromARGB(
-                              255,
-                              _palette.colors[i].r,
-                              _palette.colors[i].g,
-                              _palette.colors[i].b,
-                            ),
-                          ),
-                        Text(
-                          i < 0 ? "空白" : _palette.colors[i].id,
-                          style: const TextStyle(fontSize: 10),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("取消"),
-          ),
-        ],
-      ),
+    return showPaletteColorPicker(
+      context,
+      palette: _palette,
+      allowed: allowed,
+      withBlank: withBlank,
+      title: title,
     );
   }
 
@@ -794,8 +760,11 @@ class _RestorePageState extends State<RestorePage> {
           (det.offsetY + ky * det.pitchY) * ds.height / image.height,
         );
       } else {
+        // 兜底默认：图宽/20，Y 取同值（方形格先验）——按高独立取
+        // image.height/20 时非方形照片的默认格天生就是长方形（4:3 图
+        // 出 4:3 格），标定起点就歪
         _pitchX = image.width / 20;
-        _pitchY = image.height / 20;
+        _pitchY = _pitchX;
         _miniAnchor = Offset(
           ds.width / 2 - 1.5 * _pitchX * ds.width / image.width,
           ds.height / 2 - 1.5 * _pitchY * ds.height / image.height,
@@ -903,14 +872,17 @@ class _RestorePageState extends State<RestorePage> {
     });
   }
 
-  /// 默认四角：全图四角
+  /// 默认四角：近全图四角、四周内收 5%——角点正贴图边时把手圆一半在
+  /// 图外（图边又常贴屏缘），手指按不到圆上；拼豆图案也几乎不顶满
+  /// 图边，内收反而更接近真实图案边界
   List<Offset> _defaultCorners() {
     final ds = _displaySize();
+    final mx = ds.width * 0.05, my = ds.height * 0.05;
     return [
-      Offset.zero,
-      Offset(ds.width, 0),
-      Offset(ds.width, ds.height),
-      Offset(0, ds.height),
+      Offset(mx, my),
+      Offset(ds.width - mx, my),
+      Offset(ds.width - mx, ds.height - my),
+      Offset(mx, ds.height - my),
     ];
   }
 
@@ -919,12 +891,29 @@ class _RestorePageState extends State<RestorePage> {
     setState(() => _cornerPts = _defaultCorners());
   }
 
-  /// 拖角更新（_imageStage 手势回调，p 为显示坐标）
+  /// 拖角更新（_imageStage 手势回调，p 为显示坐标）。四角恒钳制为
+  /// 轴对齐矩形：对角固定、拖动点与其张成矩形，两邻角自动吸附到
+  /// 新边——任意拖拽都拉不出梯形（矩形下双线性映射退化为仿射，
+  /// 覆盖层网格与采样同源，不受影响）。拖动点先钳回图内，四角
+  /// 不越出采样域
   void _onCornerDrag(int idx, Offset p) {
     if (_cornerPts == null || idx < 0 || idx >= 4) {
       return;
     }
-    setState(() => _cornerPts![idx] = p);
+    final ds = _displaySize();
+    final q = Offset(
+      p.dx.clamp(0.0, ds.width),
+      p.dy.clamp(0.0, ds.height),
+    );
+    final rect = Rect.fromPoints(q, _cornerPts![(idx + 2) % 4]);
+    setState(() {
+      _cornerPts = [
+        rect.topLeft,
+        rect.topRight,
+        rect.bottomRight,
+        rect.bottomLeft,
+      ];
+    });
   }
 
   // ==================== 识别 + 复核 ====================
@@ -1073,6 +1062,10 @@ class _RestorePageState extends State<RestorePage> {
       final codeMap = buildCodeMap(_palette);
       final quantizer = Quantizer(_palette);
       final grid = List<int>.filled(cols * rows, 0);
+      // 逐格识别置信度（复核截图墙排序用）：OCR 命中=1（印刷色号权威）；
+      // 颜色采样按 Lab 距离线性折算（0=空白阈值处，1=正中色心）；直判
+      // 空白=0。分数越低越可疑，截图墙按升序排——最可能认错的格先看
+      final scores = List<double>.filled(cols * rows, 1.0);
       var ocrHit = 0;
       for (var i = 0; i < grid.length; i++) {
         final txt = ocrByCell[i];
@@ -1103,6 +1096,7 @@ class _RestorePageState extends State<RestorePage> {
                 25;
         if (_blankEnable && nearWhite && !candNearWhite) {
           grid[i] = -1;
+          scores[i] = 0;
         } else {
           final (idx, distSq) = quantizer.nearestWithin(
             sr,
@@ -1110,7 +1104,11 @@ class _RestorePageState extends State<RestorePage> {
             sb,
             candidates.isEmpty ? null : candidates,
           );
-          grid[i] = (_blankEnable && distSq > _blankDistSq) ? -1 : idx;
+          final blank = _blankEnable && distSq > _blankDistSq;
+          grid[i] = blank ? -1 : idx;
+          scores[i] = blank
+              ? 0
+              : (1.0 - distSq / _blankDistSq).clamp(0.0, 1.0);
         }
       }
       if (!mounted) {
@@ -1124,6 +1122,7 @@ class _RestorePageState extends State<RestorePage> {
           paletteIds: [for (final c in _palette.colors) c.id],
         );
         _cellRects = cellRects;
+        _cellScores = scores;
         _recognizing = false;
         _reviewColor = -2;
         _picked.clear();
@@ -1183,12 +1182,16 @@ class _RestorePageState extends State<RestorePage> {
     }
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => EditorPage(model: model, palette: _palette),
+        builder: (_) => EditorPage(
+          model: model,
+          palette: _palette,
+          sortMode: _legendSort.name,
+        ),
       ),
     );
   }
 
-  /// 保存作品：命名 -> 存作品库 -> 可选直接进入拼豆板设置
+  /// 保存作品：命名 -> 存作品库 -> 二选一（回主页 / 进我的作品看新作品）
   Future<void> _saveWork() async {
     final model = _model;
     if (model == null) {
@@ -1229,7 +1232,11 @@ class _RestorePageState extends State<RestorePage> {
     if (name == null || name.trim().isEmpty) {
       return;
     }
-    final file = await DraftStore.saveWork(model, name: name.trim());
+    await DraftStore.saveWork(
+      model,
+      name: name.trim(),
+      sortMode: _legendSort.name,
+    );
     if (!mounted) {
       return;
     }
@@ -1244,8 +1251,8 @@ class _RestorePageState extends State<RestorePage> {
             child: const Text("回到主页"),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(dctx, "assemble"),
-            child: const Text("直接开始拼豆"),
+            onPressed: () => Navigator.pop(dctx, "works"),
+            child: const Text("进入我的作品"),
           ),
         ],
       ),
@@ -1257,14 +1264,10 @@ class _RestorePageState extends State<RestorePage> {
       Navigator.of(context).pop();
       return;
     }
-    final entry = await DraftStore.readEntry(file);
-    if (!mounted) {
-      return;
-    }
-    // pushReplacement：还原页出栈，板设置 back 直达主页；还原现场不再
-    // 保留，需要再进从「我的作品」打开该作品
+    // 确认即直达作品库：新作品按更新时间置顶可见。pushReplacement
+    // 还原页出栈，作品页 back 直达主页，不回到已结束的还原现场
     Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => BoardSetupPage(initial: entry)),
+      MaterialPageRoute(builder: (_) => WorksPage(palette: _palette)),
     );
   }
 
@@ -1278,6 +1281,22 @@ class _RestorePageState extends State<RestorePage> {
       for (var i = 0; i < model.grid.length; i++) {
         if (model.grid[i] == _reviewColor) {
           _picked.add(i);
+        }
+      }
+    });
+  }
+
+  /// 反选当前复核色：该色未选中的选中、已选中的取消（配合"全选"做
+  /// 减法——先全选再点掉少数几个，不如全选+反选少数几个灵活）
+  void _invertPickOfCurrent() {
+    final model = _model;
+    if (model == null || _reviewColor == -2) {
+      return;
+    }
+    setState(() {
+      for (var i = 0; i < model.grid.length; i++) {
+        if (model.grid[i] == _reviewColor) {
+          _picked.contains(i) ? _picked.remove(i) : _picked.add(i);
         }
       }
     });
@@ -1314,6 +1333,10 @@ class _RestorePageState extends State<RestorePage> {
     setState(() {
       for (final i in _picked) {
         model.grid[i] = target;
+        // 手工归类是用户断言：置信度置顶，截图墙不再当可疑项置前
+        if (i < _cellScores.length) {
+          _cellScores[i] = 1;
+        }
       }
       _picked.clear();
     });
@@ -1843,17 +1866,23 @@ class _RestorePageState extends State<RestorePage> {
     _prevMoveTime = null;
     _lastMoveScreen = e.position;
     _lastMoveTime = DateTime.now();
-    // 四角把手优先（角点校正模式）：命中则进入拖角
+    // 四角把手优先（角点校正模式）：命中则进入拖角。命中半径随视图
+    // 缩放补偿（同 _hitMiniGrid）：放大后命中区视觉恒定，不会变成
+    // 巨屏误触区抢走平移手势
     if (ctx.cornerPts != null) {
       _cornerDragIdx = -1;
+      final hitR = 30 / _viewerCtrl.value.storage[0];
       for (var i = 0; i < ctx.cornerPts!.length; i++) {
-        if ((ctx.cornerPts![i] - e.localPosition).distance <= 30) {
+        if ((ctx.cornerPts![i] - e.localPosition).distance <= hitR) {
           _cornerDragIdx = i;
           ctx.onCornerDrag?.call(i, e.localPosition);
           return;
         }
       }
-      return; // 非角区拖动不画框：防误触清掉四角
+      // 非角区拖动=平移画面（不画框：防误触清掉四角）——放大后要能
+      // 挪图看其他角，与九宫格/框选步的框外拖动行为一致
+      _panViewMode = true;
+      return;
     }
     // 九宫格标定框：缩放把手/框体拖动优先；未命中按 panFallback 分派
     // （对齐步=平移画面查看，框选步=画选区）——标定与框选两步不同屏
@@ -1942,12 +1971,12 @@ class _RestorePageState extends State<RestorePage> {
       ctx.onCornerDrag?.call(_cornerDragIdx, e.localPosition);
       return;
     }
-    if (ctx.cornerPts != null) {
-      return;
-    }
     if (_panViewMode) {
       _panViewBy(e.delta, ctx.cons);
       return;
+    }
+    if (ctx.cornerPts != null) {
+      return; // 四角模式：非角区拖动已在按下时转平移，到这里不处理
     }
     // 九宫格缩放把手（左上/右下双把手）：按下时快照的 span/双格距为
     // 基准，当前到固定对角的 span 按比值同乘（与 _adjustPitch 同语义）
@@ -1958,7 +1987,12 @@ class _RestorePageState extends State<RestorePage> {
       final image = _image!;
       final d = e.localPosition - _miniScaleOpp!;
       final span = math.max(d.dx.abs(), d.dy.abs());
-      if (span > 24 && _miniScaleBaseSpan > 1) {
+      // span 闸门只是防 0 附近抖动，用显示坐标小值即可——曾用 24 显示
+      // px：span 是显示坐标而 3×3 框宽随图片宽度缩放（1428 宽图在 384
+      // 屏上格距 31 时框仅 ~25px），24px 闸门把格距下限抬到 ~30 图片
+      // px，缩小拖到这就「卡死下不去」。真实下限由 px>=2（图片像素，
+      // 与 ± 按钮同口径）把守
+      if (span > 4 && _miniScaleBaseSpan > 1) {
         final f = span / _miniScaleBaseSpan;
         final px = _miniScaleBasePx * f;
         final py = _miniScaleBasePy * f;
@@ -2254,7 +2288,12 @@ class _RestorePageState extends State<RestorePage> {
       if (pts == null || pts.length != 4 || cols < 1 || rows < 1) {
         return null;
       }
-      return CornerGridPainter(pts: pts, cols: cols, rows: rows);
+      return CornerGridPainter(
+        pts: pts,
+        cols: cols,
+        rows: rows,
+        ctrl: _viewerCtrl,
+      );
     }
     final anchor = _miniAnchor;
     if (anchor == null || _pitchX <= 0 || _pitchY <= 0) {
@@ -2269,7 +2308,7 @@ class _RestorePageState extends State<RestorePage> {
         3 * _pitchX * ds.width / image.width,
         3 * _pitchY * ds.height / image.height,
       ),
-      scale: _viewerCtrl.value.storage[0],
+      ctrl: _viewerCtrl,
     );
   }
 
@@ -2313,6 +2352,8 @@ class _RestorePageState extends State<RestorePage> {
       colsCtrl: _legendColsCtrl,
       rowsCtrl: _legendRowsCtrl,
       legend: _legend,
+      legendSort: _legendSort,
+      onSortChange: (s) => setState(() => _legendSort = s),
       palette: _palette,
       onAutoSelect: _autoSelectLegend,
       onScan: _scanLegend,
@@ -2354,6 +2395,8 @@ class _RestorePageState extends State<RestorePage> {
       onNudge: _nudge,
       onRecognize: _recognize,
       onGoFrame: _goFrame,
+      detecting: _detecting,
+      onRedetect: _initMiniGrid,
     );
   }
 
@@ -2583,7 +2626,7 @@ class _RestorePageState extends State<RestorePage> {
       sel: sel,
       pitchDx: _pitchX * ds.width / image.width,
       pitchDy: _pitchY * ds.height / image.height,
-      scale: _viewerCtrl.value.storage[0],
+      ctrl: _viewerCtrl,
     );
   }
 
@@ -2607,7 +2650,9 @@ class _RestorePageState extends State<RestorePage> {
       model: _model!,
       palette: _palette,
       legend: _legend,
+      legendSort: _legendSort,
       cellRects: _cellRects,
+      cellScores: _cellScores,
       cellSrc: _cellSrc,
       image: _image!,
       reviewColor: _reviewColor,
@@ -2619,7 +2664,12 @@ class _RestorePageState extends State<RestorePage> {
       onTogglePick: (i) => setState(() {
         _picked.contains(i) ? _picked.remove(i) : _picked.add(i);
       }),
+      onPickCells: (cells, sel) => setState(() {
+        // 绝对语义（置选/置不选）非翻转：拖选沿线重复应用同一格无副作用
+        sel ? _picked.addAll(cells) : _picked.removeAll(cells);
+      }),
       onSelectAll: _selectAllOfCurrent,
+      onInvertPick: _invertPickOfCurrent,
       onClearPicked: () => setState(() => _picked.clear()),
       onReassign: _reassignPicked,
       hasClassifyTarget: _hasClassifyTarget(),

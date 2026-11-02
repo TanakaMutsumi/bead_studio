@@ -186,17 +186,24 @@ class CornerGridPainter extends CustomPainter {
   ///< 四角（显示坐标）：左上/右上/右下/左下
   final int cols;
   final int rows;
+  final TransformationController ctrl;
+
+  ///< 视图变换控制器：paint 实时读缩放做尺寸补偿，并以它为 repaint
+      ///< 监听——捏合/缩放条只改矩阵不 setState，构建时定格的 scale 会
+      ///< 停在旧值（线/把手跟着图变粗变大），挂监听后矩阵一动即重画
 
   CornerGridPainter(
-      {required this.pts, required this.cols, required this.rows});
+      {required this.pts, required this.cols, required this.rows, required this.ctrl})
+      : super(repaint: ctrl);
 
   @override
   void paint(Canvas canvas, Size size) {
     canvas.clipRect(Offset.zero & size);
+    final scale = ctrl.value.storage[0];
     final line = Paint()
       ..color = Colors.lightBlueAccent.withValues(alpha: 0.8)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2;
+      ..strokeWidth = 1.2 / scale;
     // 竖线：每条经 rows+1 个交点折线连接（双线性下相邻交点连线即格线）
     for (var i = 0; i <= cols; i++) {
       final u = i / cols;
@@ -220,21 +227,22 @@ class CornerGridPainter extends CustomPainter {
       }
       canvas.drawPath(path, line);
     }
-    // 四角大把手：白底橙圈（比选区把手大，透视拖拽目标）
+    // 四角大把手：白底橙圈（比选区把手大，透视拖拽目标）。半径/线宽
+    // 除以 scale 补偿：视觉尺寸恒定，放大对齐格线时不糊住视野
     final fill = Paint()..color = Colors.white;
     final stroke = Paint()
       ..color = const Color(0xFF7B1FA2)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 3;
+      ..strokeWidth = 3 / scale;
     for (final p in pts) {
-      canvas.drawCircle(p, 10, fill);
-      canvas.drawCircle(p, 10, stroke);
+      canvas.drawCircle(p, 10 / scale, fill);
+      canvas.drawCircle(p, 10 / scale, stroke);
     }
     // 四边形轮廓
     final outline = Paint()
       ..color = const Color(0xFF7B1FA2)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
+      ..strokeWidth = 2 / scale;
     final quad = Path()
       ..moveTo(pts[0].dx, pts[0].dy)
       ..lineTo(pts[1].dx, pts[1].dy)
@@ -264,15 +272,18 @@ class MiniGridPainter extends CustomPainter {
   final Rect grid;
 
   ///< 3×3 框（显示坐标）
-  final double scale;
+  final TransformationController ctrl;
 
-  ///< 当前视图缩放倍数（InteractiveViewer 矩阵，尺寸补偿用）
+  ///< 视图变换控制器：paint 实时读缩放做尺寸补偿，并以它为 repaint
+      ///< 监听（矩阵变化即重画，见 CornerGridPainter 同款说明）
 
-  MiniGridPainter({required this.grid, required this.scale});
+  MiniGridPainter({required this.grid, required this.ctrl})
+      : super(repaint: ctrl);
 
   @override
   void paint(Canvas canvas, Size size) {
     canvas.clipRect(Offset.zero & size);
+    final scale = ctrl.value.storage[0];
     final pitchDx = grid.width / 3;
     final pitchDy = grid.height / 3;
     if (pitchDx < 2 || pitchDy < 2) {
@@ -347,7 +358,7 @@ class MiniGridPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant MiniGridPainter oldDelegate) =>
-      oldDelegate.grid != grid || oldDelegate.scale != scale;
+      oldDelegate.grid != grid;
 }
 
 /// 框选主体覆盖层：选区内格线（相位锚定九宫格锚点，选区四边已吸附
@@ -367,16 +378,17 @@ class FrameGridPainter extends CustomPainter {
   final double pitchDy;
 
   ///< 纵向格距（显示坐标）
-  final double scale;
+  final TransformationController ctrl;
 
-  ///< 当前视图缩放倍数（尺寸补偿用）
+  ///< 视图变换控制器：paint 实时读缩放做尺寸补偿，并以它为 repaint
+      ///< 监听（矩阵变化即重画，见 CornerGridPainter 同款说明）
 
   FrameGridPainter({
     required this.sel,
     required this.pitchDx,
     required this.pitchDy,
-    required this.scale,
-  });
+    required this.ctrl,
+  }) : super(repaint: ctrl);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -384,6 +396,7 @@ class FrameGridPainter extends CustomPainter {
     if (pitchDx < 2 || pitchDy < 2) {
       return;
     }
+    final scale = ctrl.value.storage[0];
     final cols = (sel.width / pitchDx).round();
     final rows = (sel.height / pitchDy).round();
     // 选区内格线：选区四边本身就是格线（吸附），从左上铺 cols+1 竖线、
@@ -446,8 +459,7 @@ class FrameGridPainter extends CustomPainter {
   bool shouldRepaint(covariant FrameGridPainter oldDelegate) =>
       oldDelegate.sel != sel ||
       oldDelegate.pitchDx != pitchDx ||
-      oldDelegate.pitchDy != pitchDy ||
-      oldDelegate.scale != scale;
+      oldDelegate.pitchDy != pitchDy;
 }
 
 /// 空白复核：空白格铺淡红色
