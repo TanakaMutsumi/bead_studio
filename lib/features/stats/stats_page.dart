@@ -11,14 +11,24 @@ import '../../core/inventory_store.dart';
 import '../../core/palette.dart';
 import '../../core/pattern_model.dart';
 import '../inventory/inventory_page.dart';
+import '../restore/restore_types.dart';
 
-/// 用料统计页：按数量降序列出每种颜色的珠子用量
+/// 用料统计页：按选定模式列出每种颜色的珠子用量（默认颗数降序；
+/// 作品携带图例核对步选定的排序时沿用该排序）
 /// + 库存校验模式（需要 vs 库存，缺口标红）+ 采购单 CSV 导出
 class StatsPage extends StatefulWidget {
   final PatternModel model;
   final BeadPalette palette;
+  final String? sortMode;
 
-  const StatsPage({super.key, required this.model, required this.palette});
+  ///< 排序模式名（LegendSort.name；null = 默认颗数降序）
+
+  const StatsPage({
+    super.key,
+    required this.model,
+    required this.palette,
+    this.sortMode,
+  });
 
   @override
   State<StatsPage> createState() => _StatsPageState();
@@ -86,8 +96,20 @@ class _StatsPageState extends State<StatsPage> {
   @override
   Widget build(BuildContext context) {
     final counts = widget.model.countByColor();
-    final entries = counts.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
+    // 排序：默认（含旧作品 null）颗数降序；带 meta.sortMode 时沿用图例
+    // 核对步的选择（position = map 插入序 = 图格扫描序；"reading" 是
+    // 位置序的旧名，兼容旧作品存档）
+    final mode = widget.sortMode == "reading"
+        ? LegendSort.position
+        : LegendSort.values.asNameMap()[widget.sortMode ?? ""];
+    final entries = counts.entries.toList();
+    if (mode == null || mode == LegendSort.countDesc) {
+      entries.sort((a, b) => b.value.compareTo(a.value));
+    } else if (mode == LegendSort.countAsc) {
+      entries.sort((a, b) => a.value.compareTo(b.value));
+    } else if (mode == LegendSort.code) {
+      entries.sort((a, b) => a.key.compareTo(b.key));
+    } // position：保持插入序（首个出现顺序）
     final totalBeads = counts.values.fold(0, (a, b) => a + b);
     final inv = _inventory;
     final rows = [

@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../../core/palette.dart';
@@ -38,6 +40,12 @@ class LegendStep extends StatelessWidget {
   final TextEditingController colsCtrl;
   final TextEditingController rowsCtrl;
   final List<LegendEntry> legend;
+  final LegendSort legendSort;
+
+  ///< 清单排序（校对视角，默认识别顺序）
+  final void Function(LegendSort) onSortChange;
+
+  ///< 切换排序
   final BeadPalette palette;
   final VoidCallback onAutoSelect;
 
@@ -78,6 +86,8 @@ class LegendStep extends StatelessWidget {
     required this.colsCtrl,
     required this.rowsCtrl,
     required this.legend,
+    required this.legendSort,
+    required this.onSortChange,
     required this.palette,
     required this.onAutoSelect,
     required this.onScan,
@@ -91,14 +101,34 @@ class LegendStep extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scanned = legend.isNotEmpty;
+    // 排序只做展示视图，不动页面清单（其顺序即位置序——识别输出的
+    // 逐行从左到右，对账/复核用）；
+    // 未填颗数视为最小值——升序排最前（待校对优先暴露）、降序垫底。
+    // 比较器与复核 chips 共用（legendSortCompare）
+    final sorted = legendSort == LegendSort.position ? legend : [...legend]
+      ..sort(
+        (a, b) => legendSortCompare(
+          legendSort,
+          a,
+          b,
+          (e) => e.expectedCount ?? -1,
+        ),
+      );
     return LayoutBuilder(builder: (context, cons) {
       // 展开态清单高度自适应：图是宽适配的固定显示高度（displaySize），
       // 图例带就在图底部——面板（含缩放条）超出剩余空间会把图的下半截
       // 挤出视口，没法对照原图核对色号/颗数。展开态固定开销：图区
       // padding 24 + 缩放条 ~38 + 摘要行 ~34 + 间距 12 + 操作行 ~44 +
-      // 间距 8 + 底 padding 12 ≈ 172
+      // 间距 8 + 底 padding 12 ≈ 172（排序下拉并入摘要行、添加颜色并入
+      // 操作行，不再各占一行）
       final imgH = displaySize().height;
-      final listH = (cons.maxHeight - imgH - 172).clamp(96.0, 168.0);
+      // 清单高度 =「剩余空间（视口 - 图高 - 固定开销 172）」与「视口 42%」
+      // 取大者：竖版图（图高≈视口 6 成）剩余空间是负数，旧式被钳到 96，
+      // 清单一次只露两行没法核对。清单多拿的空间由图区 Expanded 吸收
+      //（图下半出视口，滚轮/双指平移看回；收起清单即完整露出原图图例带）
+      final listH = math
+          .max(cons.maxHeight - imgH - 172, cons.maxHeight * 0.42)
+          .clamp(120.0, 420.0);
       return Column(
         children: [
           Expanded(
@@ -216,7 +246,11 @@ class LegendStep extends StatelessWidget {
                         FilledButton.tonal(
                           onPressed: onGoAlign,
                           child: const Text("下一步"),
-                        ),
+                        )
+                      else
+                        // 排序下拉并入摘要行（原独立排序行把清单挤得太短）；
+                        // 该排序同时管识别复核 chips 与作品信息展示
+                        _sortPopup(),
                     ],
                   ),
                   if (panelExpanded) ...[
@@ -260,46 +294,43 @@ class LegendStep extends StatelessWidget {
                               label: const Text("重新识别"),
                             ),
                           ),
+                          const SizedBox(width: 8),
+                          _addColorBtn(),
                         ],
                       )
                     else
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: TextButton.icon(
-                          onPressed: legendBusy ? null : onScan,
-                          icon: legendBusy
-                              ? const SizedBox(
-                                  width: 14,
-                                  height: 14,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.refresh, size: 18),
-                          label: Text(legendBusy ? "识别中…" : "重新框选后识别"),
-                        ),
+                      Row(
+                        children: [
+                          TextButton.icon(
+                            onPressed: legendBusy ? null : onScan,
+                            icon: legendBusy
+                                ? const SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.refresh, size: 18),
+                            label: Text(legendBusy ? "识别中…" : "重新框选后识别"),
+                          ),
+                          const Spacer(),
+                          _addColorBtn(),
+                        ],
                       ),
                     const SizedBox(height: 8),
                     SizedBox(
                       height: listH,
                       child: ListView.builder(
-                        itemCount: legend.length + 1,
+                        itemCount: sorted.length,
                         itemBuilder: (_, i) {
-                          // 末尾常驻「添加颜色」行：补 OCR 漏识别的色
-                          if (i == legend.length) {
-                            return Align(
-                              alignment: Alignment.centerLeft,
-                              child: TextButton.icon(
-                                onPressed: onAddColor,
-                                icon: const Icon(Icons.add, size: 18),
-                                label: const Text("添加颜色"),
-                              ),
-                            );
-                          }
-                          final e = legend[i];
+                          final e = sorted[i];
                           final c = palette.colors[e.paletteIndex];
-                          // 行距 3：isDense 输入框行与行紧贴会上下遮挡
+                          // 行距 3：isDense 输入框行与行紧贴会上下遮挡；
+                          // key 挂条目：排序切换时行随条目走，输入框焦点
+                          // /光标不串行（无 key 时按位置复用元素状态）
                           return Padding(
+                            key: ValueKey(e),
                             padding: const EdgeInsets.symmetric(vertical: 3),
                             child: Row(
                               children: [
@@ -364,7 +395,7 @@ class LegendStep extends StatelessWidget {
                                 // 填满中间空白让行更紧凑有信息量
                                 const SizedBox(width: 12),
                                 Expanded(
-                                  child: _countBar(legend, e, c),
+                                  child: _countBar(sorted, e, c),
                                 ),
                                 const SizedBox(width: 8),
                                 // 删除该色（识别错误且不需要的条目）
@@ -411,6 +442,62 @@ class LegendStep extends StatelessWidget {
         ],
       );
     });
+  }
+
+  /// 排序下拉（摘要行右侧）：四模式单选菜单，当前模式带勾；
+  /// 比独立分段按钮行省一整行高度（原清单被挤太短）
+  Widget _sortPopup() {
+    return PopupMenuButton<LegendSort>(
+      tooltip: "排序方式",
+      initialValue: legendSort,
+      onSelected: onSortChange,
+      itemBuilder: (_) => [
+        for (final e in LegendSort.values)
+          PopupMenuItem(
+            value: e,
+            child: Row(
+              children: [
+                Icon(
+                  e == legendSort ? Icons.check : Icons.check,
+                  size: 16,
+                  color: e == legendSort ? Colors.blue : Colors.transparent,
+                ),
+                const SizedBox(width: 4),
+                Text(legendSortLabels[e]!),
+              ],
+            ),
+          ),
+      ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          border: Border.all(color: Colors.black26),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.sort, size: 14, color: Colors.black54),
+            const SizedBox(width: 2),
+            Text(
+              legendSortLabels[legendSort]!,
+              style: const TextStyle(fontSize: 12, color: Colors.black87),
+            ),
+            const Icon(Icons.arrow_drop_down, size: 16, color: Colors.black54),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 添加色号按钮（操作行右端）：补 OCR 漏识别的色——原在清单末尾，
+  /// 需滚到最底才能看到；带文字标签（纯图标实测看不出是加颜色的入口）
+  Widget _addColorBtn() {
+    return TextButton.icon(
+      onPressed: onAddColor,
+      style: const ButtonStyle(visualDensity: VisualDensity.compact),
+      icon: const Icon(Icons.add_circle_outline, size: 18),
+      label: const Text("添加色号"),
+    );
   }
 }
 

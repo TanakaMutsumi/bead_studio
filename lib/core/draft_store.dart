@@ -27,6 +27,10 @@ class WorkEntry {
   final BoardConfig? board;
 
   ///< 拼豆板配置（null = 未配置过板）
+  final String? sortMode;
+
+  ///< 信息排序模式（图例核对步选定，识别序/多→少/少→多/色号序；
+  ///< null = 旧作品未设置，展示按默认颗数降序）
 
   const WorkEntry({
     required this.file,
@@ -36,6 +40,7 @@ class WorkEntry {
     required this.model,
     this.placed = const <int>{},
     this.board,
+    this.sortMode,
   });
 }
 
@@ -161,6 +166,7 @@ class DraftStore {
     DateTime updatedAt = file.lastModifiedSync();
     Set<int> placed = const <int>{};
     BoardConfig? board;
+    String? sortMode;
 
     final meta = json["meta"];
     if (meta is Map<String, dynamic>) {
@@ -174,6 +180,7 @@ class DraftStore {
         placed = rawPlaced.whereType<int>().toSet();
       }
       board = BoardConfig.fromJson(meta["board"] as Map<String, dynamic>?);
+      sortMode = meta["sortMode"] as String?;
     } else {
       model = PatternModel.fromJson(json);
     }
@@ -185,6 +192,7 @@ class DraftStore {
       model: model,
       placed: placed,
       board: board,
+      sortMode: sortMode,
     );
   }
 
@@ -197,10 +205,12 @@ class DraftStore {
     File? overwrite,
     Set<int>? placed,
     BoardConfig? board,
+    String? sortMode,
   }) async {
     final dir = await _draftDir();
     if (overwrite != null && overwrite.existsSync()) {
       final old = await readEntry(overwrite);
+      final keptSort = sortMode ?? old.sortMode;
       return overwrite.writeAsString(
         const JsonEncoder().convert({
           "meta": {
@@ -210,6 +220,7 @@ class DraftStore {
             "placed": (placed ?? old.placed).toList(),
             if ((board ?? old.board) != null)
               "board": (board ?? old.board)!.toJson(),
+            if (keptSort != null) "sortMode": keptSort,
           },
           "pattern": model.toJson(),
         }),
@@ -228,6 +239,7 @@ class DraftStore {
           "updatedAt": now.toIso8601String(),
           "placed": (placed ?? const <int>[]).toList(),
           if (board != null) "board": board.toJson(),
+          if (sortMode != null) "sortMode": sortMode,
         },
         "pattern": model.toJson(),
       }),
@@ -250,6 +262,7 @@ class DraftStore {
       name: "${e.name} 副本",
       folder: e.folder,
       placed: e.placed,
+      sortMode: e.sortMode,
     );
   }
 
@@ -275,6 +288,7 @@ class DraftStore {
           "updatedAt": DateTime.now().toIso8601String(),
           "placed": e.placed.toList(),
           if (e.board != null) "board": e.board!.toJson(),
+          if (e.sortMode != null) "sortMode": e.sortMode,
         },
         "pattern": e.model.toJson(),
       }),
@@ -355,15 +369,21 @@ class DraftStore {
   }
 
   static Map<String, dynamic> _boardToJson(BoardSession s) => {
-    "name": s.name,
-    "updatedAt": DateTime.now().toIso8601String(),
-    "board": s.board.toJson(),
-    "works": [
-      for (final w in s.works)
-        {"file": w.file.path, "ox": w.ox, "oy": w.oy, "rot": w.rot,
-         "flipH": w.flipH, "flipV": w.flipV},
-    ],
-  };
+        "name": s.name,
+        "updatedAt": DateTime.now().toIso8601String(),
+        "board": s.board.toJson(),
+        "works": [
+          for (final w in s.works)
+            {
+              "file": w.file.path,
+              "ox": w.ox,
+              "oy": w.oy,
+              "rot": w.rot,
+              "flipH": w.flipH,
+              "flipV": w.flipV
+            },
+        ],
+      };
 
   static BoardSession? _parseBoardJson(Map<String, dynamic> json) {
     final board = BoardConfig.fromJson(

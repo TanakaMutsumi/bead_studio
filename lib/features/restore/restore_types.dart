@@ -40,6 +40,48 @@ class LegendEntry {
   int? get expectedCount => int.tryParse(countCtrl.text.trim());
 }
 
+/// 图例/作品信息的排序模式：色号序（A1 起自然序，仅排清单里有的，默认）/
+/// 颗数从多到少 / 颗数从少到多 / 位置序（识别结果的逐行从左到右——
+/// 即图例在图纸上的物理位置顺序）
+///
+/// 图例核对步选择后随作品保存（meta.sortMode），识别复核 chips 与用料
+/// 统计等「这幅图的信息」展示沿用同一排序。旧作品存的 "reading" 是
+/// 位置序的前身（读取侧做名字兼容）
+enum LegendSort { code, countDesc, countAsc, position }
+
+/// 排序模式短标签（排序控件/菜单显示用）
+const Map<LegendSort, String> legendSortLabels = {
+  LegendSort.code: "色号序",
+  LegendSort.countDesc: "多→少",
+  LegendSort.countAsc: "少→多",
+  LegendSort.position: "位置序",
+};
+
+/// 图例清单排序比较器（LegendStep 列表与 ReviewStep chips 共用）：
+/// [sort] 模式 + 参与排序的颗数取值函数（图例步传 expectedCount，
+/// 复核步传 图例颗数 ?? 实际颗数）。position 模式即列表原始顺序
+/// （识别输出已按逐行从左到右排好），比较器返回 0 保持稳定
+int legendSortCompare(
+  LegendSort sort,
+  LegendEntry a,
+  LegendEntry b,
+  int Function(LegendEntry) countOf,
+) {
+  switch (sort) {
+    case LegendSort.position:
+      return 0;
+    case LegendSort.countDesc:
+      final d = countOf(b).compareTo(countOf(a));
+      return d != 0 ? d : a.paletteIndex.compareTo(b.paletteIndex);
+    case LegendSort.countAsc:
+      final d = countOf(a).compareTo(countOf(b));
+      return d != 0 ? d : a.paletteIndex.compareTo(b.paletteIndex);
+    case LegendSort.code:
+      // 调色板按 A1→A2→…→B1→… 自然序存储，索引序即色号序
+      return a.paletteIndex.compareTo(b.paletteIndex);
+  }
+}
+
 /// 图区手势上下文：build 闭包里的回调/选区/角点/约束打包，
 /// 供 Listener 的四个指针处理方法共用（避免长参数表）
 class StageCtx {
