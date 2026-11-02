@@ -31,6 +31,9 @@ class WorksPage extends StatefulWidget {
 class _WorksPageState extends State<WorksPage> {
   List<_WorkVM> _works = [];
   var _loading = true;
+  Object? _loadError;
+
+  ///< 列表读取异常（目录权限/IO 等）：不再永远转圈，显示原因 + 重试
   String? _folderFilter;
 
   ///< null = 全部
@@ -44,27 +47,43 @@ class _WorksPageState extends State<WorksPage> {
   }
 
   Future<void> _reload() async {
-    final works = await DraftStore.listWorks();
-    final vms = <_WorkVM>[];
-    for (final w in works) {
-      vms.add(
-        _WorkVM(
-          w,
-          await PaletteRegistry.resolveForModel(w.model, widget.palette),
-        ),
-      );
-    }
-    if (!mounted) {
-      return;
-    }
     setState(() {
-      _works = vms;
-      _loading = false;
-      _selected.clear();
-      if (_multiSelect && _selected.isEmpty) {
-        _multiSelect = false;
-      }
+      _loading = true;
+      _loadError = null;
     });
+    try {
+      final works = await DraftStore.listWorks();
+      final vms = <_WorkVM>[];
+      for (final w in works) {
+        vms.add(
+          _WorkVM(
+            w,
+            await PaletteRegistry.resolveForModel(w.model, widget.palette),
+          ),
+        );
+      }
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _works = vms;
+        _loading = false;
+        _selected.clear();
+        if (_multiSelect && _selected.isEmpty) {
+          _multiSelect = false;
+        }
+      });
+    } catch (e) {
+      // 读取链路抛异常（如作品目录权限异常）时 _loading 会卡在 true，
+      // 页面永远转圈进不去（真机/模拟器均复现过）——落进错误态可重试
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _loading = false;
+        _loadError = e;
+      });
+    }
   }
 
   List<String> get _folders => _works
@@ -88,6 +107,7 @@ class _WorksPageState extends State<WorksPage> {
           palette: w.palette,
           sourceFile: w.entry.file,
           placed: w.entry.placed,
+          sortMode: w.entry.sortMode,
         ),
       ),
     );
@@ -273,6 +293,30 @@ class _WorksPageState extends State<WorksPage> {
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
+          : _loadError != null
+          ? Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.error_outline, size: 56, color: Colors.black26),
+                  const SizedBox(height: 12),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 32),
+                    child: Text(
+                      "作品列表读取失败：$_loadError",
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.black54),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  FilledButton.icon(
+                    onPressed: _reload,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text("重试"),
+                  ),
+                ],
+              ),
+            )
           : Column(
               children: [
                 _buildFolderBar(),
@@ -352,7 +396,10 @@ class _WorksPageState extends State<WorksPage> {
         maxCrossAxisExtent: 160,
         mainAxisSpacing: 12,
         crossAxisSpacing: 12,
-        childAspectRatio: 0.72, // 缩略图 + 名字 + 尺寸行（0.82 会溢出裁底行）
+        // 卡片内容自适应（缩略图 Expanded 收缩）：大字体下文本行变高
+        // 也不会把日期行裁出卡外——曾用固定 0.72 + 固定两行文本，
+        // 系统字体放大时日期被卡片底缘裁掉
+        childAspectRatio: 0.78,
       ),
       itemCount: _filtered.length,
       itemBuilder: (context, i) {
@@ -377,88 +424,97 @@ class _WorksPageState extends State<WorksPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Stack(
-                  children: [
-                    AspectRatio(
-                      aspectRatio: 1,
-                      child: Padding(
-                        padding: const EdgeInsets.all(4),
-                        child: CustomPaint(
-                          size: Size.infinite,
-                          painter: GridPainter(
-                            model: w.entry.model,
-                            palette: w.palette,
-                            selectedColorIndex: -1,
-                          ),
-                        ),
-                      ),
-                    ),
-                    if (checked)
-                      Positioned.fill(
-                        child: Container(
-                          color: Colors.blue.withValues(alpha: 0.25),
-                          child: const Icon(
-                            Icons.check_circle,
-                            color: Colors.blue,
-                            size: 32,
-                          ),
-                        ),
-                      ),
-                    if (!_multiSelect)
-                      Positioned(
-                        top: 0,
-                        right: 0,
-                        child: Container(
-                          width: 40,
-                          height: 40,
-                          alignment: Alignment.center,
-                          decoration: const BoxDecoration(
-                            // 深底白图标：浅色缩略图上也看得清（半透明白圆叠
-                            // 亮黄缩略图完全不可见，用户找不到删除入口）
-                            color: Colors.black54,
-                            shape: BoxShape.circle,
-                          ),
-                          child: PopupMenuButton<String>(
-                            padding: EdgeInsets.zero,
-                            iconSize: 22,
-                            color: Colors.white,
-                            icon: const Icon(
-                              Icons.more_vert,
-                              size: 22,
-                              color: Colors.white,
+                // 缩略图 Expanded：文本行随字体放大变高时自动收缩缩略图，
+                // 永不溢出卡片（AspectRatio 在有界高度内取 min(宽,高) 方形）
+                Expanded(
+                  child: Stack(
+                    fit: StackFit.passthrough,
+                    children: [
+                      Center(
+                        child: AspectRatio(
+                          aspectRatio: 1,
+                          child: Padding(
+                            padding: const EdgeInsets.all(4),
+                            child: CustomPaint(
+                              size: Size.infinite,
+                              painter: GridPainter(
+                                model: w.entry.model,
+                                palette: w.palette,
+                                selectedColorIndex: -1,
+                              ),
                             ),
-                            tooltip: "作品操作",
-                            onSelected: (action) {
-                              switch (action) {
-                                case "open":
-                                  _open(w);
-                                case "rename":
-                                  _rename(w);
-                                case "move":
-                                  _move([w.entry.file]);
-                                case "copy":
-                                  _copy(w);
-                                case "delete":
-                                  _delete([w.entry.file]);
-                              }
-                            },
-                            itemBuilder: (menuContext) => const [
-                              PopupMenuItem(value: "open", child: Text("打开")),
-                              PopupMenuItem(
-                                value: "rename",
-                                child: Text("重命名"),
-                              ),
-                              PopupMenuItem(
-                                value: "move",
-                                child: Text("移动到分组"),
-                              ),
-                              PopupMenuItem(value: "copy", child: Text("复制")),
-                              PopupMenuItem(value: "delete", child: Text("删除")),
-                            ],
                           ),
                         ),
                       ),
-                  ],
+                      if (checked)
+                        Positioned.fill(
+                          child: Container(
+                            color: Colors.blue.withValues(alpha: 0.25),
+                            child: const Icon(
+                              Icons.check_circle,
+                              color: Colors.blue,
+                              size: 32,
+                            ),
+                          ),
+                        ),
+                      if (!_multiSelect)
+                        Positioned(
+                          top: 0,
+                          right: 0,
+                          child: Container(
+                            // 32px 紧凑圆：原 40px 在小卡上盖住缩略图一角过多
+                            width: 32,
+                            height: 32,
+                            alignment: Alignment.center,
+                            decoration: const BoxDecoration(
+                              // 深底白图标：浅色缩略图上也看得清（半透明白圆叠
+                              // 亮黄缩略图完全不可见，用户找不到删除入口）
+                              color: Colors.black54,
+                              shape: BoxShape.circle,
+                            ),
+                            child: PopupMenuButton<String>(
+                              padding: EdgeInsets.zero,
+                              iconSize: 18,
+                              color: Colors.white,
+                              icon: const Icon(
+                                Icons.more_vert,
+                                size: 18,
+                                color: Colors.white,
+                              ),
+                              tooltip: "作品操作",
+                              onSelected: (action) {
+                                switch (action) {
+                                  case "open":
+                                    _open(w);
+                                  case "rename":
+                                    _rename(w);
+                                  case "move":
+                                    _move([w.entry.file]);
+                                  case "copy":
+                                    _copy(w);
+                                  case "delete":
+                                    _delete([w.entry.file]);
+                                }
+                              },
+                              itemBuilder: (menuContext) => const [
+                                PopupMenuItem(value: "open", child: Text("打开")),
+                                PopupMenuItem(
+                                  value: "rename",
+                                  child: Text("重命名"),
+                                ),
+                                PopupMenuItem(
+                                  value: "move",
+                                  child: Text("移动到分组"),
+                                ),
+                                PopupMenuItem(value: "copy", child: Text("复制")),
+                                PopupMenuItem(
+                                    value: "delete", child: Text("删除")),
+                              ],
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(8, 4, 8, 6),
@@ -473,6 +529,8 @@ class _WorksPageState extends State<WorksPage> {
                       ),
                       Text(
                         "${w.entry.model.width}×${w.entry.model.height} · ${_fmtTime(w.entry.updatedAt)}",
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: Theme.of(context)
                             .textTheme
                             .bodySmall
