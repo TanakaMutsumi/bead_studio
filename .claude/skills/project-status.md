@@ -93,6 +93,7 @@ UI 自动化测试走 `full-flow-test` skill（adb 驱动全流程：坐标表�
 
 | 文件 | 用途 |
 |------|------|
+| `CLAUDE.md` | 每会话自动加载的常守规矩（自动 commit+push / 禁 Read 看图 / 环境坑）——skill 未触发时的保底层 |
 | `.claude/skills/full-flow-test.md` | 全流程测试手册（**走测试前必读**） |
 | `.test/full_flow_test.md` | 问题清单与坐标总表（测试沉淀，还有没修的看这里） |
 | `.test/wx_replica6.py` | 游程法 v9 PIL 复刻（调参真相源，对拍用） |
