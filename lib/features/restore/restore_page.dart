@@ -1462,7 +1462,9 @@ class _RestorePageState extends State<RestorePage> {
   /// 行列数 = 选区/格距 实时算，识别时直接采用）。已有选区按当前格距
   /// 重新吸附（回九宫格调过格子大小再进来，旧框立即归位整格）；无选区
   /// 先自动框选主体（与载入图自动预框图例同范式——排图例带后找豆行豆列
-  /// 密集区，省一次手动拖框）
+  /// 密集区，省一次手动拖框）。进入时自动全图化（还原全幅）：上一步
+  /// 标定常放大到局部核对格线，带着放大视角进框选步会只看见图一角，
+  /// 主体不在视野里、用户不知道这步要框什么
   void _goFrame() {
     Rect? auto;
     if (_selDisplay == null) {
@@ -1477,6 +1479,7 @@ class _RestorePageState extends State<RestorePage> {
         _selDisplay = auto;
       }
     });
+    _viewerCtrl.value = Matrix4.identity();
     if (auto != null) {
       AppSnackBar.show(context, "已自动框选主体，可拖动调整");
     }
@@ -1526,6 +1529,11 @@ class _RestorePageState extends State<RestorePage> {
       return;
     }
     setState(() => _stage = prev);
+    // 回框选步同样全图化（与 _goFrame 同理由：带着别步的放大视角
+    // 进框选，主体不在视野里）
+    if (prev == RestoreStage.frame) {
+      _viewerCtrl.value = Matrix4.identity();
+    }
   }
 
   /// 完全退出图纸还原确认：整个还原页出栈——选的图/图例清单/九宫格标定/
@@ -1706,10 +1714,14 @@ class _RestorePageState extends State<RestorePage> {
   /// 命中选区把手（返回 0-7 索引，未命中返回 -1）
   ///
   /// 布局：0─1─2 / 3   4 / 5─6─7（四角 + 四边中点），命中半径按手指友好的
-  /// 22px；扁框（图例条带）按短边 1/3 收缩——否则半径 22 超过框高一半，
+  /// 22px（随视图缩放补偿：除以 scale 后视觉命中区恒定——放大后 22 内容
+  /// px 会变成 22×scale 屏幕px 的巨屏误触区，框中心拖动反被把手抢走）；
+  /// 扁框（图例条带）按短边 1/3 收缩——否则半径 22 超过框高一半，
   /// 框中心拖动会误命中上/下边中把手，整框平移永远触发不了
   int _hitSelHandle(Rect sel, Offset p) {
-    final radius = math.min(22.0, math.min(sel.width, sel.height) / 3);
+    final scale = _viewerCtrl.value.storage[0];
+    final radius =
+        math.min(22.0, math.min(sel.width, sel.height) / 3) / scale;
     final pts = [
       sel.topLeft,
       Offset(sel.center.dx, sel.top),
@@ -1858,7 +1870,9 @@ class _RestorePageState extends State<RestorePage> {
                           ),
                           if (sel != null && sel.width > 2)
                             Positioned.fill(
-                              child: CustomPaint(painter: SelPainter(sel)),
+                              child: CustomPaint(
+                                painter: SelPainter(sel, ctrl: _viewerCtrl),
+                              ),
                             ),
                           if (overlay != null)
                             Positioned.fill(

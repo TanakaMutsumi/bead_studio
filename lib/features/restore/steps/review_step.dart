@@ -427,6 +427,22 @@ class _ReviewStepState extends State<ReviewStep> {
               }
             }
             final isPicked = widget.picked.contains(i);
+            // 选中格去色 + 压暗（蓝框照旧）：与未选格的彩色截图一眼
+            // 可分——薄蓝框在花色截图墙上不够醒目，批量拖选时会漏选
+            Widget? thumb;
+            if (srcRect != null) {
+              Widget t = CustomPaint(
+                painter: CellThumbPainter(src: src, srcRect: srcRect),
+                size: Size.infinite,
+              );
+              if (isPicked) {
+                t = ColorFiltered(
+                  colorFilter: ColorFilter.saturation(0),
+                  child: t,
+                );
+              }
+              thumb = t;
+            }
             return GestureDetector(
               onTap: () => widget.onTogglePick(i),
               // 双击：放大看该格在原图里的位置与真实颜色
@@ -441,11 +457,11 @@ class _ReviewStepState extends State<ReviewStep> {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    if (srcRect != null)
-                      ClipRect(
-                        child: CustomPaint(
-                          painter: CellThumbPainter(src: src, srcRect: srcRect),
-                          size: Size.infinite,
+                    if (thumb != null) ClipRect(child: thumb),
+                    if (isPicked)
+                      Positioned.fill(
+                        child: ColoredBox(
+                          color: Colors.black.withValues(alpha: 0.35),
                         ),
                       ),
                     // 右下角行列号（1 起）：错认截图回报位置用

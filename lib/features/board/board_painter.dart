@@ -24,6 +24,18 @@ enum LabelMode {
   colNumber,
 }
 
+/// 拼豆页格子文字颜色模式
+enum LabelColorMode {
+  /// 自适应（默认）：浅色豆黑字、深色豆白字（按豆色亮度判深浅）
+  adaptive,
+
+  /// 全黑：所有格黑字（自适应判色不合口味/个别豆上看不清时强制）
+  black,
+
+  /// 全白：所有格白字
+  white,
+}
+
 /// 画布上的一件渲染项（配置页/拼豆页共用）
 class BoardPaintItem {
   final PatternModel model;
@@ -89,9 +101,18 @@ class BoardPainter extends CustomPainter {
 
   ///< 是否绘制未选中（非高亮）格的色号文本：高亮中可关掉只留选中色
   ///< 的编号降噪；无高亮时关掉 = 纯色块净板视图
+  final LabelColorMode labelColorMode;
+
+  ///< 文字颜色模式（自适应/全黑/全白，见 LabelColorMode；默认自适应）
   final double viewScale;
 
-  ///< 当前视图缩放倍数（删除叉尺寸/线宽补偿用：画布放大后视觉恒定）
+  ///< 当前视图缩放倍数（无 ctrl 时的静态取值：格线/对勾线宽补偿用）
+  final TransformationController? ctrl;
+
+  ///< 视图变换控制器（拼豆页传入）：paint 实时读缩放做线宽补偿，并
+  ///< 以它为 repaint 监听——捏合/缩放条只改矩阵不 setState，构建时
+  ///< 定格的 scale 会停在旧值（格线跟着图变粗挡内容）。配置页不传
+  ///<（手势期 setState 跟随刷新 viewScale）
   static final Map<String, TextPainter> _labelCache = {};
 
   ///< 文字绘制缓存（painter 每 build 新建，缓存须跨实例共享；key 含文本+字号+颜色）
@@ -108,9 +129,15 @@ class BoardPainter extends CustomPainter {
     this.labelMode = LabelMode.id,
     this.showLabels = false,
     this.showNonHiLabels = true,
+    this.labelColorMode = LabelColorMode.adaptive,
     this.viewScale = 1.0,
-    super.repaint,
-  });
+    TransformationController? ctrl,
+  }) : ctrl = ctrl,
+       super(repaint: ctrl);
+
+  /// 线宽补偿用视图缩放：ctrl 实时值优先，无 ctrl 回落构建时的
+  /// viewScale（配置页路径）
+  double get _scale => ctrl?.value.getMaxScaleOnAxis() ?? viewScale;
 
   /// 高亮色的行/列分组编号：key = itemIdx*1e7 + cellIdx
   Map<int, int> _buildNumbers() {
@@ -182,8 +209,9 @@ class BoardPainter extends CustomPainter {
   /// 画格子文字（色号/编号），TextPainter 按内容+字号+颜色缓存
   ///
   /// 字号跟随格子尺寸（无下限）：小格子字小，画布放大后矢量渲染依然清晰。
-  /// [dimmed] = 高亮中未选中色的格：字色向共同基色混 0.5（豆底压得更深
-  /// 是 0.75，字留多一分亮度保可读），文字跟着退后不抢焦
+  /// [light] 豆底亮度判浅（自适应模式选黑白字用）；[dimmed] = 高亮中
+  /// 未选中色的格：字色向共同基色混 0.5（豆底压得更深是 0.75，字留多
+  /// 一分亮度保可读），文字跟着退后不抢焦
   void _drawLabel(
     Canvas canvas,
     String text,
@@ -195,7 +223,11 @@ class BoardPainter extends CustomPainter {
       return;
     }
     final px = ((rect.width * 0.58).clamp(1.0, 13.0) * 2).roundToDouble() / 2;
-    var color = light ? Colors.black87 : Colors.white;
+    var color = switch (labelColorMode) {
+      LabelColorMode.adaptive => light ? Colors.black87 : Colors.white,
+      LabelColorMode.black => Colors.black,
+      LabelColorMode.white => Colors.white,
+    };
     if (dimmed) {
       color = Color.lerp(color, _dimGray, 0.5)!;
     }
@@ -220,6 +252,8 @@ class BoardPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final cellW = size.width / board.w;
     final cellH = size.height / board.h;
+    // 视图缩放（格线/对勾线宽补偿基准，见 _scale 注释）
+    final scale = _scale;
     final numbers =
         (labelMode != LabelMode.id && items.any((e) => e.highlightId != null))
             ? _buildNumbers()
@@ -306,10 +340,12 @@ class BoardPainter extends CustomPainter {
     }
 
     // 细格线全长（灰底上略加深保证可见）；interval 加粗线单独挪到豆色块/
-    // 文字层之后画（见下），避免被豆的颜色压掉
+    // 文字层之后画（见下），避免被豆的颜色压掉。线宽随视图缩放补偿
+    //（除以 scale）：参考线只作定位用，画布放大后跟着变粗会盖住豆色/
+    // 文字（用户反馈挡显示），补偿后视觉恒定细线
     final linePaint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.5
+      ..strokeWidth = 0.5 / scale
       ..color = hiOn ? Colors.black26 : Colors.black12;
     for (var x = 0; x <= board.w; x++) {
       final p = x * cellW;
@@ -380,7 +416,7 @@ class BoardPainter extends CustomPainter {
       final check = Paint()
         ..color = const Color(0xFF2E7D32)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.8
+        ..strokeWidth = 1.8 / scale
         ..strokeCap = StrokeCap.round;
       for (final i in placed) {
         if (i < 0 || i >= m.grid.length || m.grid[i] < 0) {
@@ -410,11 +446,13 @@ class BoardPainter extends CustomPainter {
 
     // interval 加粗线 + 板最外边框（顶层：豆色块/文字/已放标记之后画，
     // 不被豆的颜色压掉）。粗线颜色可配（板配置页色板入口，随板持久化），
-    // 默认橙一类亮色——深色豆上压得住；板外框深黑（浅底/灰底均可见）
+    // 默认橙一类亮色——深色豆上压得住；板外框深黑（浅底/灰底均可见）。
+    // 线宽随缩放补偿 + 整体调细（1.5→1.2）：加粗线只是数格定位参考，
+    // 比细线醒目即可，粗了在放大视角下盖豆（用户反馈挡显示）
     final majorColor = Color(board.majorColor ?? BoardConfig.defaultMajorColor);
     final majorPaint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5
+      ..strokeWidth = 1.2 / scale
       ..color = majorColor;
     final iv = board.interval;
     for (var x = 0; x <= board.w; x++) {
@@ -431,7 +469,7 @@ class BoardPainter extends CustomPainter {
     }
     final boardBorder = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.2
+      ..strokeWidth = 2.2 / scale
       ..color = Colors.black87;
     canvas.drawRect(Offset.zero & size, boardBorder);
 
@@ -466,17 +504,17 @@ class BoardPainter extends CustomPainter {
         (item.ox + item.model.width) * cellW,
         item.oy * cellH,
       );
-      final r = 13.0 / viewScale;
+      final r = 13.0 / scale;
       final ring = Paint()
         ..color = const Color(0xFFC62828)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.8 / viewScale;
+        ..strokeWidth = 1.8 / scale;
       canvas.drawCircle(center, r, Paint()..color = Colors.white);
       canvas.drawCircle(center, r, ring);
       final s = r * 0.5;
       final cross = Paint()
         ..color = const Color(0xFFC62828)
-        ..strokeWidth = 2.2 / viewScale
+        ..strokeWidth = 2.2 / scale
         ..strokeCap = StrokeCap.round;
       canvas.drawLine(
         Offset(center.dx - s, center.dy - s),
@@ -495,6 +533,7 @@ class BoardPainter extends CustomPainter {
   bool shouldRepaint(covariant BoardPainter oldDelegate) {
     return oldDelegate.board != board ||
         oldDelegate.labelMode != labelMode ||
+        oldDelegate.labelColorMode != labelColorMode ||
         oldDelegate.showLabels != showLabels ||
         oldDelegate.showNonHiLabels != showNonHiLabels ||
         oldDelegate.viewScale != viewScale ||

@@ -155,27 +155,13 @@ class _CellPreviewDialogState extends State<_CellPreviewDialog> {
                                 fit: BoxFit.fill,
                               ),
                             ),
-                            // 高亮框：黑描边包黄框（任何底色上都可见）
-                            Positioned(
-                              left: rect.left,
-                              top: rect.top,
-                              width: rect.width,
-                              height: rect.height,
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  border: Border.all(
-                                    color: Colors.black87,
-                                    width: 3,
-                                  ),
-                                ),
-                                child: Container(
-                                  decoration: BoxDecoration(
-                                    border: Border.all(
-                                      color: Colors.yellowAccent,
-                                      width: 1.5,
-                                    ),
-                                  ),
-                                ),
+                            // 聚焦标注：格以外整体压暗 + 黄圈描边画在
+                            // 格外侧——格内印刷色号不被笔触盖住，暗底
+                            // 衬托下目标豆一眼跳出（旧实现纯描边框，
+                            // 整图视角下小格被边框占满，格内啥也看不见）
+                            Positioned.fill(
+                              child: CustomPaint(
+                                painter: _CellFocusPainter(rect),
                               ),
                             ),
                           ],
@@ -201,4 +187,40 @@ class _CellPreviewDialogState extends State<_CellPreviewDialog> {
       ),
     );
   }
+}
+
+/// 单格聚焦层：目标格以外的区域半透明压暗（拉黑衬托），目标格本身
+/// 不做任何覆盖——印刷色号完整可见；黄圈 + 黑衬描边画在格外侧
+///（rect 外扩半线宽起笔），笔触不压进格内
+class _CellFocusPainter extends CustomPainter {
+  final Rect rect;
+
+  _CellFocusPainter(this.rect);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final outer = Path()..addRect(Offset.zero & size);
+    final inner = Path()..addRect(rect);
+    canvas.drawPath(
+      Path.combine(PathOperation.difference, outer, inner),
+      Paint()..color = Colors.black.withValues(alpha: 0.5),
+    );
+    // 黑衬边：rect.inflate(2) 笔宽 4 → 覆盖 [格边, 格边+4]（全在格外）
+    final back = Paint()
+      ..color = Colors.black87
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4;
+    canvas.drawRect(rect.inflate(2), back);
+    // 黄描边：rect.inflate(1) 笔宽 2 → 覆盖 [格边, 格边+2]，压在黑衬
+    // 内侧一半上，任何底色旁都可见
+    final ring = Paint()
+      ..color = Colors.yellowAccent
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+    canvas.drawRect(rect.inflate(1), ring);
+  }
+
+  @override
+  bool shouldRepaint(covariant _CellFocusPainter oldDelegate) =>
+      oldDelegate.rect != rect;
 }

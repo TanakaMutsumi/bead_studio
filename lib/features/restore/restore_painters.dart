@@ -22,21 +22,47 @@ Offset bilinearQuad(List<Offset> q, double u, double v) {
   );
 }
 
-/// 选区绘制：外部半透明遮罩 + 蓝色边框
+/// 手圆把手绘制（选区/九宫格/四角覆盖层共用）：白底 + 彩圈，半径与
+/// 线宽按视图缩放补偿（除以 scale）——画布放大后视觉尺寸恒定，不会
+/// 跟着图变巨糊住内容。此前三处各画各的（有的补偿有的没有），统一收口
+void paintHandleCircle(
+  Canvas canvas,
+  Offset center,
+  double radius,
+  Color ring,
+  double scale, {
+  double ringWidth = 2,
+}) {
+  final fill = Paint()..color = Colors.white;
+  final stroke = Paint()
+    ..color = ring
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = ringWidth / scale;
+  canvas.drawCircle(center, radius / scale, fill);
+  canvas.drawCircle(center, radius / scale, stroke);
+}
+
+/// 选区绘制：外部半透明遮罩 + 蓝色边框 + 8 个编辑把手（四角+四边中点）
+///
+/// [ctrl] 图区视图变换（图例/框选两步共用 _imageStage 传入）：边框与
+/// 把手尺寸随缩放补偿 + 矩阵一动即重画（缩放条/捏合不 setState，无
+/// 监听则定格的 scale 停在旧值）
 class SelPainter extends CustomPainter {
   final Rect rect;
+  final TransformationController? ctrl;
 
-  SelPainter(this.rect);
+  SelPainter(this.rect, {this.ctrl}) : super(repaint: ctrl);
 
   @override
   void paint(Canvas canvas, Size size) {
+    final scale = ctrl?.value.storage[0] ?? 1.0;
     final mask = Paint()
       ..color = Colors.black.withValues(alpha: 0.35)
       ..style = PaintingStyle.fill;
     final border = Paint()
       ..color = Colors.lightBlueAccent
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
+      ..strokeWidth = 2 / scale;
 
     // 框外略暗遮罩：整图挖掉选区（difference 两个独立 path，不能用
     // addPath 叠进同一个 path——nonzero 填充规则下重叠区 winding=2 仍
@@ -48,7 +74,8 @@ class SelPainter extends CustomPainter {
       mask,
     );
     canvas.drawRect(rect, border);
-    // 8 个编辑把手（四角+四边中点）：白底橙圈，可拖动扩大缩小选区
+    // 把手：白底橙圈，可拖动扩大缩小选区（尺寸随缩放补偿，见
+    // paintHandleCircle；命中半径在页面 _hitSelHandle 同款补偿）
     final handlePts = [
       rect.topLeft,
       Offset(rect.center.dx, rect.top),
@@ -59,20 +86,14 @@ class SelPainter extends CustomPainter {
       Offset(rect.center.dx, rect.bottom),
       rect.bottomRight,
     ];
-    final fill = Paint()..color = Colors.white;
-    final stroke = Paint()
-      ..color = const Color(0xFFE65100)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
     for (final p in handlePts) {
-      canvas.drawCircle(p, 6, fill);
-      canvas.drawCircle(p, 6, stroke);
+      paintHandleCircle(canvas, p, 6, const Color(0xFFE65100), scale);
     }
   }
 
   @override
   bool shouldRepaint(covariant SelPainter oldDelegate) =>
-      oldDelegate.rect != rect;
+      oldDelegate.rect != rect || oldDelegate.ctrl != ctrl;
 }
 
 /// 【临时调试】OCR 元素叠加层：绿框=色号、蓝框=颗数、红线=配对连线
@@ -227,16 +248,11 @@ class CornerGridPainter extends CustomPainter {
       }
       canvas.drawPath(path, line);
     }
-    // 四角大把手：白底橙圈（比选区把手大，透视拖拽目标）。半径/线宽
-    // 除以 scale 补偿：视觉尺寸恒定，放大对齐格线时不糊住视野
-    final fill = Paint()..color = Colors.white;
-    final stroke = Paint()
-      ..color = const Color(0xFF7B1FA2)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3 / scale;
+    // 四角大把手（比选区把手大，透视拖拽目标；尺寸随缩放补偿，见
+    // paintHandleCircle）
     for (final p in pts) {
-      canvas.drawCircle(p, 10 / scale, fill);
-      canvas.drawCircle(p, 10 / scale, stroke);
+      paintHandleCircle(canvas, p, 10, const Color(0xFF7B1FA2), scale,
+          ringWidth: 3);
     }
     // 四边形轮廓
     final outline = Paint()
@@ -344,15 +360,11 @@ class MiniGridPainter extends CustomPainter {
       canvas.drawLine(Offset(grid.left, y), Offset(grid.right, y), inner);
     }
     // 左上/右下双缩放把手：拖右下=左上角（锚点）不动调格距；拖左上=
-    // 右下角不动。白底橙圈，半径随缩放补偿（放大后不会变巨误触）
-    final fill = Paint()..color = Colors.white;
-    final stroke = Paint()
-      ..color = const Color(0xFFE65100)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.8 / scale;
+    // 右下角不动。白底橙圈，半径随缩放补偿（放大后不会变巨误触，见
+    // paintHandleCircle）
     for (final handle in [grid.topLeft, grid.bottomRight]) {
-      canvas.drawCircle(handle, 8 / scale, fill);
-      canvas.drawCircle(handle, 8 / scale, stroke);
+      paintHandleCircle(canvas, handle, 8, const Color(0xFFE65100), scale,
+          ringWidth: 1.8);
     }
   }
 
@@ -486,7 +498,11 @@ class BlankMarksPainter extends CustomPainter {
       oldDelegate.model != model;
 }
 
-/// 选中格标记：蓝色覆盖 + 右上角对勾
+/// 选中格标记：灰黑压暗 + 蓝框 + 白对勾
+///
+/// 压暗代替旧的半透明蓝罩：花色网格上薄蓝罩与周遭豆色拉不开差距，
+/// 批量拖选时已选/未选一眼分不清会漏选（用户反馈）——选中的格沉到
+/// 深灰，未选的保持原色，对比强烈
 class ReviewMarksPainter extends CustomPainter {
   final PatternModel model;
   final Set<int> picked;
@@ -497,7 +513,7 @@ class ReviewMarksPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final cellW = size.width / model.width;
     final cellH = size.height / model.height;
-    final fill = Paint()..color = Colors.blue.withValues(alpha: 0.3);
+    final fill = Paint()..color = Colors.black.withValues(alpha: 0.55);
     final border = Paint()
       ..color = Colors.blue
       ..style = PaintingStyle.stroke

@@ -52,6 +52,10 @@ class _AssemblePageState extends State<AssemblePage> {
   var _labelMode = LabelMode.id;
 
   ///< 格子文字层模式（选中色号后可切横向/竖向编号；默认只色号）
+  var _labelColorMode = LabelColorMode.adaptive;
+
+  ///< 格子文字颜色模式（自适应/全黑/全白，默认自适应：浅豆黑字深豆
+  ///< 白字；个别豆色自适应判浅判深不合口味时强制黑白）
   var _showOtherIds = true;
 
   ///< 是否显示未选中色号的文本（高亮中关掉只留选中色编号降噪；
@@ -442,6 +446,10 @@ class _AssemblePageState extends State<AssemblePage> {
                   // 色条排序（与图例核对步同款四模式单选菜单）：完成色
                   //（剩余 0）恒垫后由排序函数保证，这里只管段内次序
                   _sortPopup(),
+                  // 字色模式（三档单选）：自适应=浅色豆黑字/深色豆白字
+                  //（默认）；全黑/全白强制一色——个别豆色自适应选的字色
+                  // 看不清时（如纯白豆配浅灰字）手动兜底
+                  _labelColorPopup(),
                 ],
               ),
             ),
@@ -511,8 +519,12 @@ class _AssemblePageState extends State<AssemblePage> {
                       // 粗线颜色随板配置 + 本页色钮会话内覆盖
                       board: widget.board.copyWith(majorColor: _majorColor),
                       labelMode: _labelMode,
+                      labelColorMode: _labelColorMode,
                       showLabels: true,
                       showNonHiLabels: _showOtherIds,
+                      // ctrl：格线/对勾线宽随缩放实时补偿（painter 挂
+                      // repaint 监听，捏合/缩放条不 setState 也跟着重画）
+                      ctrl: _viewerCtrl,
                       items: [
                         for (var i = 0; i < widget.works.length; i++)
                           BoardPaintItem(
@@ -616,6 +628,46 @@ class _AssemblePageState extends State<AssemblePage> {
             ),
           ],
         ],
+      ),
+    );
+  }
+
+  /// 字色模式下拉（顶行尾部，图标钮省宽度）：三模式单选，当前带勾。
+  /// 自适应按豆色亮度选黑白字（画布文字层的默认行为），全黑/全白为
+  /// 强制档（BoardPainter.labelColorMode）
+  Widget _labelColorPopup() {
+    return PopupMenuButton<LabelColorMode>(
+      tooltip: "字色模式（自适应/全黑/全白）",
+      initialValue: _labelColorMode,
+      onSelected: (m) => setState(() => _labelColorMode = m),
+      itemBuilder: (_) => [
+        for (final m in LabelColorMode.values)
+          PopupMenuItem(
+            value: m,
+            child: Row(
+              children: [
+                Icon(
+                  Icons.check,
+                  size: 16,
+                  color: m == _labelColorMode ? Colors.blue : Colors.transparent,
+                ),
+                const SizedBox(width: 4),
+                Text(switch (m) {
+                  LabelColorMode.adaptive => "字色自适应",
+                  LabelColorMode.black => "字色全黑",
+                  LabelColorMode.white => "字色全白",
+                }),
+              ],
+            ),
+          ),
+      ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+        decoration: BoxDecoration(
+          border: Border.all(color: Colors.black26),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: const Icon(Icons.contrast, size: 15, color: Colors.black54),
       ),
     );
   }
@@ -724,18 +776,20 @@ class _AssemblePageState extends State<AssemblePage> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
+                  // 浅色豆黑字/深色豆白字，对比拉到 87/纯白：黑 54/45 在
+                  // 纯白浅豆（H1/H2 类）上小字号下几乎看不见
                   Text(
                     id.replaceFirst("P", ""),
                     style: TextStyle(
                       fontSize: 11,
-                      color: light ? Colors.black54 : Colors.white70,
+                      color: light ? Colors.black87 : Colors.white,
                     ),
                   ),
                   Text(
                     "$left/$count",
                     style: TextStyle(
                       fontSize: 9,
-                      color: light ? Colors.black45 : Colors.white60,
+                      color: light ? Colors.black54 : Colors.white70,
                     ),
                   ),
                 ],
