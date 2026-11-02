@@ -302,6 +302,38 @@ class _RestorePageState extends State<RestorePage> {
     _initPalette();
   }
 
+  Size? _lastMediaSize;
+
+  ///< 上次媒体尺寸（didChangeDependencies 旋转/分屏检测对比用）
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final sz = MediaQuery.sizeOf(context);
+    final last = _lastMediaSize;
+    _lastMediaSize = sz;
+    if (last == null || _image == null || last == sz) {
+      return;
+    }
+    // 屏幕尺寸变化（旋转/分屏）：显示坐标以屏宽-24 定基，坐标系整体按宽
+    // 度比例重标定。存量四角/选区/锚点都是「图上的位置」，等比缩放后语
+    // 义不变；直接沿用旧坐标在宽变窄时会落到新图界外——图外手圆被
+    // ClipRect 裁剪 + 平移夹限双重锁死不可点（与换图残留同症状）
+    final f = (sz.width - 24) / (last.width - 24);
+    Rect scaleRect(Rect r) =>
+        Rect.fromLTRB(r.left * f, r.top * f, r.right * f, r.bottom * f);
+    setState(() {
+      if (_cornerPts != null) {
+        _cornerPts = [
+          for (final p in _cornerPts!) Offset(p.dx * f, p.dy * f),
+        ];
+      }
+      _miniAnchor = _miniAnchor != null ? _miniAnchor! * f : null;
+      _legendSel = _legendSel != null ? scaleRect(_legendSel!) : null;
+      _selDisplay = _selDisplay != null ? scaleRect(_selDisplay!) : null;
+    });
+  }
+
   /// 加载选中色卡 + 全部可选色卡
   Future<void> _initPalette() async {
     final selected = await PaletteRegistry.loadSelected();
@@ -359,6 +391,19 @@ class _RestorePageState extends State<RestorePage> {
         _legend = [];
         _legendByOcr = false;
         _pitchX = 0;
+        _pitchY = 0;
+        // 换图清空全部下游步骤状态（导航模型：返回=读该步最后状态，前进
+        // =按当前图重推导；上游图一换，下游存量全部作废）。四角是旧图的
+        // 显示坐标，长宽比不同时新图上整组落在图界外——图外手圆被
+        // ClipRect 裁剪 + 平移夹限双重锁死，永久不可点（实测卡死现场）
+        _useCornerAlign = false;
+        _cornerPts = null;
+        _colsCtrl.clear();
+        _rowsCtrl.clear();
+        _legendColsCtrl.clear();
+        _legendRowsCtrl.clear();
+        _reviewColor = -2;
+        _picked.clear();
         _model = null;
         _cellRects = const [];
         _cellScores = const [];
@@ -528,6 +573,12 @@ class _RestorePageState extends State<RestorePage> {
       // 读不到（web/异常/配对太少）回退纯色块量化清单（现状行为，颗数手填）。
       final pairs = await _ocrLegendPairs(rx, ry, rw, rh);
       if (!mounted) {
+        return;
+      }
+      if (!identical(_image, image)) {
+        // OCR 期间换图（返回键回选图步重选）：旧图清单丢弃只解除识别态，
+        // 不写入新图的图例状态
+        setState(() => _legendBusy = false);
         return;
       }
       for (final e in _legend) {
@@ -730,6 +781,12 @@ class _RestorePageState extends State<RestorePage> {
       "det=${det == null ? "null" : "px=${det.pitchX.toStringAsFixed(2)} py=${det.pitchY.toStringAsFixed(2)} ox=${det.offsetX.toStringAsFixed(1)} oy=${det.offsetY.toStringAsFixed(1)} ${det.cols}x${det.rows}"}",
     );
     if (!mounted) {
+      return;
+    }
+    if (!identical(_image, image)) {
+      // 检测期间换图（isolate 跑着时经返回键回选图步重选）：旧图结果丢弃
+      // 只解除检测态——_detecting 卡 true 会拦住新图的检测入口
+      setState(() => _detecting = false);
       return;
     }
     final ds = _displaySize();
