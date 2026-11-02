@@ -25,3 +25,7 @@ Thumbs.db
 *.log
 .t/
 .test/
+
+# 本地工具与交付产物
+.vscode/
+dist/
