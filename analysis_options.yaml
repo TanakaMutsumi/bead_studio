@@ -18,6 +18,10 @@ analyzer:
     - windows/**
     - macos/**
     - linux/**
+    # 设备端批量识别测试：内嵌 13MB base64 图库（testpics_data.dart），
+    # 分析器解析超大文件会静默放弃、连带编排文件报假错误（flutter test
+    # 编译运行均正常），整目录移出静态分析面
+    - integration_test/**
 
 linter:
   # The lint rules applied to this project can be customized in the

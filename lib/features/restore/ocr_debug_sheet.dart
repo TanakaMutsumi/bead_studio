@@ -78,13 +78,20 @@ void showOcrDebugSheet(BuildContext context, OcrDebugInfo dbg, BeadPalette palet
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      // 放大图宽可达 ~4800，超 GLES 纹理上限（2048）会渲染成
-                      // 一条带——超限时按解码目标宽限幅（等比，不放大小图）
+                      // 放大图长边可达 ~10K（分段放大后），超 GLES 纹理上限
+                      // （2048）会渲染成一条带——按长边限幅（横条限宽、竖条
+                      // 图例的高也要限；等比，不放大小图）
                       Image.file(
                         File(dbg.imgPath),
                         fit: BoxFit.fill,
-                        cacheWidth:
-                            dbg.imgW > kDisplayMaxEdge ? kDisplayMaxEdge : null,
+                        cacheWidth: dbg.imgW >= dbg.imgH &&
+                                dbg.imgW > kDisplayMaxEdge
+                            ? kDisplayMaxEdge
+                            : null,
+                        cacheHeight: dbg.imgH > dbg.imgW &&
+                                dbg.imgH > kDisplayMaxEdge
+                            ? kDisplayMaxEdge
+                            : null,
                       ),
                       CustomPaint(
                         painter: OcrDebugPainter(dbg.elems, dbg.bars),

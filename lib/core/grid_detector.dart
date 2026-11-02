@@ -67,6 +67,15 @@ GridDetectResult? detectGridAutocorr(List<int> gray, int w, int h) {
   if (pitchX == null || pitchY == null) {
     return null;
   }
+  // 轴间一致性闸门：照片像素是方形的，两轴真格距差只应来自轻微透视
+  //（个位数百分比）。两轴各自独立做 k 分频扫描，一侧锁到谐波（半频/
+  // 倍频）或格内次结构时，格距比会明显偏离 1（如 0.5/2），且无法判定
+  // 哪一侧错——静默采用会把每个格切成 1×2/2×1 的长方形（部分设备图
+  // 上已发生）。宁可判无效走「图宽/20 默认 + 手动调整」兜底
+  final pr = pitchX > pitchY ? pitchX / pitchY : pitchY / pitchX;
+  if (pr > 1.2) {
+    return null;
+  }
   final offX = _phaseByFold(projX, pitchX);
   final offY = _phaseByFold(projY, pitchY);
   final cols = ((w - offX + pitchX / 2) / pitchX).floor();
