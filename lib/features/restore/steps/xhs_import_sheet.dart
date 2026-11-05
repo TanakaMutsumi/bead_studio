@@ -416,12 +416,9 @@ class _XhsViewerPageState extends State<_XhsViewerPage> {
   Future<void> _load() async {
     try {
       final bytes = await widget.ensureOriginal(widget.image);
-      // 显示层重编码限幅提到 4096：查看器的意义就是放大看细节，2048 会
-      // 在 >2× 缩放后发糊。还原管线仍走默认 2048（那边的限幅是 2026-08
-      // 实测的模拟器 GLES 纹理约束，只对本页放宽——2026-11-05 在同模拟
-      // 器（Ganesh/host GPU 翻译）实测 4096 渲染正常；保存/识别用的都
-      // 是未限幅原始字节，不受影响
-      final (decoded, display) = await decodeForDisplay(bytes, maxEdge: 4096);
+      // 显示层重编码走全局 4096 上限（kDisplayMaxEdge，2026-11-05 起全
+      // app 显示统一放宽）；保存/识别用的都是未限幅原始字节
+      final (decoded, display) = await decodeForDisplay(bytes);
       if (!mounted) {
         return;
       }
