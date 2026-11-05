@@ -70,9 +70,12 @@ const int kDisplayMaxEdge = 2048;
 /// SingleChildScrollView 的无界高度约束下（其变换矩阵算坏、child 整块
 /// 不渲染），与图片字节/纹理上传无关——此前"Impeller 纹理上传静默失败"
 /// 的推断已被二分实验推翻，勿再据此加兜底。
-Future<(img.Image, Uint8List)> decodeForDisplay(Uint8List bytes) async {
+Future<(img.Image, Uint8List)> decodeForDisplay(
+  Uint8List bytes, {
+  int maxEdge = kDisplayMaxEdge,
+}) async {
   final decoded = await decodeImageRobust(bytes);
-  final display = await compute(encodeDisplayJpg, decoded);
+  final display = await compute(encodeDisplayJpg, (decoded, maxEdge));
   return (decoded, display);
 }
 
@@ -81,15 +84,20 @@ Future<(img.Image, Uint8List)> decodeForDisplay(Uint8List bytes) async {
 /// isolate 里跑：百万像素级缩放/编码同步执行会卡 UI 帧。
 /// 用 JPEG 而非 PNG：同画质体积小一个量级，且 encodePng 的产物在
 /// Impeller GLES 下纹理上传会静默失败（见 decodeForDisplay 注释）。
-Uint8List encodeDisplayJpg(img.Image image) {
+/// 缩小必须显式 average（盒式滤波）：copyResize 默认最近邻，降采样
+/// 直接丢像素，高清原图（如小红书 5364px）缩到 2048 后细节大面积
+/// 抹平，预览"明显发糊"（2026-11-05 模拟器实测，换 average 立清）。
+Uint8List encodeDisplayJpg((img.Image, int) args) {
+  final (image, maxEdge) = args;
   var display = image;
   final longEdge = image.width >= image.height ? image.width : image.height;
-  if (longEdge > kDisplayMaxEdge) {
-    final scale = kDisplayMaxEdge / longEdge;
+  if (longEdge > maxEdge) {
+    final scale = maxEdge / longEdge;
     display = img.copyResize(
       image,
       width: (image.width * scale).round(),
       height: (image.height * scale).round(),
+      interpolation: img.Interpolation.average,
     );
   }
   return Uint8List.fromList(img.encodeJpg(display, quality: 92));

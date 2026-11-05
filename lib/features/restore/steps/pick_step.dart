@@ -1,11 +1,18 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
-/// 阶段一：选图入口（相册 / 拍照）
+import 'xhs_import_sheet.dart';
+
+/// 阶段一：选图入口（相册 / 拍照 / 小红书链接）
 class PickStep extends StatelessWidget {
   final void Function(ImageSource source) onPick;
 
-  const PickStep({super.key, required this.onPick});
+  /// 小红书链接导入：拿到选中图的原始字节，走与相册选图相同的下游链路
+  final void Function(Uint8List bytes) onXhsBytes;
+
+  const PickStep({super.key, required this.onPick, required this.onXhsBytes});
 
   @override
   Widget build(BuildContext context) {
@@ -34,6 +41,12 @@ class PickStep extends StatelessWidget {
               onPressed: () => onPick(ImageSource.camera),
               icon: const Icon(Icons.photo_camera),
               label: const Text("拍照图纸"),
+            ),
+            const SizedBox(height: 12),
+            FilledButton.tonalIcon(
+              onPressed: () => showXhsImportSheet(context, onXhsBytes),
+              icon: const Icon(Icons.link),
+              label: const Text("小红书链接导入"),
             ),
           ],
         ),

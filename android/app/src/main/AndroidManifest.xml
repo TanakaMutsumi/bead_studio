@@ -1,4 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 小红书链接导入：拉取笔记页与图片 CDN 均需联网 -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <application
         android:label="bead_studio"
         android:name="${applicationName}"

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
@@ -488,9 +489,14 @@ class _RestorePageState extends State<RestorePage> {
     if (picked == null) {
       return;
     }
+    await _loadImageBytes(await picked.readAsBytes());
+  }
+
+  /// 载入图片字节（相册/拍照/小红书链接共用）：解码 + 清空下游全部状态 +
+  /// 自动预框图例
+  Future<void> _loadImageBytes(Uint8List bytes) async {
     try {
       setState(() => _decoding = true);
-      final bytes = await picked.readAsBytes();
       // 显示层统一走重编码 JPEG + 长边限幅（decodeForDisplay），识别/裁剪
       // 仍用 decoded 原始像素
       final (decoded, display) = await decodeForDisplay(bytes);
@@ -1815,7 +1821,7 @@ class _RestorePageState extends State<RestorePage> {
 
   /// 阶段一：选图入口（面板实现在 steps/pick_step.dart）
   Widget _buildPick() {
-    return PickStep(onPick: _pickImage);
+    return PickStep(onPick: _pickImage, onXhsBytes: _loadImageBytes);
   }
 
   /// 命中选区把手（返回 0-7 索引，未命中返回 -1）

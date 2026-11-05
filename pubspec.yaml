@@ -14,6 +14,8 @@ dependencies:
   image: ^4.2.0
   # 相册/拍照选图
   image_picker: ^1.1.2
+  # 小红书链接导入（笔记页解析 + 原图下载）
+  http: ^1.2.0
   # 本地草稿目录
   path_provider: ^2.1.4
 
