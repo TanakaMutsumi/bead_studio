@@ -8,6 +8,7 @@ import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 
 import '../../core/legend_ocr.dart';
+import '../../core/native_ocr.dart';
 import '../../core/palette.dart';
 
 /// 一次图例 OCR 编排的结果
@@ -45,6 +46,9 @@ class LegendPrepArgs {
   final List<int> segX0, segX1;
 
   ///< 各段在全放大图的起止（含重叠；单发路径只有整图一段）
+  final String tmpDir;
+
+  ///< 临时目录（段 RGBA/调试 PNG 在 isolate 内落盘，不走 isolate 出参）
   const LegendPrepArgs(
     this.image,
     this.x,
@@ -54,10 +58,15 @@ class LegendPrepArgs {
     this.scale,
     this.segX0,
     this.segX1,
+    this.tmpDir,
   );
 }
 
 /// [prepLegendOcr] 的结果（isolate 出参）
+///
+/// 段字节与调试 PNG 都在 isolate 内落盘、只回路径：数十 MB 字节数组
+/// 跨 isolate 回传会在主 isolate 反序列化，主线程二次冻结（2026-11-03
+/// 实测 prep 出参 90MB 级回传，主线程与 OCR 调用同段满载）
 class LegendPrepResult {
   final img.Image scaled;
 
@@ -65,16 +74,17 @@ class LegendPrepResult {
   final List<LegendBar> bars;
 
   ///< 色条检测（在全放大图坐标系）
-  final Uint8List debugPng;
+  final String debugPngPath;
 
-  ///< 全放大图 PNG（调试快照/调试面板底图）
-  final List<Uint8List> segPngs;
+  ///< 全放大图 PNG 路径（调试快照/调试面板底图，isolate 内已写盘）
+  final List<String> segPaths;
 
-  ///< 各段 PNG（喂 ML Kit）
-  LegendPrepResult(this.scaled, this.bars, this.debugPng, this.segPngs);
+  ///< 各段原始 RGBA 文件路径（原生通道按文件读，段宽 = segX1[i]-segX0[i]、
+  ///< 段高 = scaled.height）
+  LegendPrepResult(this.scaled, this.bars, this.debugPngPath, this.segPaths);
 }
 
-/// 裁剪+放大+色条检测+PNG 编码（顶层函数供 compute isolate 调用）
+/// 裁剪+放大+色条检测+段落盘+PNG 落盘（顶层函数供 compute isolate 调用）
 LegendPrepResult prepLegendOcr(LegendPrepArgs a) {
   final crop = img.copyCrop(
     a.image,
@@ -85,20 +95,25 @@ LegendPrepResult prepLegendOcr(LegendPrepArgs a) {
   );
   final scaled = img.copyResize(crop, width: (crop.width * a.scale).round());
   final bars = detectLegendBars(scaled);
-  final debugPng = img.encodePng(scaled);
-  final segPngs = <Uint8List>[
+  final debugPngPath = "${a.tmpDir}/legend_ocr.png";
+  File(debugPngPath).writeAsBytesSync(img.encodePng(scaled));
+  final segPaths = <String>[
     for (var i = 0; i < a.segX0.length; i++)
-      img.encodePng(
-        img.copyCrop(
+      "${a.tmpDir}/legend_seg_$i.rgba",
+  ];
+  for (var i = 0; i < a.segX0.length; i++) {
+    final bytes = img
+        .copyCrop(
           scaled,
           x: a.segX0[i],
           y: 0,
           width: a.segX1[i] - a.segX0[i],
           height: scaled.height,
-        ),
-      ),
-  ];
-  return LegendPrepResult(scaled, bars, debugPng, segPngs);
+        )
+        .getBytes(order: img.ChannelOrder.rgba);
+    File(segPaths[i]).writeAsBytesSync(bytes);
+  }
+  return LegendPrepResult(scaled, bars, debugPngPath, segPaths);
 }
 
 /// OCR 图例选区 -> [(印刷色号调色板索引, 印刷颗数)] 按阅读顺序
@@ -170,9 +185,7 @@ Future<LegendOcrRun> runLegendOcr(
       segX1.add((rw * scale).round());
     }
 
-    final tmp = File(
-      "${(await getTemporaryDirectory()).path}/legend_ocr.png",
-    );
+    final tmpDir = (await getTemporaryDirectory()).path;
     final prep = await compute(
       prepLegendOcr,
       LegendPrepArgs(
@@ -184,10 +197,10 @@ Future<LegendOcrRun> runLegendOcr(
         scale,
         segX0,
         segX1,
+        tmpDir,
       ),
     );
-    await tmp.writeAsBytes(prep.debugPng);
-    dbgPath = tmp.path; // 【临时调试】记下放大图，异常路径的快照也要能看图
+    dbgPath = prep.debugPngPath; // 【临时调试】记下放大图，异常路径的快照也要能看图
     dbgW = prep.scaled.width;
     dbgH = prep.scaled.height;
     final scaled = prep.scaled;
@@ -196,59 +209,54 @@ Future<LegendOcrRun> runLegendOcr(
     final codeMap = buildCodeMap(palette);
 
     // 收集全部色号/颗数元素（带几何框：颗数可能在色号下一行，纯行内序配不上）；
-    // 原图轮/反色轮共用同一收集逻辑；xOff 把段内坐标换算回全放大图坐标
-    List<OcrElem> collect(RecognizedText result, int seqStart, double xOff) {
+    // 原图轮/反色轮共用同一收集逻辑；xOff 把段内坐标换算回全放大图坐标。
+    // 入参是展平元素表（原生通道/插件回退同出参，见 native_ocr.dart）
+    List<OcrElem> collect(List<OcrTextElem> result, int seqStart, double xOff) {
       final out = <OcrElem>[];
       var seq = seqStart;
-      for (final block in result.blocks) {
-        for (final line in block.lines) {
-          for (final element in line.elements) {
-            final text = element.text.trim().toUpperCase().replaceAll(
-                  " ",
-                  "",
-                );
-            // 色号最多 4 字符（A1/H12 型），长文本是正文/杂项不做色号。
-            // 纯数字文本即使命中混淆变体（8↔B 使 "81"→B1）也先按颗数
-            // 收集——它更常是左侧色号的真颗数（"H7 81" 行的 81），
-            // 配对后仍未消费的裸数字才兜底回落为色号
-            if (text.length <= 4 && RegExp(r'^[A-Z]').hasMatch(text)) {
-              final code = codeMap[text];
-              if (code != null) {
-                final bb = element.boundingBox;
-                final e = OcrElem(
-                  seq++,
-                  Rect.fromLTRB(
-                    bb.left + xOff,
-                    bb.top,
-                    bb.right + xOff,
-                    bb.bottom,
-                  ),
-                  code,
-                  null,
-                );
-                e.dbgText = element.text; // 【临时调试】保留原始文本
-                out.add(e);
-                continue;
-              }
-            }
-            final n = parseCountText(element.text);
-            if (n != null) {
-              final bb = element.boundingBox;
-              final e = OcrElem(
-                seq++,
-                Rect.fromLTRB(
-                  bb.left + xOff,
-                  bb.top,
-                  bb.right + xOff,
-                  bb.bottom,
-                ),
-                null,
-                n,
-              );
-              e.dbgText = element.text; // 【临时调试】保留原始文本
-              out.add(e);
-            }
+      for (final element in result) {
+        final text = element.text.trim().toUpperCase().replaceAll(
+              " ",
+              "",
+            );
+        // 色号最多 4 字符（A1/H12 型），长文本是正文/杂项不做色号。
+        // 纯数字文本即使命中混淆变体（8↔B 使 "81"→B1）也先按颗数
+        // 收集——它更常是左侧色号的真颗数（"H7 81" 行的 81），
+        // 配对后仍未消费的裸数字才兜底回落为色号
+        if (text.length <= 4 && RegExp(r'^[A-Z]').hasMatch(text)) {
+          final code = codeMap[text];
+          if (code != null) {
+            final e = OcrElem(
+              seq++,
+              Rect.fromLTRB(
+                element.rect.left + xOff,
+                element.rect.top,
+                element.rect.right + xOff,
+                element.rect.bottom,
+              ),
+              code,
+              null,
+            );
+            e.dbgText = element.text; // 【临时调试】保留原始文本
+            out.add(e);
+            continue;
           }
+        }
+        final n = parseCountText(element.text);
+        if (n != null) {
+          final e = OcrElem(
+            seq++,
+            Rect.fromLTRB(
+              element.rect.left + xOff,
+              element.rect.top,
+              element.rect.right + xOff,
+              element.rect.bottom,
+            ),
+            null,
+            n,
+          );
+          e.dbgText = element.text; // 【临时调试】保留原始文本
+          out.add(e);
         }
       }
       return out;
@@ -261,18 +269,27 @@ Future<LegendOcrRun> runLegendOcr(
     // 全部段失败才视为 OCR 整体失败
     var recognizer = TextRecognizer(script: TextRecognitionScript.latin);
     try {
-      for (var i = 0; i < prep.segPngs.length; i++) {
+      for (var i = 0; i < prep.segPaths.length; i++) {
         try {
-          // 段文件独立命名：调试全图固定用 legend_ocr.png，覆写会让调试
-          // 面板出现「末段小图 + 全图坐标」的静默错位
-          final segFile = File(
-            "${tmp.parent.path}/legend_ocr_seg$i.png",
-          );
-          await segFile.writeAsBytes(prep.segPngs[i]);
-          final recognized = await recognizer.processImage(
-            InputImage.fromFilePath(segFile.path),
-          );
-          final got = collect(recognized, seq, segX0[i].toDouble());
+          // 段识别走原生后台线程通道（bead_native_ocr：插件通道固定在
+          // 平台线程=UI 线程上构位图+推理，每次调用主线程 100% 冻结；
+          // 段 RGBA 由 prep isolate 落盘、通道直接读文件，主 isolate
+          // 全程不碰大字节）。通道不可用回退插件（保功能，会冻结）
+          final segW = segX1[i] - segX0[i];
+          var els = await ocrRgbaFile(prep.segPaths[i], segW, prep.scaled.height);
+          if (els == null) {
+            els = await ocrRgbaPlugin(
+              recognizer,
+              img.copyCrop(
+                prep.scaled,
+                x: segX0[i],
+                y: 0,
+                width: segW,
+                height: prep.scaled.height,
+              ),
+            );
+          }
+          final got = collect(els, seq, segX0[i].toDouble());
           seq += got.length;
           tagged.addAll([for (final e in got) (e, i)]);
         } catch (_) {
@@ -295,7 +312,7 @@ Future<LegendOcrRun> runLegendOcr(
     // 段切尾巴/ML Kit 重复子元素会被色块补全 Fabricate 成幻影色号
     //（wx2 "7)"→R7、wx3 "5"→H5 重复条目）
     removeNestedFragments(elems);
-    final ocrFailed = segFails >= prep.segPngs.length;
+    final ocrFailed = segFails >= prep.segPaths.length;
     final orphanNotes = <String>[];
     var fixedCount = 0,
         gapFixed = 0,
@@ -347,7 +364,7 @@ Future<LegendOcrRun> runLegendOcr(
         elems,
         scaled,
         codeMap,
-        tmp.parent.path,
+        tmpDir,
         orphanNotes,
         layout: layout,
         dbg: belowDbg,
@@ -357,7 +374,7 @@ Future<LegendOcrRun> runLegendOcr(
       belowFixed = await fixOrphanCodeCounts(
         elems,
         scaled,
-        tmp.parent.path,
+        tmpDir,
         dbg: belowDbg,
       );
       // 网格盲区补全：行列都在而完全静默的格位（白底浅字整条吞掉，new1
@@ -367,7 +384,7 @@ Future<LegendOcrRun> runLegendOcr(
         prep.bars,
         scaled,
         codeMap,
-        tmp.parent.path,
+        tmpDir,
         orphanNotes,
         dbg: belowDbg,
       );
@@ -381,7 +398,7 @@ Future<LegendOcrRun> runLegendOcr(
           rightFixed = await fixRightCountsByLayout(
             elems,
             scaled,
-            tmp.parent.path,
+            tmpDir,
             layout,
             dbg: belowDbg,
           );
@@ -455,9 +472,9 @@ Future<LegendOcrRun> runLegendOcr(
       ocrFailed
           ? "$source（OCR异常）"
           : segFails > 0
-              ? "$source（段$segFails/${prep.segPngs.length}失败）"
+              ? "$source（段$segFails/${prep.segPaths.length}失败）"
               : source,
-      tmp.path,
+      prep.debugPngPath,
       scaled.width,
       scaled.height,
       elems,
@@ -470,7 +487,7 @@ Future<LegendOcrRun> runLegendOcr(
     // 【临时调试】元素明细同时打 logcat 与写文件（个别环境 logcat 收不到
     // flutter tag，文件可 adb pull，像素判读调试面板太费劲），正式版移除
     final dbgLines = <String>[
-      "框选($source) $rx,$ry ${rw}x$rh 段${prep.segPngs.length}(失败$segFails, 去重${tagged.length - elems.length}) elems=${elems.length}(色块补全$fixedCount, 空隙OCR$gapFixed, 下方OCR$belowFixed, 盲格OCR$gridFixed, 右侧OCR$rightFixed, 括号剥$parenStripped, 括号颗数$parenCount/裸数字$bareCount) 色条${bars.length}条 img=${scaled.width}x${scaled.height}${ocrFailed ? " OCR异常" : ""}$layoutNote"
+      "框选($source) $rx,$ry ${rw}x$rh 段${prep.segPaths.length}(失败$segFails, 去重${tagged.length - elems.length}) elems=${elems.length}(色块补全$fixedCount, 空隙OCR$gapFixed, 下方OCR$belowFixed, 盲格OCR$gridFixed, 右侧OCR$rightFixed, 括号剥$parenStripped, 括号颗数$parenCount/裸数字$bareCount) 色条${bars.length}条 img=${scaled.width}x${scaled.height}${ocrFailed ? " OCR异常" : ""}$layoutNote"
           "${orphanNotes.isEmpty ? "" : " 色卡外色号=[${orphanNotes.toSet().join(" ")}]"}",
       ...belowDbg, // 【临时调试】下方 OCR 救援排障行（正式版随 dbg 参数移除）
     ];
@@ -510,7 +527,7 @@ Future<LegendOcrRun> runLegendOcr(
     for (final l in dbgLines) {
       debugPrint("【临时调试】$l");
     }
-    File("${tmp.parent.path}/legend_ocr_log.txt").writeAsStringSync(
+    File("${tmpDir}/legend_ocr_log.txt").writeAsStringSync(
       dbgLines.join("\n"),
     );
     return LegendOcrRun(fused, debug, orphanNotes, segFails);

@@ -33,7 +33,7 @@ Future<img.Image> decodeImageRobust(Uint8List bytes) async {
     if (rgba == null) {
       throw StateError("Skia 解码返回空数据");
     }
-    return _fromRawRgba(rgba, frame.image.width, frame.image.height);
+    return await _fromRawRgba(rgba, frame.image.width, frame.image.height);
   } catch (_) {
     // 无引擎环境（纯 Dart 测试/CLI）或引擎解不了：落入下方纯 Dart 回退
   }
@@ -96,12 +96,30 @@ Uint8List encodeDisplayJpg(img.Image image) {
 }
 
 /// RGBA 原始字节 -> image 包 Image（拷贝进 ImageData）
-img.Image _fromRawRgba(ByteData rgba, int width, int height) {
-  final out = img.Image(width: width, height: height);
-  final data = rgba.buffer.asUint8List();
-  for (var y = 0; y < height; y++) {
-    for (var x = 0; x < width; x++) {
-      final i = (y * width + x) * 4;
+///
+/// 百万像素级逐像素 setPixelRgba 在主 isolate 同步跑实测冻结 ~0.4s
+/// （2026-11-02 UI 线程探针 S1），入 compute；传 Uint8List 视图
+/// （TypedData 可跨 isolate 直传）。web 上 compute 退化为同线程直跑，
+/// 行为不变。
+Future<img.Image> _fromRawRgba(ByteData rgba, int width, int height) {
+  return compute(
+    _pixelsFromRgba,
+    _RawRgbaArgs(rgba.buffer.asUint8List(), width, height),
+  );
+}
+
+class _RawRgbaArgs {
+  final Uint8List rgba;
+  final int width, height;
+  const _RawRgbaArgs(this.rgba, this.width, this.height);
+}
+
+img.Image _pixelsFromRgba(_RawRgbaArgs a) {
+  final out = img.Image(width: a.width, height: a.height);
+  final data = a.rgba;
+  for (var y = 0; y < a.height; y++) {
+    for (var x = 0; x < a.width; x++) {
+      final i = (y * a.width + x) * 4;
       out.setPixelRgba(x, y, data[i], data[i + 1], data[i + 2], data[i + 3]);
     }
   }

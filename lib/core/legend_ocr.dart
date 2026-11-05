@@ -7,6 +7,7 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 
+import 'native_ocr.dart';
 import 'palette.dart';
 
 /// 图例 OCR 识别元素（色号或颗数，带几何框供跨行配对）
@@ -1083,7 +1084,8 @@ int? parseCountText(String raw) {
 /// 新信息，与 ocrGapVariants 同理；new1 H6 深底白字 ×2 整轮零元素）。
 /// 返回补全数；识别到但当前色卡没有的色号（如 MARD 卡外的 H7）收集到
 /// [orphanNotes] 供上层提示用户手工补。[ocrGap] 可注入替换空隙识别
-///（单测用），[tmpDirPath] 只取目录，临时文件名固定
+///（单测用）。[tmpDirPath] 为历史参数：喂图改 fromBitmap 原始字节后不再
+/// 落临时文件，仅为调用方签名兼容保留（四个 fix* 同）
 Future<int> fixOrphanCountCodes(
   BeadPalette palette,
   List<OcrElem> elems,
@@ -1235,19 +1237,13 @@ Future<int> fixOrphanCountCodes(
     var hitZoom = zooms.first;
     for (final z in zooms) {
       final big = img.copyResize(gap, width: (gap.width * z).round());
-      hit = ocrGap != null
-          ? await ocrGap(big)
-          : await ocrGapText(
-              big,
-              File("$tmpDirPath/legend_ocr_gap.png"),
-            );
+      hit = ocrGap != null ? await ocrGap(big) : await ocrGapText(big);
       if (hit == null && ocrGap == null && _meanGray(big) < 130) {
         // 深底暗字第三轮（浅色列漂白+深区Otsu二值）：原图/反色 ML Kit
         // 全瞎时，小区平均灰度深说明字墨与底色同暗（new1 G29 色号印深蓝
         // 条上 Δ≈20）；白底图例（wx1 型）灰度浅不触发，行为不变
         hit = await ocrGapText(
           _binarizeDarkBarText(big),
-          File("$tmpDirPath/legend_ocr_gap.png"),
           onDbg: dbg == null ? null : (m) => dbg.add("深3a $m"),
         );
         // 3b 轮：切点上移 10 加肥笔画（Otsu 切点常落在字墨模的核上，
@@ -1255,7 +1251,6 @@ Future<int> fixOrphanCountCodes(
         if (hit == null) {
           hit = await ocrGapText(
             _binarizeDarkBarText(big, thrBoost: 10),
-            File("$tmpDirPath/legend_ocr_gap.png"),
             onDbg: dbg == null ? null : (m) => dbg.add("深3b $m"),
           );
         }
@@ -1264,7 +1259,6 @@ Future<int> fixOrphanCountCodes(
         if (hit == null) {
           hit = await ocrGapText(
             _adaptiveBinarize(big),
-            File("$tmpDirPath/legend_ocr_gap.png"),
             onDbg: dbg == null ? null : (m) => dbg.add("深4 $m"),
           );
         }
@@ -1385,7 +1379,6 @@ Future<int> fixOrphanCodeCounts(
       rowCountTops.add(t);
     }
   }
-  final tmp = File("$tmpDirPath/legend_ocr_gap2.png");
   dbg?.add(
     "下方OCR调试 orphans=${orphans.length}=[${orphans.map((o) => o.dbgText).join(" ")}] "
     "avgH=${avgH.toStringAsFixed(1)} 行顶=${rowCountTops.map((t) => t.toStringAsFixed(0)).join("/")}",
@@ -1442,7 +1435,6 @@ Future<int> fixOrphanCodeCounts(
         ? await ocrGap(img.copyResize(gap, width: (gap.width * zoom).round()))
         : await ocrGapVariants(
             gap,
-            tmp,
             pickNear: pickNear,
             maxElemW: avgH * 3,
             onDbg: dbg == null ? null : (m) => dbg.add(m),
@@ -1598,7 +1590,6 @@ Future<int> fixBlindGridCodes(
       nextSeq = e.seq + 1;
     }
   }
-  final tmp = File("$tmpDirPath/legend_ocr_gap4.png");
   var fixed = 0;
   for (final cell in probed) {
     final gap = img.copyCrop(
@@ -1618,7 +1609,6 @@ Future<int> fixBlindGridCodes(
     } else {
       hit = await ocrGapText(
         img.copyResize(gap, width: gap.width * 3),
-        tmp,
         onDbg: dbg == null ? null : (m) => dbg.add(m),
       );
       if (hit == null) {
@@ -1630,7 +1620,6 @@ Future<int> fixBlindGridCodes(
               interpolation: img.Interpolation.linear,
             ),
           ),
-          tmp,
         );
       }
       if (hit == null) {
@@ -1642,7 +1631,6 @@ Future<int> fixBlindGridCodes(
               interpolation: img.Interpolation.linear,
             ),
           ),
-          tmp,
         );
         hitZoom = 4.0;
       }
@@ -1998,7 +1986,6 @@ Future<int> fixRightCountsByLayout(
       nextSeq = e.seq + 1;
     }
   }
-  final tmp = File("$tmpDirPath/legend_ocr_gap3.png");
   const zoom = 3;
   var fixed = 0;
   for (final s in orphans) {
@@ -2031,7 +2018,6 @@ Future<int> fixRightCountsByLayout(
         ? await ocrGap(img.copyResize(gap, width: (gap.width * zoom).round()))
         : await ocrGapVariants(
             gap,
-            tmp,
             pickNear: pickNear,
             maxElemW: avgH * 3,
             onDbg: dbg == null ? null : (m) => dbg.add(m),
@@ -2078,8 +2064,7 @@ Future<int> fixRightCountsByLayout(
 /// ×3 带裁剪读出、全段识别里漏读；另一条带连邻条目数字都不返回），
 /// 同构图重试无新信息，换构图才有。返回 (文本, 小区原生坐标框)。
 Future<(String, Rect)?> ocrGapVariants(
-  img.Image gap,
-  File tmp, {
+  img.Image gap, {
   required Rect pickNear,
   required double maxElemW,
   void Function(String)? onDbg,
@@ -2141,61 +2126,54 @@ Future<(String, Rect)?> ocrGapVariants(
         img.compositeImage(p2, v, dstX: pad, dstY: pad);
         v = p2;
       }
-      await tmp.writeAsBytes(img.encodePng(v));
-      final recognized = await recognizer.processImage(
-        InputImage.fromFilePath(tmp.path),
-      );
+      final els = await ocrRgba(v) ?? await ocrRgbaPlugin(recognizer, v);
       final texts = <String>[];
       final cands = <String>[]; // 【临时调试】全部数字样式候选@原生中心
       (String, Rect)? best;
       var bestD = double.infinity;
-      for (final block in recognized.blocks) {
-        for (final line in block.lines) {
-          for (final element in line.elements) {
-            // 连字符剥除：代码印成 "G-29" 型（new1 G29），色号字符集不含
-            // 连字符，带着它 codeLike/数字样式全失配
-            final text = element.text
-                .trim()
-                .toUpperCase()
-                .replaceAll(" ", "")
-                .replaceAll("-", "");
-            texts.add(text);
-            // 候选先剥包围符再校验：带括号颗数 "(198)" 若按原文匹配
-            //（括号不在数字形近字符类里）整类候选被拒——右侧布局补读
-            // 会整轮空手（new1 的 (198)/(15) 全在此路径）
-            final bare = text.replaceAll(
-              RegExp(r"[()\[\]{}（）【】《》〈〉「」『』]"),
-              "",
-            );
-            if (bare.length > 4 ||
-                !RegExp(r'^[\dOSBGIL]{1,4}$').hasMatch(bare) ||
-                parseCountText(bare) == null) {
-              continue;
-            }
-            // 变体坐标（含衬底偏移）-> 小区原生坐标
-            final bb = element.boundingBox;
-            final native = Rect.fromLTWH(
-              bb.left / z - pad / z,
-              bb.top / z - pad / z,
-              bb.width / z,
-              bb.height / z,
-            );
-            cands.add(
-              "$text@${native.center.dx.toInt()},${native.center.dy.toInt()}"
-              "w${native.width.toInt()}",
-            );
-            if (native.width > maxElemW) {
-              continue; // 整行粘连文本
-            }
-            if (!pickNear.contains(native.center)) {
-              continue;
-            }
-            final d = (native.center - pickNear.center).distance;
-            if (d < bestD) {
-              bestD = d;
-              best = (text, native);
-            }
-          }
+      for (final element in els) {
+        // 连字符剥除：代码印成 "G-29" 型（new1 G29），色号字符集不含
+        // 连字符，带着它 codeLike/数字样式全失配
+        final text = element.text
+            .trim()
+            .toUpperCase()
+            .replaceAll(" ", "")
+            .replaceAll("-", "");
+        texts.add(text);
+        // 候选先剥包围符再校验：带括号颗数 "(198)" 若按原文匹配
+        //（括号不在数字形近字符类里）整类候选被拒——右侧布局补读
+        // 会整轮空手（new1 的 (198)/(15) 全在此路径）
+        final bare = text.replaceAll(
+          RegExp(r"[()\[\]{}（）【】《》〈〉「」『』]"),
+          "",
+        );
+        if (bare.length > 4 ||
+            !RegExp(r'^[\dOSBGIL]{1,4}$').hasMatch(bare) ||
+            parseCountText(bare) == null) {
+          continue;
+        }
+        // 变体坐标（含衬底偏移）-> 小区原生坐标
+        final bb = element.rect;
+        final native = Rect.fromLTWH(
+          bb.left / z - pad / z,
+          bb.top / z - pad / z,
+          bb.width / z,
+          bb.height / z,
+        );
+        cands.add(
+          "$text@${native.center.dx.toInt()},${native.center.dy.toInt()}"
+          "w${native.width.toInt()}",
+        );
+        if (native.width > maxElemW) {
+          continue; // 整行粘连文本
+        }
+        if (!pickNear.contains(native.center)) {
+          continue;
+        }
+        final d = (native.center - pickNear.center).distance;
+        if (d < bestD) {
+          bestD = d;
+          best = (text, native);
         }
       }
       onDbg?.call(
@@ -2790,15 +2768,19 @@ double _median(List<double> v) {
 /// 个「像色号」的元素文本与其在 [gapBig] 中的框；每轮内色号样式优先于
 /// 裸数字，未识别到返回 null。[preferNumber] 为 true 时只认纯数字
 /// （孤儿色号的颗数重读用：小区可能跨进下一行，字母色号文本必须拒收）
+///
+/// 喂图走 InputImage.fromBitmap 原始 RGBA 字节（image 包 rgba8 内存序即
+/// RGBA，零转换直传）：原路径 encodePng（纯 Dart zlib）+ 写盘 + 原生解码
+/// 全在主 isolate，救援链逐孤儿 × 多构型 × 多轮累计把 UI 线程打成秒级连续
+/// 满载（2026-11-02 模拟器实测识别全程主线程冻结 7.6s）；像素与 PNG 逐位
+/// 一致（同为无损传输），ML Kit 侧结果不变
 Future<(String, Rect)?> ocrGapText(
-  img.Image gapBig,
-  File tmp, {
+  img.Image gapBig, {
   bool preferNumber = false,
   Rect? pickNear,
   double? maxElemW,
   void Function(String)? onDbg,
 }) async {
-  await tmp.writeAsBytes(img.encodePng(gapBig));
   final inverted = img.Image.from(gapBig);
   for (final p in inverted) {
     p.r = 255 - p.r;
@@ -2814,55 +2796,47 @@ Future<(String, Rect)?> ocrGapText(
   final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
   try {
     for (var round = 0; round < 2; round++) {
-      if (round == 1) {
-        await tmp.writeAsBytes(img.encodePng(inverted));
-        if (onDbg != null) {
-          // 【临时调试】反色是否真的发生：中点像素对拍 + 底层数据格式 + 字节数
-          final px = gapBig.width ~/ 2, py = gapBig.height ~/ 2;
-          final a = gapBig.getPixel(px, py), b = inverted.getPixel(px, py);
-          onDbg(
-            "反色校验 原(${a.r},${a.g},${a.b}) 反(${b.r},${b.g},${b.b}) "
-            "fmt=${gapBig.format}/${inverted.format} "
-            "通道${gapBig.numChannels}/${inverted.numChannels} "
-            "bytes=${tmp.lengthSync()}",
-          );
-        }
+      final v = round == 0 ? gapBig : inverted;
+      if (round == 1 && onDbg != null) {
+        // 【临时调试】反色是否真的发生：中点像素对拍 + 底层数据格式 + 字节数
+        final px = gapBig.width ~/ 2, py = gapBig.height ~/ 2;
+        final a = gapBig.getPixel(px, py), b = inverted.getPixel(px, py);
+        onDbg(
+          "反色校验 原(${a.r},${a.g},${a.b}) 反(${b.r},${b.g},${b.b}) "
+          "fmt=${gapBig.format}/${inverted.format} "
+          "通道${gapBig.numChannels}/${inverted.numChannels} "
+          "bytes=${v.getBytes(order: img.ChannelOrder.rgba).length}",
+        );
       }
-      final recognized = await recognizer.processImage(
-        InputImage.fromFilePath(tmp.path),
-      );
+      final els = await ocrRgba(v) ?? await ocrRgbaPlugin(recognizer, v);
       (String, Rect)? numHit;
       final numCands = <(String, Rect)>[]; // pickNear 位置挑选用候选
       final texts = <String>[]; // onDbg 调试用：本轮全部元素文本
-      for (final block in recognized.blocks) {
-        for (final line in block.lines) {
-          for (final element in line.elements) {
-            // 连字符剥除（同 ocrGapVariants）：代码印成 "G-29" 型，色号
-            // 字符集不含连字符，带着它 codeLike/数字样式全失配
-            final text = element.text
-                .trim()
-                .toUpperCase()
-                .replaceAll(" ", "")
-                .replaceAll("-", "");
-            texts.add(text);
-            if (text.length > 4) {
-              continue; // 长文本是杂项，不是色号
-            }
-            if (!preferNumber && codeLike.hasMatch(text)) {
-              return (text, element.boundingBox);
-            }
-            // numHit 须过 parseCountText：白字黑底被误读成 "0"/"O"（解析为
-            // 颗数 0 无效）时不能当命中——那会带着垃圾提前 return，中断
-            // 反色轮（wx1：F7/H22 的白 6 黑底轮 0 读成 0，反色轮没跑）
-            if (numHit == null &&
-                numLike.hasMatch(text) &&
-                parseCountText(text) != null) {
-              numHit = (text, element.boundingBox);
-            }
-            if (numLike.hasMatch(text) && parseCountText(text) != null) {
-              numCands.add((text, element.boundingBox));
-            }
-          }
+      for (final element in els) {
+        // 连字符剥除（同 ocrGapVariants）：代码印成 "G-29" 型，色号
+        // 字符集不含连字符，带着它 codeLike/数字样式全失配
+        final text = element.text
+            .trim()
+            .toUpperCase()
+            .replaceAll(" ", "")
+            .replaceAll("-", "");
+        texts.add(text);
+        if (text.length > 4) {
+          continue; // 长文本是杂项，不是色号
+        }
+        if (!preferNumber && codeLike.hasMatch(text)) {
+          return (text, element.rect);
+        }
+        // numHit 须过 parseCountText：白字黑底被误读成 "0"/"O"（解析为
+        // 颗数 0 无效）时不能当命中——那会带着垃圾提前 return，中断
+        // 反色轮（wx1：F7/H22 的白 6 黑底轮 0 读成 0，反色轮没跑）
+        if (numHit == null &&
+            numLike.hasMatch(text) &&
+            parseCountText(text) != null) {
+          numHit = (text, element.rect);
+        }
+        if (numLike.hasMatch(text) && parseCountText(text) != null) {
+          numCands.add((text, element.rect));
         }
       }
       if (onDbg != null) {
@@ -2977,25 +2951,26 @@ Future<Map<int, String>> ocrCells(
       "${(await getTemporaryDirectory()).path}/cells_ocr.png",
     );
     await tmp.writeAsBytes(pngBytes);
-    final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
-    final recognized = await recognizer.processImage(
-      InputImage.fromFilePath(tmp.path),
-    );
-    await recognizer.close();
+    // 解码+推理走原生后台线程通道（插件 fromFilePath 在平台线程=UI 线程
+    // 上跑，识别期间主线程冻结）；通道不可用回退插件
+    var els = await ocrImageFile(tmp.path);
+    if (els == null) {
+      final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+      els = await ocrFilePlugin(recognizer, tmp.path);
+      await recognizer.close();
+    }
     // 元素中心（放大图坐标）-> 图片坐标 -> 归类到格
     final rawByCell = <int, List<(double, String)>>{};
     final centerLimit = 0.65 * math.max(avgW, avgH);
-    for (final block in recognized.blocks) {
-      for (final line in block.lines) {
-        for (final element in line.elements) {
-          final text = element.text.trim().toUpperCase().replaceAll(" ", "");
-          if (text.isEmpty ||
-              text.length > 4 ||
-              !RegExp(r'^[A-Z0-9]+$').hasMatch(text)) {
-            continue; // 只收色号样式（≤4 字母数字），长文本/杂项不做
-          }
-          final bc = element.boundingBox.center;
-          final p = Offset(cx0 + bc.dx / scale, cy0 + bc.dy / scale);
+    for (final element in els) {
+      final text = element.text.trim().toUpperCase().replaceAll(" ", "");
+      if (text.isEmpty ||
+          text.length > 4 ||
+          !RegExp(r'^[A-Z0-9]+$').hasMatch(text)) {
+        continue; // 只收色号样式（≤4 字母数字），长文本/杂项不做
+      }
+      final bc = element.rect.center;
+      final p = Offset(cx0 + bc.dx / scale, cy0 + bc.dy / scale);
           int? cellIdx;
           if (!useCorner) {
             // 九宫格模式：按格线相位直接解析 col/row，中心距校验防
@@ -3034,12 +3009,10 @@ Future<Map<int, String>> ocrCells(
               cellIdx = best;
             }
           }
-          if (cellIdx != null) {
-            rawByCell.putIfAbsent(cellIdx, () => []).add((p.dx, text));
-          }
+        if (cellIdx != null) {
+          rawByCell.putIfAbsent(cellIdx, () => []).add((p.dx, text));
         }
       }
-    }
     // 同格多元素（"F" "2" 分开识别等）按 x 排序拼接
     final out = <int, String>{};
     rawByCell.forEach((idx, list) {

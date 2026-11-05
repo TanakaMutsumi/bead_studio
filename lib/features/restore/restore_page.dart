@@ -56,6 +56,122 @@ GridDetectResult? detectGridInIsolate(img.Image image) {
   return detectGridAutocorr(gray, image.width, image.height);
 }
 
+/// 图例带游程检测（顶层函数供 compute isolate 调用）：native 窗口全图
+/// 半数行 × 全宽 getPixel、窗外相机原片还要先整图缩放——主 isolate 同步
+/// 跑会冻结 UI（2026-11-02 模拟器实测载图自动预框段 0.7s），与
+/// detectGridInIsolate 同理入 isolate。算法本体 legend_detect.dart 零改动
+LegendDetectResult? detectLegendInIsolate(img.Image image) =>
+    detectLegendCanonical(image);
+
+/// 主体检测（顶层函数供 compute isolate 调用）：全图行列扫描同为主线程
+/// 重活，进③自动框选与图例检测同批次入 isolate
+class SubjectDetectArgs {
+  final img.Image image;
+  final double legendTop;
+  final double pitchX, pitchY;
+  const SubjectDetectArgs(this.image, this.legendTop, this.pitchX, this.pitchY);
+}
+
+SubjectBBox? detectSubjectInIsolate(SubjectDetectArgs a) {
+  return detectSubjectBBox(
+    a.image,
+    legendTop: a.legendTop,
+    pitchX: a.pitchX,
+    pitchY: a.pitchY,
+  );
+}
+
+/// 图例识别前置重活（compute isolate 入参/出参）：灰度构建 + 网格检测 +
+/// 逐格采样量化打包一次过 isolate——空选区兜底是整图百万级 getPixel、
+/// 宽松框选采样可达数万格 × 25 点，主 isolate 会冻结秒级（2026-11-02
+/// 模拟器实测大框识别起步段 0.7s+）
+class ScanLegendArgs {
+  final img.Image image;
+  final BeadPalette palette;
+  final double rx, ry, rw, rh;
+  const ScanLegendArgs(
+    this.image,
+    this.palette,
+    this.rx,
+    this.ry,
+    this.rw,
+    this.rh,
+  );
+}
+
+class ScanLegendResult {
+  final GridDetectResult? det;
+  final Map<int, int> freq;
+  const ScanLegendResult(this.det, this.freq);
+}
+
+ScanLegendResult scanLegendInIsolate(ScanLegendArgs a) {
+  final image = a.image;
+  final gray = <int>[];
+  for (var y = a.ry.toInt(); y < a.ry + a.rh; y++) {
+    for (var x = a.rx.toInt(); x < a.rx + a.rw; x++) {
+      final p = image.getPixel(x, y);
+      gray.add((p.r * 0.299 + p.g * 0.587 + p.b * 0.114).round());
+    }
+  }
+  final det = detectGrid(gray, a.rw.toInt(), a.rh.toInt());
+  var cols = 8, rows = 1;
+  var pitchX = a.rw / cols, pitchY = a.rh / rows, offX = 0.0, offY = 0.0;
+  if (det != null) {
+    cols = det.cols;
+    rows = det.rows;
+    pitchX = det.pitchX;
+    pitchY = det.pitchY;
+    offX = det.offsetX;
+    offY = det.offsetY;
+  }
+  final quantizer = Quantizer(a.palette);
+  final freq = <int, int>{};
+  for (var r = 0; r < rows; r++) {
+    for (var c = 0; c < cols; c++) {
+      final cx = a.rx + offX + (c + 0.5) * pitchX;
+      final cy = a.ry + offY + (r + 0.5) * pitchY;
+      final (sr, sg, sb) = sampleCenterMedian(image, cx, cy, pitchX, pitchY);
+      final idx = quantizer.nearestIndex(sr, sg, sb);
+      freq[idx] = (freq[idx] ?? 0) + 1;
+    }
+  }
+  return ScanLegendResult(det, freq);
+}
+
+/// 格子中心 5×5 亮度中值采样（语义注释见 _RestorePageState._sampleCenter；
+/// 抽顶层供 isolate 与主线程共用，_recognize 仍走方法壳调用保持原点）
+(int, int, int) sampleCenterMedian(
+  img.Image image,
+  double cx,
+  double cy,
+  double cw,
+  double ch,
+) {
+  final pts = <(int, int, int)>[];
+  for (var dy = -2; dy <= 2; dy++) {
+    for (var dx = -2; dx <= 2; dx++) {
+      final px = (cx + dx * (cw / 6)).round();
+      final py = (cy + dy * (ch / 6)).round();
+      if (px < 0 || px >= image.width || py < 0 || py >= image.height) {
+        continue;
+      }
+      final p = image.getPixel(px, py);
+      pts.add((p.r.toInt(), p.g.toInt(), p.b.toInt()));
+    }
+  }
+  if (pts.isEmpty) {
+    // 全部采样点出界（四角模式角点拖出图界、格中心在图外）返回纯白
+    // 而非纯黑：(0,0,0) 会以 Lab 距离 0 归到 H7 纯黑豆，图外整片
+    // 格子被计成黑豆对账虚涨；纯白走近白/偏色判定，空白开关开启时
+    // 正确落空白（图外格=空白），关闭时归候选最近色（不判空白语义
+    // 下的合理回退）
+    return (255, 255, 255);
+  }
+  pts.sort((x, y) => (x.$1 + x.$2 + x.$3) - (y.$1 + y.$2 + y.$3));
+  return pts[pts.length ~/ 2];
+}
+
 /// 图纸还原页：复刻原 App 五步链路
 ///
 /// 1. 只框出图纸的图例区域 -> 识别图纸用色清单（可勾选/换色号/填数量）
@@ -419,8 +535,13 @@ class _RestorePageState extends State<RestorePage> {
         _stage = RestoreStage.legend;
       });
       // 载入即自动预框图例区（省一次手动框选）；识别不到就保持空选区，
-      // 用户手动框或点 AppBar「自动框选」重试
-      final auto = _autoDetectLegend();
+      // 用户手动框或点 AppBar「自动框选」重试。检测走 isolate（异步），
+      // 期间用户换图则丢弃旧图结果
+      final loadedImage = decoded;
+      final auto = await _autoDetectLegend();
+      if (!mounted || !identical(_image, loadedImage)) {
+        return;
+      }
       if (auto != null) {
         setState(() => _legendSel = auto);
       }
@@ -448,13 +569,17 @@ class _RestorePageState extends State<RestorePage> {
   /// `detectLegendCanonical`（app 与 tool/legend_sim.dart 离线模拟器共用
   /// 同一份，消灭双端口径漂移；原理注释见该文件。canonical：主流截图宽
   /// [1000,2048] 直接 native 跑，窗外尺寸缩到 1440 宽检测再映射回原图）。
-  /// 返回显示坐标选区；找不到返回 null（调用方静默或提示手动框选）。
-  Rect? _autoDetectLegend() {
+  /// 检测本体走 compute isolate（见 detectLegendInIsolate 头注释）。
+  /// 返回显示坐标选区；找不到/中途卸载返回 null（调用方静默或提示手动框选）。
+  Future<Rect?> _autoDetectLegend() async {
     final image = _image;
     if (image == null) {
       return null;
     }
-    final r = detectLegendCanonical(image);
+    final r = await compute(detectLegendInIsolate, image);
+    if (!mounted) {
+      return null;
+    }
     if (r == null) {
       return null;
     }
@@ -469,11 +594,18 @@ class _RestorePageState extends State<RestorePage> {
   }
 
   /// 触发自动框选（按钮）：成功设选区并提示，失败提示手动框选
-  void _autoSelectLegend() {
-    final rect = _autoDetectLegend();
+  Future<void> _autoSelectLegend() async {
+    final image = _image;
+    final rect = await _autoDetectLegend();
+    if (!mounted) {
+      return;
+    }
     if (rect == null) {
       AppSnackBar.show(context, "未识别到图例区，请手动框选");
       return;
+    }
+    if (!identical(_image, image)) {
+      return; // 检测期间换图：旧图结果不写新图
     }
     setState(() => _legendSel = rect);
     AppSnackBar.show(context, "已自动框选图例区，可拖动调整");
@@ -503,29 +635,9 @@ class _RestorePageState extends State<RestorePage> {
   /// 白字与高光被排到亮侧丢弃，中值稳定落回印刷底色（离线同款验证：
   /// 亮度 0-9 纯黑格 348 颗精确对上基线 H7 343）。
   (int, int, int) _sampleCenter(double cx, double cy, double cw, double ch) {
-    final image = _image!;
-    final pts = <(int, int, int)>[];
-    for (var dy = -2; dy <= 2; dy++) {
-      for (var dx = -2; dx <= 2; dx++) {
-        final px = (cx + dx * (cw / 6)).round();
-        final py = (cy + dy * (ch / 6)).round();
-        if (px < 0 || px >= image.width || py < 0 || py >= image.height) {
-          continue;
-        }
-        final p = image.getPixel(px, py);
-        pts.add((p.r.toInt(), p.g.toInt(), p.b.toInt()));
-      }
-    }
-    if (pts.isEmpty) {
-      // 全部采样点出界（四角模式角点拖出图界、格中心在图外）返回纯白
-      // 而非纯黑：(0,0,0) 会以 Lab 距离 0 归到 H7 纯黑豆，图外整片
-      // 格子被计成黑豆对账虚涨；纯白走近白/偏色判定，空白开关开启时
-      // 正确落空白（图外格=空白），关闭时归候选最近色（不判空白语义
-      // 下的合理回退）
-      return (255, 255, 255);
-    }
-    pts.sort((a, b) => (a.$1 + a.$2 + a.$3) - (b.$1 + b.$2 + b.$3));
-    return pts[pts.length ~/ 2];
+    // 实现抽在顶层 sampleCenterMedian（与 isolate 共用），语义注释见其
+    // 调用方 scanLegendInIsolate 上文与 sampleCenterMedian 头注释
+    return sampleCenterMedian(_image!, cx, cy, cw, ch);
   }
 
   // ==================== 步骤 1/2：图例识别 ====================
@@ -539,34 +651,26 @@ class _RestorePageState extends State<RestorePage> {
     setState(() => _legendBusy = true);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final (rx, ry, rw, rh) = _selToImage(_legendSel);
-      final gray = <int>[];
-      for (var y = ry.toInt(); y < ry + rh; y++) {
-        for (var x = rx.toInt(); x < rx + rw; x++) {
-          final p = image.getPixel(x, y);
-          gray.add((p.r * 0.299 + p.g * 0.587 + p.b * 0.114).round());
-        }
+      // 灰度整扫 + 网格检测 + 逐格中值采样是整选区像素遍历（大框=整图，
+      // 主线程同步跑曾实测冻结 0.7s+），与 OCR 链一并入 compute isolate
+      // （scanLegendInIsolate），主线程只做编排与状态写入
+      final prep = await compute(
+        scanLegendInIsolate,
+        ScanLegendArgs(image, _palette, rx, ry, rw, rh),
+      );
+      if (!mounted) {
+        return;
       }
-      final det = detectGrid(gray, rw.toInt(), rh.toInt());
+      if (!identical(_image, image)) {
+        setState(() => _legendBusy = false);
+        return;
+      }
+      final det = prep.det;
+      final freq = prep.freq;
       var cols = 8, rows = 1;
-      var pitchX = rw / cols, pitchY = rh / rows, offX = 0.0, offY = 0.0;
       if (det != null) {
         cols = det.cols;
         rows = det.rows;
-        pitchX = det.pitchX;
-        pitchY = det.pitchY;
-        offX = det.offsetX;
-        offY = det.offsetY;
-      }
-      final quantizer = Quantizer(_palette);
-      final freq = <int, int>{};
-      for (var r = 0; r < rows; r++) {
-        for (var c = 0; c < cols; c++) {
-          final cx = rx + offX + (c + 0.5) * pitchX;
-          final cy = ry + offY + (r + 0.5) * pitchY;
-          final (sr, sg, sb) = _sampleCenter(cx, cy, pitchX, pitchY);
-          final idx = quantizer.nearestIndex(sr, sg, sb);
-          freq[idx] = (freq[idx] ?? 0) + 1;
-        }
       }
       // OCR 权威模式：印刷色号是图纸的权威声明。读到的色号直接构成清单
       // （宽松框选把图案区框进来时，杂色量化条目全部被剔净），颗数随配对填入；
@@ -1465,10 +1569,13 @@ class _RestorePageState extends State<RestorePage> {
   /// 密集区，省一次手动拖框）。进入时自动全图化（还原全幅）：上一步
   /// 标定常放大到局部核对格线，带着放大视角进框选步会只看见图一角，
   /// 主体不在视野里、用户不知道这步要框什么
-  void _goFrame() {
+  Future<void> _goFrame() async {
     Rect? auto;
     if (_selDisplay == null) {
-      auto = _autoDetectSubject();
+      auto = await _autoDetectSubject();
+    }
+    if (!mounted) {
+      return;
     }
     setState(() {
       _stage = RestoreStage.frame;
@@ -2589,10 +2696,11 @@ class _RestorePageState extends State<RestorePage> {
 
   /// 自动检测主体区域：像素扫描/聚簇/数字边剔除的实现抽在
   /// lib/core/subject_detect.dart `detectSubjectBBox`（与图例检测同范式
-  /// 的纯函数）。图例带取图例选区（或载入时自动检测的带），无图例则
-  /// 整图视为候选区。返回吸附格线后的选区（显示坐标）；吸附后行列数
-  /// 不在 4-400 返回 null（调用方提示手动框选）。
-  Rect? _autoDetectSubject() {
+  /// 的纯函数）。图例带取图例选区（或重新 isolate 检测的图例带），无图例
+  /// 则整图视为候选区。返回吸附格线后的选区（显示坐标）；吸附后行列数
+  /// 不在 4-400 返回 null（调用方提示手动框选）。检测全程 compute
+  /// isolate（detectSubjectInIsolate），期间换图/卸载返回 null。
+  Future<Rect?> _autoDetectSubject() async {
     final image = _image;
     if (image == null || _pitchX <= 0 || _pitchY <= 0) {
       return null;
@@ -2605,17 +2713,18 @@ class _RestorePageState extends State<RestorePage> {
     if (legendSel != null && legendSel.width > 8 && legendSel.height > 8) {
       legendTop = _selToImage(legendSel).$2;
     } else {
-      final autoLegend = _autoDetectLegend();
-      if (autoLegend != null) {
-        legendTop = autoLegend.top * h / _displaySize().height;
+      final r = await compute(detectLegendInIsolate, image);
+      if (r != null) {
+        legendTop = r.top.toDouble(); // 检测结果本就是图片坐标，省显示坐标往返
       }
     }
-    final bbox = detectSubjectBBox(
-      image,
-      legendTop: legendTop,
-      pitchX: _pitchX,
-      pitchY: _pitchY,
+    final bbox = await compute(
+      detectSubjectInIsolate,
+      SubjectDetectArgs(image, legendTop, _pitchX, _pitchY),
     );
+    if (!mounted || !identical(_image, image)) {
+      return null;
+    }
     if (bbox == null) {
       return null;
     }
@@ -2643,8 +2752,11 @@ class _RestorePageState extends State<RestorePage> {
   }
 
   /// 触发自动框选主体（按钮）：成功设选区并提示，失败提示手动框选
-  void _autoSelectSubject() {
-    final rect = _autoDetectSubject();
+  Future<void> _autoSelectSubject() async {
+    final rect = await _autoDetectSubject();
+    if (!mounted) {
+      return;
+    }
     if (rect == null) {
       AppSnackBar.show(context, "未识别到主体区，请手动框选");
       return;
