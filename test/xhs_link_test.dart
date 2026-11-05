@@ -27,6 +27,30 @@ void main() {
       expect(extractXhsLink(text), isNotNull);
     });
 
+    test('整段真实分享文案（标题+描述+链接+口号）', () {
+      const text = '爱莉希雅拼豆图纸 里面h1全部换成h2，然后有一些h18在... '
+          'https://xhslink.cn/o/3WbxX6zX9kF 存好内容，去【小红书】一睹为快~';
+      expect(extractXhsLink(text), 'https://xhslink.cn/o/3WbxX6zX9kF');
+    });
+
+    test('链接紧贴中文标点（无空格分隔）不吞标点', () {
+      expect(
+        extractXhsLink('看这个https://xhslink.cn/o/3WbxX6zX9kF，很好看'),
+        'https://xhslink.cn/o/3WbxX6zX9kF',
+      );
+      expect(
+        extractXhsLink('图纸在https://xhslink.cn/o/3WbxX6zX9kF。'),
+        'https://xhslink.cn/o/3WbxX6zX9kF',
+      );
+    });
+
+    test('链接后紧跟 emoji 不吞入 URL', () {
+      expect(
+        extractXhsLink('https://xhslink.cn/o/3WbxX6zX9kF🎉快看'),
+        'https://xhslink.cn/o/3WbxX6zX9kF',
+      );
+    });
+
     test('无链接返回 null', () {
       expect(extractXhsLink('普通文本'), isNull);
     });

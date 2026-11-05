@@ -73,11 +73,16 @@ const _ua =
     'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 '
     'Chrome/120.0.0.0 Mobile Safari/537.36';
 
+/// URL 合法字符白名单（RFC3986 保留+未保留字符）：链接若紧贴中文/emoji
+/// （转发改版无空格分隔）不会被吞进 URL——排除法正则做不到这点
+const _urlChars = r"[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+";
+
 final _reShort = RegExp(
-  r'(?:https?://)?xhslink\.(?:com|cn)/[^\s"<>\\^`{|}]+',
+  r'(?:https?://)?xhslink\.(?:com|cn)/' + _urlChars,
 );
 final _reDirect = RegExp(
-  r'(?:https?://)?www\.xiaohongshu\.com/(?:explore|discovery/item)/[^\s"<>\\^`{|}]+',
+  r'(?:https?://)?www\.xiaohongshu\.com/(?:explore|discovery/item)/' +
+      _urlChars,
 );
 
 /// 从任意分享文本中提取小红书链接（短链或笔记直链），没有则返回 null
