@@ -8,6 +8,8 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
+import '../../core/zoom_controls.dart';
+
 /// [image] 显示版解码图（复核步的 cellSrc）；[cellRect] 该格矩形
 /// （原图坐标），[scaleX]/[scaleY] = 显示图 / 原图 尺寸比（矩形换算用）；
 /// [swatch]/[label] 头部当前归类提示（null = 空白）
@@ -130,7 +132,7 @@ class _CellPreviewDialogState extends State<_CellPreviewDialog> {
                       return;
                     }
                     final k = (c.smallest.shortestSide * 0.6 / rect.longestSide)
-                        .clamp(2.0, 12.0)
+                        .clamp(2.0, kPhotoMaxZoom)
                         .toDouble();
                     final cc = rect.center;
                     _ctrl.value = Matrix4.identity()
@@ -141,7 +143,7 @@ class _CellPreviewDialogState extends State<_CellPreviewDialog> {
                   },
                   child: InteractiveViewer(
                     transformationController: _ctrl,
-                    maxScale: 16,
+                    maxScale: kPhotoMaxZoom,
                     child: Center(
                       child: SizedBox(
                         width: w,

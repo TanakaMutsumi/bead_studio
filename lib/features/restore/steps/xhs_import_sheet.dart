@@ -472,7 +472,7 @@ class _XhsViewerPageState extends State<_XhsViewerPage> {
       viewport: _canvasSize,
       content: _canvasSize,
       factor: 2.5,
-      maxScale: 16,
+      maxScale: kPhotoMaxZoom,
       anchor: anchor,
     );
   }
@@ -553,7 +553,7 @@ class _XhsViewerPageState extends State<_XhsViewerPage> {
                             child: Center(
                               child: InteractiveViewer(
                                 transformationController: _ctrl,
-                                maxScale: 16,
+                                maxScale: kPhotoMaxZoom,
                                 child: SizedBox(
                                   width: cw,
                                   height: ch,
@@ -581,7 +581,7 @@ class _XhsViewerPageState extends State<_XhsViewerPage> {
                               controller: _ctrl,
                               contentSize: () => _canvasSize,
                               viewportSize: () => _canvasSize,
-                              maxScale: 16,
+                              maxScale: kPhotoMaxZoom,
                             ),
                             const SizedBox(height: 8),
                             const Text(

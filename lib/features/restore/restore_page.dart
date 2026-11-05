@@ -1009,7 +1009,7 @@ class _RestorePageState extends State<RestorePage> {
   Widget _zoomStrip(
     TransformationController ctrl,
     Size Function() contentSize, {
-    double maxScale = 8,
+    double maxScale = kPhotoMaxZoom,
     Size Function()? viewport,
   }) {
     return Padding(
@@ -1922,7 +1922,7 @@ class _RestorePageState extends State<RestorePage> {
             // 按钮已外置出画布 Stack，边界计算须显式传视口
             _stageViewSize = Size(cons.maxWidth, cons.maxHeight);
             return InteractiveViewer(
-              maxScale: 8,
+              maxScale: kPhotoMaxZoom,
               minScale: 1,
               transformationController: _viewerCtrl,
               // 滚轮缩放禁用开关：InteractiveViewer 滚轮缩放量 = exp(-dy/scaleFactor)，
