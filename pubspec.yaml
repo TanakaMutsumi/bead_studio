@@ -1,7 +1,7 @@
 name: bead_studio
 description: 拼豆图案工作室 - 图片导入/像素化/调色板量化/画布编辑/用料统计
 publish_to: "none"
-version: 0.1.0
+version: 0.2.0
 
 environment:
   sdk: ">=3.3.0 <4.0.0"

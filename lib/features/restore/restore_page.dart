@@ -407,6 +407,9 @@ class _RestorePageState extends State<RestorePage> {
   bool _blankEnable = true;
 
   ///< 偏色过大识别为空白格
+  int _reviewCrossCount = 6;
+
+  ///< 复核截图墙每行列数（用户可调，跨阶段往返保持）
 
   // ========== 四角对齐（歪图透视矫正，均分网格救不了斜拍） ==========
   var _useCornerAlign = false;
@@ -1316,14 +1319,21 @@ class _RestorePageState extends State<RestorePage> {
         // ~380，低于空白阈值 900，大片白底会被误归浅粉（pic5 实测
         // E11 171→478 超涨 3 倍）；纯白/近白（min>230 且极差<25）直接
         // 判空白，真浅粉豆 g/b≤218 不会命中不受影响（同款离线验证
-        // E11 478→171 与基线零差）。候选集含近白色（图纸用白豆）时
-        // 跳过——见上方 candNearWhite 注释
+        // E11 478→171 与基线零差）。
+        // 文本第一判据（2026-11-06 用户反馈）：候选含近白色时旧逻辑整段
+        // 跳过近白直判，图案区外白底全被 Lab 最近色吸成该近白色——H2=
+        // (251,248,251) 与白纸底 distSq 极小，空白格成片虚涨成 H2，全要
+        // 手工清。改为「格内无任何色号文本」的近白格仍直判空白：白豆格
+        // 的色号是深墨印在近白底上=全图对比度最好的 OCR 情形，读到即走
+        // 上方权威路径保色；有文字痕迹（读残的部分色号）的格保守沿用
+        // 旧路径（2026-09-08 白豆误灭回归保护不撤，只补无文本白底漏洞）
+        final textless = txt == null;
         final nearWhite = sr > 230 &&
             sg > 230 &&
             sb > 230 &&
             (math.max(sr, math.max(sg, sb)) - math.min(sr, math.min(sg, sb))) <
                 25;
-        if (_blankEnable && nearWhite && !candNearWhite) {
+        if (_blankEnable && nearWhite && (!candNearWhite || textless)) {
           grid[i] = -1;
           scores[i] = 0;
         } else {
@@ -2956,6 +2966,8 @@ class _RestorePageState extends State<RestorePage> {
       cellSrc: _cellSrc,
       image: _image!,
       reviewColor: _reviewColor,
+      crossCount: _reviewCrossCount,
+      onCrossCountChange: (v) => setState(() => _reviewCrossCount = v),
       picked: _picked,
       reviewCtrl: _reviewCtrl,
       reviewCanvasSize: () => _reviewCanvasSize,

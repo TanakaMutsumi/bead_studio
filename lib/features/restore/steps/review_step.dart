@@ -49,6 +49,12 @@ class ReviewStep extends StatefulWidget {
   final int reviewColor;
 
   ///< 当前复核色：-2 总览 / -1 空白 / >=0 调色板索引
+  final int crossCount;
+
+  ///< 截图墙每行列数（拖选命中换算与 GridView 共用同值）
+  final void Function(int) onCrossCountChange;
+
+  ///< 切换每行列数（状态留在页面，跨阶段往返保持）
   final Set<int> picked;
 
   ///< 选中的格子（扁平索引）
@@ -98,6 +104,8 @@ class ReviewStep extends StatefulWidget {
     required this.cellSrc,
     required this.image,
     required this.reviewColor,
+    required this.crossCount,
+    required this.onCrossCountChange,
     required this.picked,
     required this.reviewCtrl,
     required this.reviewCanvasSize,
@@ -119,9 +127,6 @@ class ReviewStep extends StatefulWidget {
 }
 
 class _ReviewStepState extends State<ReviewStep> {
-  static const _crossCount = 6;
-
-  ///< 截图墙每行列数（拖选命中换算用）
   static const _gap = 4.0;
 
   ///< 截图墙横/纵间距（拖选步距换算用；double：spacing 形参类型）
@@ -180,9 +185,25 @@ class _ReviewStepState extends State<ReviewStep> {
                 : _buildCellGallery(),
           ),
         ),
-        // 总览缩放条（内容尺寸=速记值；截图墙无变换，复用同一控制器无碍）
-        widget.zoomStrip(widget.reviewCtrl, widget.reviewCanvasSize,
-            maxScale: 12),
+        // 总览缩放条（内容尺寸=速记值；截图墙无变换，复用同一控制器无碍）。
+        // 截图墙模式在缩放条左端挂「每行列数」选择——chips 行是横滚列表，
+        // 放列表里会被裁到末端不可发现；总览模式无截图墙不显示
+        widget.reviewColor == -2
+            ? widget.zoomStrip(widget.reviewCtrl, widget.reviewCanvasSize,
+                maxScale: 12)
+            : Row(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 2, 0, 2),
+                    child: _crossCountPicker(),
+                  ),
+                  Expanded(
+                    child: widget.zoomStrip(widget.reviewCtrl,
+                        widget.reviewCanvasSize,
+                        maxScale: 12),
+                  ),
+                ],
+              ),
         _buildActions(context, order, counts),
       ],
     );
@@ -407,8 +428,8 @@ class _ReviewStepState extends State<ReviewStep> {
         child: GridView.builder(
           controller: _galleryScroll,
           padding: const EdgeInsets.all(4),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: _crossCount,
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: widget.crossCount,
             mainAxisSpacing: _gap,
             crossAxisSpacing: _gap,
           ),
@@ -584,7 +605,7 @@ class _ReviewStepState extends State<ReviewStep> {
     final a = _dragAnchorCR;
     if (a == null) {
       _dragAnchorCR = cr;
-      final t = cr.$2 * _crossCount + cr.$1;
+      final t = cr.$2 * widget.crossCount + cr.$1;
       if (t < _dragCells.length) {
         _dragSelect = !widget.picked.contains(_dragCells[t]);
       }
@@ -597,7 +618,7 @@ class _ReviewStepState extends State<ReviewStep> {
     final cells = <int>[];
     for (var r = r0; r <= r1; r++) {
       for (var c = c0; c <= c1; c++) {
-        final t = r * _crossCount + c;
+        final t = r * widget.crossCount + c;
         if (t < _dragCells.length) {
           cells.add(_dragCells[t]);
         }
@@ -609,8 +630,8 @@ class _ReviewStepState extends State<ReviewStep> {
   }
 
   /// 视口局部坐标 -> 截图墙格位（列,行）（越出格子区返回 null）。
-  /// 网格几何：6 列 + 间距 4 + padding 4、方格（childAspectRatio 默认 1）；
-  /// 纵坐标补上滚动偏移回到内容坐标（自动滚屏时偏移随时在变，现读）
+  /// 网格几何：N 列（用户可选）+ 间距 4 + padding 4、方格（childAspectRatio
+  /// 默认 1）；纵坐标补上滚动偏移回到内容坐标（自动滚屏时偏移随时在变，现读）
   (int, int)? _tileCR(Offset local) {
     final box = _dragBox;
     if (box == null) {
@@ -623,7 +644,7 @@ class _ReviewStepState extends State<ReviewStep> {
         : 0.0;
     final col = ((local.dx - _pad) / pitch).floor();
     final row = ((local.dy - _pad + scroll) / pitch).floor();
-    if (col < 0 || col >= _crossCount || row < 0) {
+    if (col < 0 || col >= widget.crossCount || row < 0) {
       return null;
     }
     return (col, row);
@@ -635,7 +656,7 @@ class _ReviewStepState extends State<ReviewStep> {
     if (cr == null) {
       return null;
     }
-    final t = cr.$2 * _crossCount + cr.$1;
+    final t = cr.$2 * widget.crossCount + cr.$1;
     return t < _dragCells.length ? _dragCells[t] : null;
   }
 
@@ -643,7 +664,8 @@ class _ReviewStepState extends State<ReviewStep> {
   double _tilePitch() {
     final box = _dragBox;
     final w = box == null ? 0.0 : box.size.width;
-    final tile = (w - _pad * 2 - (_crossCount - 1) * _gap) / _crossCount;
+    final tile =
+        (w - _pad * 2 - (widget.crossCount - 1) * _gap) / widget.crossCount;
     return tile + _gap;
   }
 
@@ -714,6 +736,57 @@ class _ReviewStepState extends State<ReviewStep> {
               );
             }(),
         ],
+      ),
+    );
+  }
+
+  /// 截图墙每行列数选择（缩放条左端，截图墙模式常显）：列数决定截图
+  /// 大小——密集图案想一屏多看几格调大、要看清格内印刷色号调小。状态
+  /// 留在页面 State，复核↔其他阶段往返不丢
+  Widget _crossCountPicker() {
+    const choices = [4, 5, 6, 8, 10, 12];
+    return PopupMenuButton<int>(
+      tooltip: "截图墙每行列数",
+      initialValue: widget.crossCount,
+      onSelected: widget.onCrossCountChange,
+      itemBuilder: (_) => [
+        for (final n in choices)
+          PopupMenuItem(
+            value: n,
+            child: Row(
+              children: [
+                Icon(
+                  n == widget.crossCount
+                      ? Icons.check
+                      : Icons.check,
+                  size: 16,
+                  color: n == widget.crossCount
+                      ? Colors.blue
+                      : Colors.transparent,
+                ),
+                const SizedBox(width: 4),
+                Text("每行 $n 格"),
+              ],
+            ),
+          ),
+      ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          border: Border.all(color: Colors.black26),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.grid_view, size: 14, color: Colors.black54),
+            const SizedBox(width: 4),
+            Text(
+              "每行${widget.crossCount}格",
+              style: const TextStyle(fontSize: 12, color: Colors.black87),
+            ),
+            const Icon(Icons.arrow_drop_down, size: 16, color: Colors.black54),
+          ],
+        ),
       ),
     );
   }
