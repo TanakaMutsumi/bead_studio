@@ -69,12 +69,12 @@ UI 自动化测试走 `full-flow-test` skill（adb 驱动全流程：坐标表�
 - **禁止用 Read 工具看截图 PNG**（CDN 缓存污染前科，曾整轮假结论）——一律 PIL 像素分析（色块图/直方图/diff）
 - GBK 控制台 print 中文必须 `.encode('ascii','backslashreplace').decode('ascii')`
 - /tmp 不跨 Bash 调用持久——临时文件放 `.test/` 用相对路径；adb pull 本地路径用 `D:/` 风格（`/d/` 间歇性报错）
-- 代码内【临时调试】块（debugPrint / OCR 调试视图）是排查期产物，标了正式版移除——看到不要当正式功能；清理它们本身是待办
+- 代码内【临时调试】块是排查期产物——**v0.2.0 发布前已全量清理**（8330fe3，2026-11-07：OCR 调试入口/面板/连线层、OcrDebugInfo 快照链、全部识别指纹 logcat 已删；`dbgText` 保留是算法工作字段、legend_ocr 内 `dbg`/`onDbg` 可选诊断钩子保留全 null 零成本）。再排查识别问题需临时加打印时，收尾记得删
 - 改动影响流程行为时，测试方案走 CLAUDE 通用规矩：改前复现 → 改后同操作对比 + 回归点
 
-## 5. 当前进度（2026-11-02）
+## 5. 当前进度（2026-11-07）
 
-**状态：全流程闭环，无待办。** 已知问题清单 ①-⑦ 全部收口；用户五项体验修复（同日第二轮）也已落地实测：
+**状态：v0.2.0 已交付**（识别链路含二遍补读/进度百分比/自定义列数，抖音无损通道，调试块全清；dist APK+公告已重出，release smoke 过）。已知问题清单 ①-⑦ 全部收口：
 
 | # | 问题 | 结论 |
 |---|------|------|
@@ -94,10 +94,12 @@ UI 自动化测试走 `full-flow-test` skill（adb 驱动全流程：坐标表�
 | 三项体验改进（2026-11-06） | ①图例总豆数 / ②识别期 UI 锁 / ③复核范围连选 | **已落地实测**（用户 2026-11-06 三点反馈）：① `LegendStep._totalChip` 摘要行右侧「共 N 颗」徽标（Listenable.merge 全部 countCtrl，敲键只重建徽标；有未填项括注「X 色未填」）——实测 test_pic5 共 1336 颗、改 C16 433→500 即时变 1403；② `_stageBusy`（_legendBusy/_detecting/_recognizing/_autoDetectBusy 任一）时 body 整体 `AbsorbPointer`+black38 遮罩+文案（`_busyBarrier`）——识别中重框选/挪九宫格/切模式全锁死；新 `_autoDetectBusy` 盖载入预框/魔法棒/主体自动框选（`_autoDetectSubject` 拆 `_autoDetectSubjectLocked`+try/finally 收锁），`_scanLegend`/`_recognize` 加重入守卫、`_switchPalette` 守卫扩到 _stageBusy（AppBar 不被遮罩拦）——实测图例识别 +0.3s 遮罩（lum 91.6→58.4=−38%）、识别中滑动被吞、锁随完成解除；③ 复核截图墙长按拖选改**范围连选**：`_dragAnchorCR` 锚点格 + `_applyDragRange`（锚点到指下格整片矩形，绝对语义可重放、自动滚屏重放全范围），`_tileCR`/`_cellAt` 重构——实测 4×2 对角拖=清除选中(8)（旧路径式~4-5 格）。回归：保存 bfx2→拼豆页 `已放 0/1307`（=④总豆数）零差。**注意**：test_pic5 ③框选 v4 后 bbox=[126,272 1344,1616] rowsCols=43×39（旧基线 50×45 未复核过 v4），识别 H7 对账——待办基线核对时一并看 |
 | 近白空白误判 + 复核每行列数（2026-11-06 二轮） | 空白吸成 H2 / 截图墙列数固定 | **已落地实测**（用户同日二轮反馈，0792177）：① `_recognize` 近白分支加 `textless`（格内无任何色号文本）——候选含近白色时（H2=(251,251,251) 与白纸底 ΔE 微小，纯色判据天然不可分，文本是唯一判据）旧 candNearWhite 逃逸把白底成片吸成该色；现无文本近白格仍直判空白，有文字痕迹（读残色号）保守旧路径（09-08 白豆回归保护不撤）。合成复现图 `.test/gen_h2_pic.py`（24×24 图例含 H2，232 空白/344 有色；格距 48 检测零差，主体自动框选在平涂合成图失败→手动拖框吸附 24×24 精确）：改前 `H2=268 BLANK=0` → 改后 `H2=36 BLANK=232` 与真值一分不差；test_pic5 改前改后指纹**逐字节零差**（`39x43 OCR 1202/1677 BLANK=370 C16=432…H7=335`）② 复核截图墙每行列数可选 4/5/6/8/10/12（`_reviewCrossCount` 页面态 + `_crossCountPicker` 缩放条左端常显——chips 横滚末端会被裁不可发现；总览模式不显示）——实测选 12 → dump 标签计数每行恰 12 块，12 列下范围连选 3×2=清除选中(6) 精确。**发布 v0.2.0**：pubspec 0.1.0→0.2.0，`dist/bead_studio_v0.2.0.apk`（全架构 arm/arm64/x64 + mlkit 验证，模拟器冒烟主页四钮正常），根目录 `CHANGELOG.md` 建立（Keep a Changelog + SemVer 口径，0.1.0/0.1.1 追溯补档），用户公告 `dist/更新公告_v0.2.0.md` |
 | 抖音链接导入（2026-11-06） | 选图页第 4 钮「抖音链接导入」 | **已落地实测**（用户指令：画质结论无论如何先上功能）——`core/douyin_link.dart`：分享文案提 `v.douyin.com` 短链 → **Baiduspider UA** 原生通道逐跳 302（普通 UA 只给数据加载已死的 JS 壳页）→ `iesdouyin.com/share/note/{id}/` SSR → JSON-LD `@type=article` image 数组 `q75.webp` 签名 URL（对象 uri 去重多 CDN 镜像；签名不挑客户端 ~30 天时效）；`steps/douyin_import_sheet.dart` 三态面板与 xhs 同构；查看器从 xhs 抽共用 `link_image_viewer.dart`（行为不变），顺手修 `photoLodCropRect` 守卫（原图长边≤显示上限 LOD 永不触发——原版小图 zoom=1 也过阈值，双击回整图会白算一次裁片）。**画质定案**：免登录通道天花板=q75.webp（分辨率=作者上传尺寸不缩水、PSNR~35dB、平坦色块色偏 0.6 级对识别零风险）；+2dB 的 q75.jpeg 仅浏览器页面内 detail JSON url_list 可得，免浏览器通道全试尽（detail API×多平台参数/aweme feed/api.amemv/aweme.snssdk/iesdouyin iteminfo/m.snssdk/lightbox/mobileweb）皆无。模拟器实测：耍起链接 3 图进①框图例、奶龙链接全流程至识别 18 色/1403 颗、xhs 假链接冒烟不回归；单测 8 项新增、全量 76 绿 |
+| 抖音无损原图通道（2026-11-07，12a472b） | SSR webp → DOM 提取 q75.jpeg 原字节 | **已落地 e2e 字节级验收**——隐藏 WebView（桌面 UA+1280 视口）加载 PC 笔记页，hydrate 后 DOM 里就有整份 url_list（含 q75.jpeg 签名 URL，=作者上传原字节 md5 实证），正则提取零 API 请求零签名；detail API 在 WebView 内被 Argus 加固层扣死（fetch/XHR 永久 pending、iframe 无签名 403 Uifid）勿再试。实现 `core/douyin_detail.dart`（DouyinDetailProbe + mapJpegUrls + `douyinObjectIdOf` 对齐键——dir 段跨通道不稳定勿用 uriKey）；提取正则两坑：DOM 里 `&` 是字面 `&` 须全量还原、URL 尾随 `\"` 残影要在字符类排除 `\`。验收：shuaqi/nailong 三图 len+head+tail 指纹==`.test/dy_flav/*.bin`、403 回退 SSR 两实证、83 测试绿。**CDP 勿 attach**（反调试投毒 renderer SIGTRAP 杀整个 app），排查走 setOnConsoleMessage→logcat。全部配方/死路见 `docs/douyin_lossless_channel.md` |
+| 二遍逐格补读 + 进度百分比 + 自定义列数（2026-11-07，0ce0af9） | 漏读格错色 / 大图识别无进度 / 列数档不够 | **已落地全流程回归**——① `ocrCellsSecondPass`+`encodeTilesJpg`（legend_ocr.dart）：一遍未读到色号的格外扩 30% 裁剪、放大到槽宽 160、拼白底瓦阵（亮度极差<22 留白不喂）分批 ~120 瓦补读，`onBatch` 每批回调；② `ocrCells` 分带识别（~350px/带 2-8 带，`onBand` 进度回调），restore_page 遮罩文案「已确认 N/M 格（x%）」；③ 复核列数「自定义…」弹窗 2-16（含 PopupMenu initialValue 断言修复）。**test_pic5 基线（改后新基准）**：`识别 39x43 | OCR命中 1195+80(补读,色彩分歧1)/1677`、总豆数 1307、图例 16 色 1336 颗——对比 0792177 旧基准整图单遍 1202：分带一遍 -7（带缘元素归位差，补读全兜住），二遍 +80 净增 73；39×43 与上会话 45×50 框内容一致（两框均 1307 豆，大框只是多包 573 空白格）。新增 `test/review_cross_count_test.dart`，83 测试绿 |
 
 最新提交见 git log（五修在 f4bb17f 之后）。全流程实测通过：主页 → 还原五步 → 保存 → 板命名 → 拼豆页（`板 52×52 · 已放 0/1371` + 色条齐全），识别基线零差（H7=343）。
 
-**下一步候选**（用户未定，勿擅自启动）：**模拟器全流程回归（图例 v4 后：wx1 走通 ①-④ + test_pic5 框选/③bbox logcat 基线核对）**、用户真机反馈跟进、更多图纸泛化测试、UI 打磨、【临时调试】块清理。
+**下一步候选**（用户未定，勿擅自启动）：用户真机反馈跟进（v0.2.0 已交付：识别基线见 full-flow-test §6）、更多图纸泛化测试（wx1 真机流程未复核）、UI 打磨、软件定名（现用「拼豆图案工作室」，用户征名中）。~~【临时调试】块清理~~（2026-11-07 已完成，8330fe3）。
 
 ## 6. 相关文件索引
 
