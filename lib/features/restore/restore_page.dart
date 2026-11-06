@@ -216,6 +216,9 @@ class _RestorePageState extends State<RestorePage> {
   final _legendColsCtrl = TextEditingController();
   final _legendRowsCtrl = TextEditingController();
   var _legendBusy = false;
+  var _autoDetectBusy = false;
+
+  ///< 自动框选（图例区/主体）isolate 检测进行中——body 整体 UI 锁之一
   List<LegendEntry> _legend = [];
 
   ///< 识别出的图例清单
@@ -340,6 +343,33 @@ class _RestorePageState extends State<RestorePage> {
   final _rowsCtrl = TextEditingController();
   var _detecting = false;
   var _recognizing = false;
+
+  ///< 耗时识别期整体 UI 锁：图例识别(_legendBusy)/格距检测(_detecting)/
+  ///< 主体自动框选(_autoDetectBusy)/主识别(_recognizing) 任一进行中
+  ///< =true——body 整体 AbsorbPointer+遮罩。识别全用起跑时的快照（选区/
+  ///< 格距/色卡），完成后无条件写结果，识别中途重框选/调格距/切模式
+  ///< 全是白调且状态与结果脱节，一律锁死等完成（用户 2026-11-06 定）。
+  ///< AppBar 导航不锁（返回上一步/退出已有各自守卫提示）
+  bool get _stageBusy =>
+      _legendBusy || _detecting || _recognizing || _autoDetectBusy;
+
+  ///< UI 锁遮罩文案（按耗时量级排优先级：主识别最长放最前），未锁 null
+  String? get _stageBusyLabel {
+    if (_recognizing) {
+      return "正在识别，请稍候…";
+    }
+    if (_legendBusy) {
+      return "正在识别图例，请稍候…";
+    }
+    if (_detecting) {
+      return "正在检测格距，请稍候…";
+    }
+    if (_autoDetectBusy) {
+      return "正在自动框选，请稍候…";
+    }
+    return null;
+  }
+
   double _pitchX = 0, _pitchY = 0;
 
   ///< 网格格距（图片坐标，九宫格标定出的每格尺寸）
@@ -542,9 +572,21 @@ class _RestorePageState extends State<RestorePage> {
       });
       // 载入即自动预框图例区（省一次手动框选）；识别不到就保持空选区，
       // 用户手动框或点 AppBar「自动框选」重试。检测走 isolate（异步），
-      // 期间用户换图则丢弃旧图结果
+      // 期间用户换图则丢弃旧图结果；_autoDetectBusy 同步置位（body UI
+      // 锁）——预框落定前手拖的框不会被检测结果覆盖，也不会双跑；
+      // finally 收锁防 isolate 异常把 UI 永久锁死，检测失败按无预框走
       final loadedImage = decoded;
-      final auto = await _autoDetectLegend();
+      Rect? auto;
+      setState(() => _autoDetectBusy = true);
+      try {
+        auto = await _autoDetectLegend();
+      } catch (_) {
+        auto = null;
+      } finally {
+        if (mounted) {
+          setState(() => _autoDetectBusy = false);
+        }
+      }
       if (!mounted || !identical(_image, loadedImage)) {
         return;
       }
@@ -599,22 +641,42 @@ class _RestorePageState extends State<RestorePage> {
     );
   }
 
-  /// 触发自动框选（按钮）：成功设选区并提示，失败提示手动框选
+  /// 触发自动框选（按钮）：成功设选区并提示，失败提示手动框选。
+  /// 检测全程置 _autoDetectBusy（body UI 锁）——期间手拖选框/再点
+  /// 按钮都会被遮罩拦下，检测结果与用户改动不互相覆盖
   Future<void> _autoSelectLegend() async {
     final image = _image;
-    final rect = await _autoDetectLegend();
-    if (!mounted) {
+    if (image == null || _autoDetectBusy) {
       return;
     }
-    if (rect == null) {
-      AppSnackBar.show(context, "未识别到图例区，请手动框选");
+    if (_legendBusy) {
+      // AppBar 魔法棒不被 body 遮罩拦，单独提示（图例识别用的是按下时
+      // 的选区快照，中途自动框选改框是白调）
+      if (mounted) {
+        AppSnackBar.show(context, "图例识别进行中，请等待完成");
+      }
       return;
     }
-    if (!identical(_image, image)) {
-      return; // 检测期间换图：旧图结果不写新图
+    setState(() => _autoDetectBusy = true);
+    try {
+      final rect = await _autoDetectLegend();
+      if (!mounted) {
+        return;
+      }
+      if (rect == null) {
+        AppSnackBar.show(context, "未识别到图例区，请手动框选");
+        return;
+      }
+      if (!identical(_image, image)) {
+        return; // 检测期间换图：旧图结果不写新图
+      }
+      setState(() => _legendSel = rect);
+      AppSnackBar.show(context, "已自动框选图例区，可拖动调整");
+    } finally {
+      if (mounted) {
+        setState(() => _autoDetectBusy = false);
+      }
     }
-    setState(() => _legendSel = rect);
-    AppSnackBar.show(context, "已自动框选图例区，可拖动调整");
   }
 
   /// 选区（显示坐标）-> 图片坐标矩形；空选区返回全图
@@ -651,8 +713,8 @@ class _RestorePageState extends State<RestorePage> {
   /// 识别图例：框选区域自动检测行列 -> 逐格采样 -> 聚合用色清单
   void _scanLegend() {
     final image = _image;
-    if (image == null) {
-      return;
+    if (image == null || _legendBusy) {
+      return; // 已在识别：body 遮罩拦了主入口，双保险防极端时序重入
     }
     setState(() => _legendBusy = true);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -1093,8 +1155,8 @@ class _RestorePageState extends State<RestorePage> {
   /// 中心经四角双线性映射反求。
   void _recognize() {
     final image = _image;
-    if (image == null) {
-      return;
+    if (image == null || _recognizing) {
+      return; // 已在识别：body 遮罩拦了主入口，双保险防极端时序重入
     }
     final useCorner =
         _useCornerAlign && _cornerPts != null && _cornerPts!.length == 4;
@@ -1778,14 +1840,50 @@ class _RestorePageState extends State<RestorePage> {
               ),
           ],
         ),
-        body: switch (_stage) {
-          RestoreStage.pick => _buildPick(),
-          RestoreStage.legend => _buildLegend(),
-          RestoreStage.align => _buildAlign(),
-          RestoreStage.frame => _buildFrame(),
-          RestoreStage.review => _buildReview(),
-        },
+        body: _busyBarrier(
+          switch (_stage) {
+            RestoreStage.pick => _buildPick(),
+            RestoreStage.legend => _buildLegend(),
+            RestoreStage.align => _buildAlign(),
+            RestoreStage.frame => _buildFrame(),
+            RestoreStage.review => _buildReview(),
+          },
+        ),
       ),
+    );
+  }
+
+  /// 耗时识别期 UI 锁遮罩（见 _stageBusy 字段注释）：整个步骤面板连同
+  /// 图区一起 AbsorbPointer + 半透明黑遮罩——重框选/挪九宫格/调参/连点
+  /// 按钮全部锁死，图与面板仍透出可见（用户知道锁的是哪一步在跑）。
+  /// 各步骤按钮里的「识别中…」spinner 留着不动：遮罩是半透明的，双
+  /// 反馈不冲突
+  Widget _busyBarrier(Widget child) {
+    final label = _stageBusyLabel;
+    if (label == null) {
+      return child;
+    }
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        AbsorbPointer(absorbing: true, child: child),
+        ColoredBox(
+          color: Colors.black38,
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const CircularProgressIndicator(color: Colors.white),
+                const SizedBox(height: 12),
+                Text(
+                  label,
+                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -1794,9 +1892,10 @@ class _RestorePageState extends State<RestorePage> {
     if (id == _paletteId) {
       return;
     }
-    if (_recognizing) {
-      // 识别进行中换色卡：await 前后建的候选集（旧卡）与色号查找表（新
-      // 卡）混判错认，拒绝——识别结束（进复核或回失败）后再切
+    if (_stageBusy) {
+      // 识别/检测进行中换色卡（AppBar 下拉不被 body 遮罩拦，单独守卫）：
+      // await 前后建的候选集/清单条目（旧卡索引）与色号查找表（新卡）
+      // 混判错认，拒绝——识别结束（进复核或回失败）后再切
       if (mounted) {
         AppSnackBar.show(context, "识别进行中，请等识别完成后再切换色卡");
       }
@@ -2708,9 +2807,21 @@ class _RestorePageState extends State<RestorePage> {
   /// isolate（detectSubjectInIsolate），期间换图/卸载返回 null。
   Future<Rect?> _autoDetectSubject() async {
     final image = _image;
-    if (image == null || _pitchX <= 0 || _pitchY <= 0) {
+    if (image == null || _pitchX <= 0 || _pitchY <= 0 || _autoDetectBusy) {
       return null;
     }
+    setState(() => _autoDetectBusy = true);
+    try {
+      return await _autoDetectSubjectLocked(image);
+    } finally {
+      if (mounted) {
+        setState(() => _autoDetectBusy = false);
+      }
+    }
+  }
+
+  /// _autoDetectSubject 的检测本体（busy 已置位，进/出由外层 finally 收）
+  Future<Rect?> _autoDetectSubjectLocked(img.Image image) async {
     final w = image.width, h = image.height;
     // 图例带顶（图片坐标）：优先图例选区，其次自动检测的图例带；两皆无
     // 不排除（整图候选）

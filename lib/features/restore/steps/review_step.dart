@@ -18,9 +18,10 @@ import '../restore_types.dart';
 ///
 /// 筛选关闭（-2）显示总览豆图；选中色号切换为该色全部格子的截图墙
 /// （截图取自原图同位置，肉眼核对印刷色号/颜色，错认的点击选中后
-/// 重新归类）。截图墙支持滑动批量选择：按住 0.5 秒锁定拖选（指下格
-/// 未选中则拖过即选、已选中则拖过即取消），未满 0.5 秒移动仍归列表
-/// 滚动；锁定后拖到视口上下边缘自动滚屏继续选
+/// 重新归类）。截图墙支持范围连选：按住 0.5 秒锁定拖选（指下格未选
+/// 中则连选=选中、已选中则连选=取消），随后拖动把「锁定格到当前格」
+/// 的整片矩形范围一次套用——不必逐格划过；未满 0.5 秒移动仍归列表
+/// 滚动；锁定后拖到视口上下边缘自动滚屏继续扩选
 class ReviewStep extends StatefulWidget {
   final ZoomStripBuilder zoomStrip;
 
@@ -132,19 +133,22 @@ class _ReviewStepState extends State<ReviewStep> {
 
   ///< 截图墙滚动控制器（拖选把 local 位置换算回内容格需读滚动偏移）
 
-  // ==== 拖选（长按 0.5 秒锁定后滑动批量选择）状态 ====
+  // ==== 拖选（长按 0.5 秒锁定后范围连选）状态 ====
   RenderBox? _dragBox;
 
   ///< 截图墙视口 RenderBox（手势 localPosition 的坐标系）
   Offset _dragLast = Offset.zero;
 
-  ///< 上次采样点（视口局部坐标；快划沿两点连线半格步进补采样）
+  ///< 当前指位（视口局部坐标；自动滚屏边缘判定用）
+  (int, int)? _dragAnchorCR;
+
+  ///< 锚点格（列,行）——范围连选起点（锁定时刻指下格；空白尾区为 null，首移惰性取）
   Offset? _dblTapPos;
 
   ///< 总览双击落点（onDoubleTap 回调无坐标，从 onDoubleTapDown 速记）
   bool _dragSelect = true;
 
-  ///< 拖选模式：锁定时指下格未选中=true（拖过即选）/ 已选中=false（拖过即取消）
+  ///< 拖选模式：锁定时锚点格未选中=true（连选=选中）/ 已选中=false（连选=取消）
   Timer? _dragAutoScroll;
 
   ///< 拖选自动滚屏定时器（锁定后指到视口上下边缘时按深度加速滚动）
@@ -347,9 +351,10 @@ class _ReviewStepState extends State<ReviewStep> {
   /// 截图墙：当前复核色全部格子的原图截图（cellRects 与 grid 扁平索引
   /// 同序），点击选中/取消，配合「归类到…」或点目标色号 chip 重新分配。
   /// 排序按识别置信度升序（低分=可疑的先看，同分保持阅读序）；手工
-  /// 归类过的格分数置 1 自然沉底。批量选择：按住 0.5 秒锁定拖选（指
-  /// 下格即选/即取消并震动确认），随后拖动持续按锁定时的模式逐格应
-  /// 用，拖到视口上下边缘自动滚屏继续选；未满 0.5 秒就移动则让给列
+  /// 归类过的格分数置 1 自然沉底。范围连选：按住 0.5 秒锁定拖选（指
+  /// 下格即选/即取消并震动确认），随后拖动把「锁定格到当前格」的整片
+  /// 矩形范围一次套用（划路径改为覆盖区域，大片连续错认不必逐格划过），
+  /// 拖到视口上下边缘自动滚屏继续扩选；未满 0.5 秒就移动则让给列
   /// 表滚动（默认 500ms 长按在滚动列表里几乎
   /// 必被拖动抢走，实测起不了拖选）
   Widget _buildCellGallery() {
@@ -490,10 +495,10 @@ class _ReviewStepState extends State<ReviewStep> {
     );
   }
 
-  // ==== 拖选（长按 0.5 秒锁定后滑动批量选择）====
+  // ==== 拖选（长按 0.5 秒锁定后范围连选）====
 
-  /// 锁定时刻：记视口 RenderBox 与模式（指下格已选 -> 拖过即取消，
-  /// 未选 -> 拖过即选中），先把指下格选上/取消给出即时反馈（震动一下
+  /// 锁定时刻：记视口 RenderBox、锚点格与模式（锚点格已选 -> 连选取消，
+  /// 未选 -> 连选选中），先把锚点格选上/取消给出即时反馈（震动一下
   /// 确认已锁定，不用盯屏幕等计时），并启动自动滚屏定时器
   void _dragStart(BuildContext gctx, LongPressStartDetails d) {
     final box = gctx.findRenderObject() as RenderBox?;
@@ -502,6 +507,7 @@ class _ReviewStepState extends State<ReviewStep> {
     }
     _dragBox = box;
     _dragLast = d.localPosition;
+    _dragAnchorCR = _tileCR(d.localPosition);
     _dragAutoScroll?.cancel();
     _dragAutoScroll = Timer.periodic(
       const Duration(milliseconds: 16),
@@ -516,34 +522,26 @@ class _ReviewStepState extends State<ReviewStep> {
     widget.onPickCells([under], _dragSelect);
   }
 
-  /// 拖动采样：上次点到当前点按半格步长沿线补采样（快划不漏格），
-  /// 每个采样点换算所在格按模式应用。绝对语义可重放，同格重复应用无副作用
+  /// 拖动：把「锚点格 → 指下格」整片矩形范围套用拖选模式（含两端，
+  /// 行列各取 min/max 成矩形）。绝对语义可重放——每次移动全范围重放，
+  /// 同格重复套用无副作用，拖回缩小时多余的格按模式自然回收
   void _dragMove(LongPressMoveUpdateDetails d) {
     if (_dragBox == null || _dragCells.isEmpty) {
       return;
     }
-    final g = d.localPosition;
-    final tileW = _tilePitch();
-    final dist = (g - _dragLast).distance;
-    final steps = math.max(1, (dist / (tileW / 2)).ceil());
-    for (var s = 1; s <= steps; s++) {
-      final p = Offset.lerp(_dragLast, g, s / steps)!;
-      final i = _cellAt(p);
-      if (i != null) {
-        widget.onPickCells([i], _dragSelect);
-      }
-    }
-    _dragLast = g;
+    _dragLast = d.localPosition;
+    _applyDragRange(d.localPosition);
   }
 
   void _dragEnd() {
     _dragAutoScroll?.cancel();
     _dragAutoScroll = null;
     _dragBox = null;
+    _dragAnchorCR = null;
   }
 
   /// 拖选自动滚屏：指到视口上下边缘（或拖出界）按深度加速滚动；滚动
-  /// 后内容在指下移动，重采样指下格继续套用拖选模式（绝对语义可重放）
+  /// 后内容在指下移动，锚点不动、当前端随滚动延伸——重放整个范围
   void _dragAutoScrollTick() {
     final box = _dragBox;
     if (box == null ||
@@ -570,19 +568,50 @@ class _ReviewStepState extends State<ReviewStep> {
       pos.maxScrollExtent,
     );
     if (target == pos.pixels) {
-      return; // 已滚到头，指下无新格可采样
+      return; // 已滚到头，指下无新格可扩
     }
     pos.jumpTo(target);
-    final i = _cellAt(_dragLast);
-    if (i != null) {
-      widget.onPickCells([i], _dragSelect);
+    _applyDragRange(_dragLast);
+  }
+
+  /// 范围套用：锚点格到指下格的矩形内全部格子按拖选模式置选/置不选。
+  /// 锚点在空白尾区（锁定时指下无格）则惰性取当前格为锚并按它定模式
+  void _applyDragRange(Offset local) {
+    final cr = _tileCR(local);
+    if (cr == null) {
+      return;
+    }
+    final a = _dragAnchorCR;
+    if (a == null) {
+      _dragAnchorCR = cr;
+      final t = cr.$2 * _crossCount + cr.$1;
+      if (t < _dragCells.length) {
+        _dragSelect = !widget.picked.contains(_dragCells[t]);
+      }
+    }
+    final anchor = _dragAnchorCR!;
+    final c0 = math.min(anchor.$1, cr.$1);
+    final c1 = math.max(anchor.$1, cr.$1);
+    final r0 = math.min(anchor.$2, cr.$2);
+    final r1 = math.max(anchor.$2, cr.$2);
+    final cells = <int>[];
+    for (var r = r0; r <= r1; r++) {
+      for (var c = c0; c <= c1; c++) {
+        final t = r * _crossCount + c;
+        if (t < _dragCells.length) {
+          cells.add(_dragCells[t]);
+        }
+      }
+    }
+    if (cells.isNotEmpty) {
+      widget.onPickCells(cells, _dragSelect);
     }
   }
 
-  /// 视口局部坐标 -> 格子扁平索引（越界返回 null）。网格几何：6 列 +
-  /// 间距 4 + padding 4、方格（childAspectRatio 默认 1）；纵坐标补上
-  /// 滚动偏移回到内容坐标（自动滚屏时偏移随时在变，每次调用现读）
-  int? _cellAt(Offset local) {
+  /// 视口局部坐标 -> 截图墙格位（列,行）（越出格子区返回 null）。
+  /// 网格几何：6 列 + 间距 4 + padding 4、方格（childAspectRatio 默认 1）；
+  /// 纵坐标补上滚动偏移回到内容坐标（自动滚屏时偏移随时在变，现读）
+  (int, int)? _tileCR(Offset local) {
     final box = _dragBox;
     if (box == null) {
       return null;
@@ -597,7 +626,16 @@ class _ReviewStepState extends State<ReviewStep> {
     if (col < 0 || col >= _crossCount || row < 0) {
       return null;
     }
-    final t = row * _crossCount + col;
+    return (col, row);
+  }
+
+  /// 视口局部坐标 -> 格子扁平索引（越界返回 null；_tileCR 的格位换算）
+  int? _cellAt(Offset local) {
+    final cr = _tileCR(local);
+    if (cr == null) {
+      return null;
+    }
+    final t = cr.$2 * _crossCount + cr.$1;
     return t < _dragCells.length ? _dragCells[t] : null;
   }
 
@@ -747,7 +785,7 @@ class _ReviewStepState extends State<ReviewStep> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            "④ 点色号筛选看该色格子截图 → 点截图选中（按住 0.5 秒锁定后拖动批量选/取消，拖到上下边缘自动滚屏；直接拖动为滚动）→ 归类到图例色号或空白；再点同一色号回总览；双击任意豆可放大原图核对其位置与真实颜色",
+            "④ 点色号筛选看该色格子截图 → 点截图选中（按住 0.5 秒锁定后拖动，从起点到当前位置整片矩形选/取消，拖到上下边缘自动滚屏；直接拖动为滚动）→ 归类到图例色号或空白；再点同一色号回总览；双击任意豆可放大原图核对其位置与真实颜色",
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 4),

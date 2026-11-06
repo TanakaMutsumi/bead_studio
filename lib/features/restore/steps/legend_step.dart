@@ -242,6 +242,10 @@ class LegendStep extends StatelessWidget {
                           ),
                         ),
                       ),
+                      // 总豆数徽标（识别复核「总豆数」chip 同款样式）：
+                      // 全部条目颗数之和，核对「清单加总 vs 图纸标注总颗数」
+                      // 一眼可读；收起/展开态都常驻
+                      _totalChip(),
                       if (!panelExpanded)
                         FilledButton.tonal(
                           onPressed: onGoAlign,
@@ -442,6 +446,52 @@ class LegendStep extends StatelessWidget {
         ],
       );
     });
+  }
+
+  /// 总豆数徽标（摘要行右侧）：已填条目的颗数之和，随输入框敲键实时
+  /// 刷新（Listenable.merge 全部 countCtrl，只重建本徽标不动整页）。
+  /// 有未填条目时括注未填色数——总和不全时核对口径要能看出来；
+  /// 一条都没填不显示（全 0 的"共 0 颗"没有核对价值）
+  Widget _totalChip() {
+    return ListenableBuilder(
+      listenable: Listenable.merge([for (final e in legend) e.countCtrl]),
+      builder: (_, __) {
+        var total = 0;
+        var filled = 0;
+        for (final e in legend) {
+          final c = e.expectedCount;
+          if (c != null && c > 0) {
+            filled++;
+            total += c;
+          }
+        }
+        if (filled == 0) {
+          return const SizedBox.shrink();
+        }
+        final missing = legend.length - filled;
+        return Container(
+          margin: const EdgeInsets.only(left: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.black38),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.grain, size: 14, color: Colors.black54),
+              const SizedBox(width: 4),
+              Text(
+                missing > 0 ? "共 $total 颗（$missing 色未填）" : "共 $total 颗",
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   /// 排序下拉（摘要行右侧）：四模式单选菜单，当前模式带勾；
