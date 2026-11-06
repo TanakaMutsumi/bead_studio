@@ -1,5 +1,8 @@
 allprojects {
     repositories {
+        // mavenCentral 直连超时（2026-11-06 实测），阿里云镜像补位
+        maven(url = "https://maven.aliyun.com/repository/central")
+        maven(url = "https://maven.aliyun.com/repository/google")
         google()
         mavenCentral()
     }

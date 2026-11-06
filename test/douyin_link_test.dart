@@ -38,6 +38,8 @@ void main() {
       // fixture = 洛天依拼豆图纸（3 张正文图）
       expect(note.images, hasLength(3));
       expect(note.title, contains('拼豆'));
+      // noteId 来自 JSON-LD url（detail 无损通道要靠它构造 PC 页 URL）
+      expect(note.noteId, '7676042764769699749');
     });
 
     test('全是 q75 签名 URL，多镜像已去重', () {

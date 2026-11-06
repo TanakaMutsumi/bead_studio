@@ -11,8 +11,9 @@
 ///
 /// 画质结论（noop 原图当 ground truth 实测）：分辨率＝作者上传尺寸不缩水，
 /// 损伤在 q75 webp 再压缩（PSNR ~35dB）；平坦色块色偏 mean 0.6 级，远小于
-/// 拼豆调板色间距，对还原识别零风险。更优的 q75.jpeg 档（+2dB）只在浏览器
-/// 页面内 fetch 的 detail JSON 里出现，免浏览器通道拿不到——不追。
+/// 拼豆调板色间距，对还原识别零风险。与原图字节全等的 q75.jpeg 档在
+/// detail JSON 里，需页面上下文签名——见 douyin_detail.dart（WebView
+/// 无损增强通道，本模块的 SSR 通道保持唯一兜底）。
 library;
 
 import 'dart:convert';
@@ -44,9 +45,13 @@ class DouyinNoteImage {
 
 /// 图文作品
 class DouyinNote {
-  const DouyinNote({required this.title, required this.images});
+  const DouyinNote({required this.title, required this.images, this.noteId});
   final String title;
   final List<DouyinNoteImage> images;
+
+  /// 作品 id（SSR JSON-LD 的 url 提取）；短链 302 后 Dart 侧拿不到最终
+  /// 地址，detail 通道（douyin_detail.dart）靠它构造 PC 页 URL
+  final String? noteId;
 }
 
 /// 爬虫 UA：SSR 的钥匙（普通 UA 只给数据加载已死的 JS 壳页）
@@ -145,9 +150,25 @@ Future<DouyinNote> fetchDouyinNote(String shareText, {http.Client? client}) asyn
 /// 供测试/调试：直接解析 SSR HTML（不联网）
 DouyinNote? parseDouyinNoteHtmlForTest(String html) => _parseNote(html);
 
+/// 对象 id（CDN 路径 `~` 前段，全局唯一）——SSR 与 detail 两通道对齐的
+/// 键。dir 段（如 tos-cn-i-0813 / tos-cn-i-0813c001）同一对象在两通道
+/// 可不同，不能作对齐键（2026-11-06 实测：耍起笔记两图 detail JSON 内
+/// dir 就互不相同）
+String douyinObjectIdOf(String url) {
+  final uri = Uri.tryParse(url);
+  final segs = uri?.pathSegments;
+  if (segs == null || segs.isEmpty) {
+    return '';
+  }
+  final last = segs.last;
+  final i = last.indexOf('~');
+  return i <= 0 ? '' : last.substring(0, i);
+}
+
 /// SSR 页 → 标题 + 正文图列表；结构对不上返回 null
 DouyinNote? _parseNote(String html) {
   var title = '';
+  var noteId = '';
   final urls = <String>[];
   // 1) JSON-LD article 块（结构化、干净）
   for (final m in RegExp(
@@ -166,6 +187,16 @@ DouyinNote? _parseNote(String html) {
     final t = obj['headline'];
     if (t is String && t.isNotEmpty && title.isEmpty) {
       title = t;
+    }
+    // url / mainEntityOfPage = `https://www.douyin.com/note/{id}`
+    if (noteId.isEmpty) {
+      final u = obj['url'] ?? obj['mainEntityOfPage'];
+      final m2 = u is String
+          ? RegExp(r'/(?:note|post|slides)/(\d{15,20})').firstMatch(u)
+          : null;
+      if (m2 != null) {
+        noteId = m2.group(1)!;
+      }
     }
     final imgs = obj['image'];
     if (imgs is List) {
@@ -218,12 +249,32 @@ DouyinNote? _parseNote(String html) {
   if (title.length > 40) {
     title = '${title.substring(0, 40)}…';
   }
-  return DouyinNote(title: title, images: images);
+  if (noteId.isEmpty) {
+    // 兜底：页面里任意 douyin.com/note/{id}（JSON-LD 缺 url 时）
+    final m = RegExp(
+      r'douyin\.com/(?:note|post|slides)/(\d{15,20})',
+    ).firstMatch(html);
+    if (m != null) {
+      noteId = m.group(1)!;
+    }
+  }
+  return DouyinNote(
+    title: title,
+    images: images,
+    noteId: noteId.isEmpty ? null : noteId,
+  );
 }
 
-/// 下载图片：签名 URL 不挑客户端，校验魔数确保是图片字节
+/// 下载图片（SSR 通道）：签名 URL 不挑客户端，校验魔数确保是图片字节
 Future<Uint8List> downloadDouyinImage(
   DouyinNoteImage image, {
+  http.Client? client,
+}) => downloadDouyinUrl(image.url, client: client);
+
+/// 按完整 URL 下载图片字节（SSR webp 与 detail 无损 jpeg 共用；
+/// 校验魔数确保是图片字节）
+Future<Uint8List> downloadDouyinUrl(
+  String url, {
   http.Client? client,
 }) async {
   const magics = [
@@ -235,7 +286,7 @@ Future<Uint8List> downloadDouyinImage(
   final c = client ?? http.Client();
   try {
     final resp = await c
-        .get(Uri.parse(image.url), headers: {'User-Agent': _mobile})
+        .get(Uri.parse(url), headers: {'User-Agent': _mobile})
         .timeout(const Duration(seconds: 60));
     if (resp.statusCode != 200 || resp.bodyBytes.isEmpty) {
       throw DouyinLinkException(

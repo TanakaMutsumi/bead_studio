@@ -1,15 +1,57 @@
 # 抖音无损原图通道——调查结论与开发方案（交接文档）
 
-> 2026-11-06 两轮调查定稿。本文给后续开发会话：所有结论均已实测验证，
+> 2026-11-06 两轮调查定稿，**2026-11-07 实现落地并修订方案**（§0.5）。
+> 本文给后续开发会话：所有结论均已实测验证，
 > 复现脚本在 `.test/dy_*.py`，真值图在 `.test/dy_flav/`。
 > 开发前先读 `CLAUDE.md` 与 `.claude/skills/project-status.md`（工作规矩、代码地图）。
 
 ## 0. 一句话结论
 
 app 现行的 SSR 通道（q75.webp，有损 35-39dB）可以升级为**无损原图**：
-`detail` JSON 的 **q75.jpeg 档与作者上传原图字节级相同**（md5 全等实测），
-该 JSON 只需真浏览器/WebView 页面上下文发一次签名请求即可获得——
-匿名可通、无需登录，**WebView 方案在 app 内可行**。
+**PC 笔记页 hydrate 后的 DOM 里直接带全部正文图的
+`~tplv-dy-aweme-images:q75.jpeg` 签名 URL**（与作者上传原字节一致），
+隐藏 WebView 加载该页后从 DOM 提取即可，**无需发任何签名 API 请求**——
+匿名可通、无需登录。
+
+## 0.5 实现定稿（2026-11-07 已上线，推翻 §3 的 detail fetch 方案）
+
+**detail API 在 WebView 内走不通**：页面加固层（Argus/secsdk）把补丁过的
+`fetch`/`XHR.send` 全部扣在队列里不放行（promise 永久 pending，连
+`/favicon.ico` 都 `Failed to fetch`）；iframe 里的原生（未补丁）fetch
+机制上可用，但无签名 → 403 `Blocked by ArgusSecurityPlugin Uifid Not Found`。
+
+**但 hydrate 会把整份 url_list（含 q75.jpeg 签名 URL）写进 DOM**——
+真浏览器保存的 PC 页 HTML 实证：所有正文图（不止封面）都有
+`q75.jpeg` 变体，URL 自带 `x-signature`，Dart 普通 HTTP 直下即得原字节。
+
+```
+SSR 解析成功（douyin_link.dart，拿 noteId + webp 缩略图）
+  → 挂隐藏 WebView（DouyinDetailProbe，桌面 UA + 1280 视口）
+  → 等 innerText ≥200 后轮询 documentElement.outerHTML
+      正则提取 douyinpic.com 的 ~tplv-dy-aweme-images jpeg URL
+  → mapJpegUrls：按对象 id 分组取 jpeg 档 → onJpegs 回调
+  → 下载走 downloadDouyinUrl（mobile UA 即可，CDN 不挑客户端）
+  → 任何失败/超时（默认 55s）静默回退 SSR webp
+```
+
+实现锚点：`lib/core/douyin_detail.dart`（probe + 提取 + mapJpegUrls）、
+`douyin_import_sheet.dart`（_startBoost/_ensureOriginal，双通道选择）。
+
+**提取正则的两个坑（都 403 过）**：
+1. DOM 序列化里 URL 的 `&` 是字面 `&`（script state 转义残留）——
+   必须先 `replace(/\\u([0-9a-fA-F]{4})/g, …)` 全量还原再匹配；
+2. URL 尾部常跟 `\"` 的孤立反斜杠，正则字符类必须排除 `\`，
+   否则签名值带尾随 `\` → 403。
+
+**验收结果（模拟器 e2e，2026-11-07）**：shuaqi img0 675685B / img1
+955593B、nailong img0 100575B——len+head+tail 字节指纹全等
+`.test/dy_flav/*_jpeg.bin`；403 回退 SSR webp 两次实证；`flutter test`
+83 项全绿。
+
+**CDP 调试警示**：attach chrome devtools（adb forward + CDP）会让页面
+反调试层投毒——渲染进程 SIGTRAP，crashpad 以「renderer crash 未处理」
+杀掉整个 app。排查该页一律走 console→logcat 桥（setOnConsoleMessage），
+勿再连 CDP。
 
 ## 1. 质量地图（实测数字）
 
@@ -50,7 +92,10 @@ CDN 的 q75 jpeg 模板对 jpeg 上传是**直通不压缩**；webp 模板是真
 10. CDN Accept 内容协商无效（字节不变）；URL 规格段（`~tplv-...` 或
     `~noop`）改写一律 403（签名锁路径+规格）。
 
-## 3. 推荐实现方案：WebView 一次性签名
+## 3. （已被 §0.5 取代）原推荐方案：WebView 一次性签名 detail
+
+> 2026-11-07 实测 WebView 内页面补丁 fetch 不放行（见 §0.5），本节
+> 保留为调查档案：PC 真浏览器里此流程成立，`dy_browser_replay.py` 仍可用。
 
 **原则：SSR 通道保留为唯一兜底，WebView 无损档做成增强路径，失败静默回退。**
 
@@ -182,6 +227,13 @@ URL 规格段/扩展名改写（403）；CDN Accept 协商；SEO 包找 jpeg（�
 （服务端损坏）；PC lightbox 查看器（自身就是 q75）；watermark `download_url_list`
 （q75+水印）；`original_images`/`image_infos` 字段（恒空）；x-secsdk-web-signature
 简单哈希爆破（1764 组合无命中）；PyPI 纯 python a_bogus（不存在）。
+
+2026-11-07 追加（WebView 环境实测）：页面内 fetch/XHR detail（Argus 队列
+不放行，含 credentials:omit 与绝对 URL www/www-hj 变体）；iframe 原生
+fetch 无签名（403 Uifid）；注销 Service Worker（页面上下文本就 0 注册，
+SW 非根因）；CDP attach（反调试投毒 → renderer SIGTRAP 杀 app）；
+`~noop.jpeg` 仅 cover 一张（无通用性）；真浏览器 UA 直连 PC 页取
+HTML（未 hydrate，无 jpeg URL）。
 
 ## 8. 现有代码挂点
 

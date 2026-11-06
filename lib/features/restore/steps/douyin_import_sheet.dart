@@ -1,18 +1,21 @@
+import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard;
 
 import '../../../core/app_snack_bar.dart';
+import '../../../core/douyin_detail.dart';
 import '../../../core/douyin_link.dart';
 import 'link_image_viewer.dart';
 
 /// 抖音链接导入面板：粘贴分享文案 → 缩略图选一张 → 进还原流程；
 /// 双击缩略图全屏查看（右上角下载按钮存相册）。
 ///
-/// [onImageChosen] 收到选中图的图片字节（签名 q75 档＝抖音对外提供的
-/// 最高免登录画质，分辨率与作者发布一致），在面板关闭后回调，喂给与
-/// 相册选图同一条还原链路。
+/// [onImageChosen] 收到选中图的图片字节（优先无损 q75.jpeg 档＝作者
+/// 上传原字节，隐藏 WebView 提取签名 URL；失败静默回退 SSR q75.webp），
+/// 在面板关闭后回调，喂给与相册选图同一条还原链路。
 Future<void> showDouyinImportSheet(
   BuildContext context,
   void Function(Uint8List bytes) onImageChosen,
@@ -53,6 +56,12 @@ class _DouyinImportSheetState extends State<_DouyinImportSheet> {
   int _selected = -1;
   var _downloading = false;
 
+  /// 无损增强通道（WebView 签名 detail）：对象 id → jpeg 原图 URL；
+  /// null/空 = 未就绪或失败，SSR webp 兜底。UI 不因它失败而变化
+  Map<String, String>? _lossless;
+  var _boosting = false;
+  Completer<void>? _boostDone;
+
   @override
   void initState() {
     super.initState();
@@ -90,7 +99,9 @@ class _DouyinImportSheetState extends State<_DouyinImportSheet> {
         _note = note;
         _selected = note.images.length == 1 ? 0 : -1;
         _phase = _Phase.pick;
+        _lossless = null;
       });
+      _startBoost(note);
     } on DouyinLinkException catch (e) {
       if (mounted) {
         setState(() {
@@ -108,7 +119,58 @@ class _DouyinImportSheetState extends State<_DouyinImportSheet> {
     }
   }
 
-  /// 「开始还原」：下载选中图 → 关面板回传字节
+  /// 无损增强：SSR 解析成功后挂隐藏 WebView 加载 PC 笔记页，从 hydrate
+  /// 后的 DOM 提取 q75.jpeg 签名 URL（= 原图字节）。任何失败静默回退
+  /// SSR webp（见 docs/douyin_lossless_channel.md）
+  void _startBoost(DouyinNote note) {
+    final id = note.noteId;
+    // 旧探测器（若有）立即失效结算，避免与新一轮竞争
+    final old = _boostDone;
+    if (old != null && !old.isCompleted) {
+      old.complete();
+    }
+    // webview_flutter 不支持 web（SSR 在 web 上也过不了 CORS，理论到不了
+    // 这里，防御性短路）
+    if (id == null || kIsWeb) {
+      if (mounted) {
+        setState(() => _boosting = false);
+      }
+      return;
+    }
+    _boostDone = Completer<void>();
+    setState(() => _boosting = true);
+  }
+
+  Future<Uint8List> _ensureOriginal(DouyinNoteImage img) async {
+    final hit = _cache.get(img.uriKey);
+    if (hit != null) {
+      return hit;
+    }
+    // 增强通道在跑：预算内等它（拿到才下载无损档）；超时/失败照走 SSR
+    final boost = _boostDone;
+    if (boost != null) {
+      try {
+        await boost.future.timeout(const Duration(seconds: 58));
+      } on Exception {
+        // 探测器自身 55s 预算兜底，这里只是双保险
+      }
+    }
+    final jpeg = _lossless?[douyinObjectIdOf(img.url)];
+    Uint8List bytes;
+    if (jpeg != null) {
+      try {
+        bytes = await downloadDouyinUrl(jpeg);
+      } on Exception {
+        bytes = await downloadDouyinImage(img); // 无损下载失败回退
+      }
+    } else {
+      bytes = await downloadDouyinImage(img);
+    }
+    _cache.put(img.uriKey, bytes);
+    return bytes;
+  }
+
+  /// 「开始还原」：下载选中图（优先无损档）→ 关面板回传字节
   Future<void> _confirm() async {
     if (_note == null || _selected < 0 || _downloading) {
       return;
@@ -134,16 +196,6 @@ class _DouyinImportSheetState extends State<_DouyinImportSheet> {
     }
   }
 
-  Future<Uint8List> _ensureOriginal(DouyinNoteImage img) async {
-    final hit = _cache.get(img.uriKey);
-    if (hit != null) {
-      return hit;
-    }
-    final bytes = await downloadDouyinImage(img);
-    _cache.put(img.uriKey, bytes);
-    return bytes;
-  }
-
   @override
   Widget build(BuildContext context) {
     final maxHeight = MediaQuery.of(context).size.height * 0.85;
@@ -154,6 +206,28 @@ class _DouyinImportSheetState extends State<_DouyinImportSheet> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // 隐藏 WebView（0.01 高，ClipRect 内）——无损增强探测器；
+            // ValueKey(noteId)：换链接重解析时旧 State 干净作废
+            if (_boosting && _note?.noteId != null)
+              DouyinDetailProbe(
+                key: ValueKey(_note!.noteId),
+                noteId: _note!.noteId!,
+                onJpegs: (m) {
+                  if (mounted && _boosting) {
+                    setState(() => _lossless = m);
+                  }
+                },
+                onDone: () {
+                  if (!mounted || !_boosting) {
+                    return;
+                  }
+                  setState(() => _boosting = false);
+                  final b = _boostDone;
+                  if (b != null && !b.isCompleted) {
+                    b.complete();
+                  }
+                },
+              ),
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 0, 8, 8),
               child: Row(
@@ -180,6 +254,35 @@ class _DouyinImportSheetState extends State<_DouyinImportSheet> {
               ),
             ),
             Flexible(child: _buildBody()),
+            if (_phase == _Phase.pick &&
+                (_boosting || (_lossless?.isNotEmpty ?? false)))
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 6, 20, 0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: _boosting
+                      ? const [
+                          SizedBox(
+                            width: 12,
+                            height: 12,
+                            child: CircularProgressIndicator(strokeWidth: 1.6),
+                          ),
+                          SizedBox(width: 6),
+                          Text(
+                            '正在尝试获取无损原图…',
+                            style: TextStyle(fontSize: 11, color: Colors.black45),
+                          ),
+                        ]
+                      : const [
+                          Icon(Icons.verified, size: 14, color: Colors.green),
+                          SizedBox(width: 4),
+                          Text(
+                            '无损原图已就绪',
+                            style: TextStyle(fontSize: 11, color: Colors.green),
+                          ),
+                        ],
+                ),
+              ),
             if (_phase == _Phase.pick)
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
@@ -194,7 +297,11 @@ class _DouyinImportSheetState extends State<_DouyinImportSheet> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Icon(Icons.auto_awesome),
-                    label: Text(_downloading ? '正在下载图片…' : '开始还原'),
+                    label: Text(
+                      _downloading
+                          ? (_boosting ? '正在获取原图…' : '正在下载图片…')
+                          : '开始还原',
+                    ),
                   ),
                 ),
               ),

@@ -13,6 +13,7 @@ pubspec.lock
 
 # Android
 android/.gradle/
+android/.kotlin/
 android/local.properties
 android/app/.cxx/
 *.jks
