@@ -344,6 +344,12 @@ class _RestorePageState extends State<RestorePage> {
   var _detecting = false;
   var _recognizing = false;
 
+  ///< 主识别进度（已确认格数/总格数，识别锁遮罩进度条用）：总格数起跑
+  ///< 定格，已确认=两遍文本判据的权威命中数（色彩回退收尾瞬间补满）。
+  ///< _recognTotal=0 时不显示百分比（其他遮罩场景）
+  int _recognTotal = 0;
+  int _recognDone = 0;
+
   ///< 耗时识别期整体 UI 锁：图例识别(_legendBusy)/格距检测(_detecting)/
   ///< 主体自动框选(_autoDetectBusy)/主识别(_recognizing) 任一进行中
   ///< =true——body 整体 AbsorbPointer+遮罩。识别全用起跑时的快照（选区/
@@ -356,6 +362,10 @@ class _RestorePageState extends State<RestorePage> {
   ///< UI 锁遮罩文案（按耗时量级排优先级：主识别最长放最前），未锁 null
   String? get _stageBusyLabel {
     if (_recognizing) {
+      if (_recognTotal > 0) {
+        final pct = (_recognDone * 100 / _recognTotal).round();
+        return "正在识别，已确认 $_recognDone/$_recognTotal 格（$pct%）";
+      }
       return "正在识别，请稍候…";
     }
     if (_legendBusy) {
@@ -1222,7 +1232,11 @@ class _RestorePageState extends State<RestorePage> {
       _colsCtrl.text = cols.toString();
       _rowsCtrl.text = rows.toString();
     }
-    setState(() => _recognizing = true);
+    setState(() {
+      _recognizing = true;
+      _recognTotal = cols * rows;
+      _recognDone = 0;
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       // 四角映射模式：角点（显示坐标）-> 图片坐标，采样中心/格宽高全部
       // 经双线性映射反求（与覆盖层网格线同源，所见即所采）
@@ -1277,10 +1291,41 @@ class _RestorePageState extends State<RestorePage> {
           }
         }
       }
-      // OCR 轮：选区整图单次识别（逐格 ~1600 次 processImage 要数分钟），
+      final codeMap = buildCodeMap(_palette);
+      final quantizer = Quantizer(_palette);
+      final grid = List<int>.filled(cols * rows, 0);
+      // 逐格识别置信度（复核截图墙排序用）：OCR 命中=1（印刷色号权威）；
+      // 颜色采样按 Lab 距离线性折算（0=空白阈值处，1=正中色心）；直判
+      // 空白=0。分数越低越可疑，截图墙按升序排——最可能认错的格先看
+      final scores = List<double>.filled(cols * rows, 1.0);
+      // 一遍：整图 OCR 分带识别（ocrCells 按 ~350px 切 2-8 带逐带识别），
       // 元素按几何归类回格；印刷色号是图纸的权威声明，命中候选色号的格
-      // 直接采用，读不到的回落色彩识别
-      final ocrByCell = await ocrCells(
+      // 直接采用。每带识别完回调一次：解析命中 + 进度上报（单张大图一次
+      // processImage 中途零事件，0→72% 一跳突兀，用户 2026-11-06 定）
+      final authoritative = List<bool>.filled(cols * rows, false);
+      final txtByCell = <int, String>{};
+      var ocrHit = 0;
+      void resolveBand(Map<int, String> band) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          band.forEach((i, txt) {
+            txtByCell[i] = txt;
+            final hit = codeMap[txt];
+            if (hit != null && (candidates.isEmpty || candidates.contains(hit))) {
+              if (!authoritative[i]) {
+                authoritative[i] = true;
+                grid[i] = hit;
+                ocrHit++;
+              }
+            }
+          });
+          _recognDone = ocrHit;
+        });
+      }
+
+      await ocrCells(
         image,
         cellRects,
         centers,
@@ -1290,25 +1335,82 @@ class _RestorePageState extends State<RestorePage> {
         useCorner,
         pitchX,
         pitchY,
+        onBand: resolveBand,
       );
-      final codeMap = buildCodeMap(_palette);
-      final quantizer = Quantizer(_palette);
-      final grid = List<int>.filled(cols * rows, 0);
-      // 逐格识别置信度（复核截图墙排序用）：OCR 命中=1（印刷色号权威）；
-      // 颜色采样按 Lab 距离线性折算（0=空白阈值处，1=正中色心）；直判
-      // 空白=0。分数越低越可疑，截图墙按升序排——最可能认错的格先看
-      final scores = List<double>.filled(cols * rows, 1.0);
-      var ocrHit = 0;
+      // 二遍逐格补读（文本第一判据，2026-11-06 用户反馈）：一遍整图 OCR
+      // 没读到色号≠格内没有文本——字小/压格线/全局放大倍率不够都会漏，
+      // 此前这些格直接落色彩回退（候选含近白时白底成片吸 H2 的根因即
+      // 此）。逐格裁剪放大拼瓦分批补读：一次 processImage 读一批瓦（逐格
+      // 单图调用要数秒×格数，见 ocrCells 头注），每批回调即时上报进度；
+      // 瓦内仍读不到的才落色彩回退。格距错得离谱（未权威格 >900）时整轮
+      // 跳过——批量大且结果多半无意义
+      var ocrHit2 = 0;
+      var rescueDiff = 0;
+      var pass2Done = 0;
+      final retryIdx = <int>[
+        for (var i = 0; i < grid.length; i++)
+          if (!authoritative[i]) i,
+      ];
+      if (retryIdx.length <= 900) {
+        await ocrCellsSecondPass(
+          image,
+          [for (final i in retryIdx) cellRects[i]],
+          onBatch: (start, count, batch) {
+            if (!mounted) {
+              return;
+            }
+            setState(() {
+              batch.forEach((k, txt) {
+                final i = retryIdx[start + k];
+                if (txt.isEmpty) {
+                  return;
+                }
+                txtByCell[i] = txt;
+                final hit = codeMap[txt];
+                if (hit != null &&
+                    (candidates.isEmpty || candidates.contains(hit))) {
+                  if (!authoritative[i]) {
+                    authoritative[i] = true;
+                    grid[i] = hit;
+                    ocrHit2++;
+                    // 补读命中与色彩判据的分歧数（观测用）：色彩侧同款
+                    // 采样+量化对比，分歧格打 logcat 供对账
+                    final (sr, sg, sb) = _sampleCenter(
+                      centers[i].dx,
+                      centers[i].dy,
+                      cellRects[i].width,
+                      cellRects[i].height,
+                    );
+                    final (cIdx, _) = quantizer.nearestWithin(
+                      sr,
+                      sg,
+                      sb,
+                      candidates.isEmpty ? null : candidates,
+                    );
+                    if (cIdx != hit) {
+                      rescueDiff++;
+                      debugPrint(
+                        "【临时调试】补读 r${i ~/ cols}c${i % cols}: $txt -> ${_palette.colors[hit].id}（色彩判 ${_palette.colors[cIdx].id}）",
+                      );
+                    }
+                  }
+                }
+              });
+              // 本批瓦全部出最终判据（文本命中，或文本阶段终结→色彩回退
+              // 在收尾循环定型）——进度按已确认格数计，每批稳步推进
+              pass2Done += count;
+              _recognDone = ocrHit + pass2Done;
+            });
+          },
+        );
+      }
+      // 色彩回退：两遍文本都没给出候选色号的格。textless 判据用两遍合并
+      // 结果——两遍都没读到文本=真·无字
       for (var i = 0; i < grid.length; i++) {
-        final txt = ocrByCell[i];
-        if (txt != null) {
-          final hit = codeMap[txt];
-          if (hit != null && (candidates.isEmpty || candidates.contains(hit))) {
-            grid[i] = hit;
-            ocrHit++;
-            continue;
-          }
+        if (authoritative[i]) {
+          continue;
         }
+        final txt = txtByCell[i];
         final (sr, sg, sb) = _sampleCenter(
           centers[i].dx,
           centers[i].dy,
@@ -1363,6 +1465,8 @@ class _RestorePageState extends State<RestorePage> {
         _cellRects = cellRects;
         _cellScores = scores;
         _recognizing = false;
+        _recognTotal = 0;
+        _recognDone = 0;
         _reviewColor = -2;
         _picked.clear();
         // 出现色快照定格：归类候选不随后续归类动态缩水（见字段注释）
@@ -1385,7 +1489,7 @@ class _RestorePageState extends State<RestorePage> {
           "${k < 0 ? "BLANK" : _palette.colors[k].id}=${dbgCnt[k]}",
       ].join(" ");
       debugPrint(
-        "【临时调试】识别 $cols x $rows | OCR命中 $ocrHit/${cols * rows} | $dbgPairs",
+        "【临时调试】识别 $cols x $rows | OCR命中 $ocrHit+${ocrHit2}(补读,与色彩分歧$rescueDiff)/${cols * rows} | $dbgPairs",
       );
     });
   }
@@ -1889,6 +1993,18 @@ class _RestorePageState extends State<RestorePage> {
                   label,
                   style: const TextStyle(color: Colors.white, fontSize: 13),
                 ),
+                if (_recognizing && _recognTotal > 0) ...[
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: 220,
+                    child: LinearProgressIndicator(
+                      value: _recognDone / _recognTotal,
+                      minHeight: 6,
+                      color: Colors.white,
+                      backgroundColor: Colors.white24,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),

@@ -2891,8 +2891,9 @@ Future<Map<int, String>> ocrCells(
   int rows,
   bool useCorner,
   double pitchX,
-  double pitchY,
-) async {
+  double pitchY, {
+  void Function(Map<int, String> band)? onBand,
+}) async {
   if (kIsWeb) {
     return const {};
   }
@@ -2928,7 +2929,6 @@ Future<Map<int, String>> ocrCells(
     final cx1 = (bRight + avgW / 2).clamp(cx0 + 4.0, image.width.toDouble());
     final cy1 = (bBottom + avgH / 2).clamp(cy0 + 4.0, image.height.toDouble());
     final cropW = (cx1 - cx0).toInt();
-    final cropH = (cy1 - cy0).toInt();
     // 放大策略：目标宽 3600（格内色号字小，格距 ~31px 时字高 ~10px，
     // 不放大 ML Kit 读不出），上限 6 防小选区过度放大锯齿化丢字；大选区
     // （相机原片 crop ≥3600px 宽）不再强制放大——旧版 clamp 下限 2.0 会
@@ -2940,28 +2940,39 @@ Future<Map<int, String>> ocrCells(
     if (scale > widthCap) {
       scale = widthCap;
     }
-    // 裁剪/缩放/PNG 编码走 compute isolate：百万像素级同步重活（大图
-    // 12MP+）在主 isolate 会冻结 UI 秒级（ANR），与 encodeDisplayJpg
-    // 同理
-    final pngBytes = await compute(
-      encodeCellOcrPng,
-      CellOcrArgs(image, cx0.toInt(), cy0.toInt(), cropW, cropH, scale),
-    );
-    final tmp = File(
-      "${(await getTemporaryDirectory()).path}/cells_ocr.png",
-    );
-    await tmp.writeAsBytes(pngBytes);
-    // 解码+推理走原生后台线程通道（插件 fromFilePath 在平台线程=UI 线程
-    // 上跑，识别期间主线程冻结）；通道不可用回退插件
-    var els = await ocrImageFile(tmp.path);
-    if (els == null) {
-      final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
-      els = await ocrFilePlugin(recognizer, tmp.path);
-      await recognizer.close();
-    }
-    // 元素中心（放大图坐标）-> 图片坐标 -> 归类到格
-    final rawByCell = <int, List<(double, String)>>{};
     final centerLimit = 0.65 * math.max(avgW, avgH);
+    final tmpDir = (await getTemporaryDirectory()).path;
+    // 分带逐带识别（2026-11-06 进度反馈）：单张大图一次 processImage 全程
+    // 无事件，进度只能 0→结尾两跳；按 ~350px 原图带高切 2-8 带，每带一次
+    // 识别一次回调，总像素不变只多几次调用往返。带缘外扩半格——交界处
+    // 压线文字两带都会读到，归类按中心距离归位、Map 覆盖不重复计数
+    final bands = ((cy1 - cy0) / 350).clamp(2.0, 8.0).round();
+    final out = <int, String>{};
+    for (var b = 0; b < bands; b++) {
+      final bt0 = cy0 + (cy1 - cy0) * b / bands;
+      final bt1 = cy0 + (cy1 - cy0) * (b + 1) / bands;
+      final by0 = (bt0 - avgH / 2).clamp(0.0, image.height - 4.0);
+      final by1 = (bt1 + avgH / 2).clamp(by0 + 4.0, image.height.toDouble());
+      final bandH = (by1 - by0).toInt();
+      // 裁剪/缩放/PNG 编码走 compute isolate：百万像素级同步重活（大图
+      // 12MP+）在主 isolate 会冻结 UI 秒级（ANR），与 encodeDisplayJpg
+      // 同理
+      final pngBytes = await compute(
+        encodeCellOcrPng,
+        CellOcrArgs(image, cx0.toInt(), by0.toInt(), cropW, bandH, scale),
+      );
+      final tmp = File("$tmpDir/cells_ocr_$b.png");
+      await tmp.writeAsBytes(pngBytes);
+      // 解码+推理走原生后台线程通道（插件 fromFilePath 在平台线程=UI 线程
+      // 上跑，识别期间主线程冻结）；通道不可用回退插件
+      var els = await ocrImageFile(tmp.path);
+      if (els == null) {
+        final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+        els = await ocrFilePlugin(recognizer, tmp.path);
+        await recognizer.close();
+      }
+      // 元素中心（放大图坐标）-> 图片坐标 -> 归类到格
+      final rawByCell = <int, List<(double, String)>>{};
     for (final element in els) {
       final text = element.text.trim().toUpperCase().replaceAll(" ", "");
       if (text.isEmpty ||
@@ -2970,7 +2981,7 @@ Future<Map<int, String>> ocrCells(
         continue; // 只收色号样式（≤4 字母数字），长文本/杂项不做
       }
       final bc = element.rect.center;
-      final p = Offset(cx0 + bc.dx / scale, cy0 + bc.dy / scale);
+      final p = Offset(cx0 + bc.dx / scale, by0 + bc.dy / scale);
           int? cellIdx;
           if (!useCorner) {
             // 九宫格模式：按格线相位直接解析 col/row，中心距校验防
@@ -3013,14 +3024,219 @@ Future<Map<int, String>> ocrCells(
           rawByCell.putIfAbsent(cellIdx, () => []).add((p.dx, text));
         }
       }
-    // 同格多元素（"F" "2" 分开识别等）按 x 排序拼接
-    final out = <int, String>{};
-    rawByCell.forEach((idx, list) {
-      list.sort((a, b) => a.$1.compareTo(b.$1));
-      out[idx] = [for (final t in list) t.$2].join();
-    });
+      // 同格多元素（"F" "2" 分开识别等）按 x 排序拼接；本带结果立即
+      // 回调（进度）并并入总表
+      final band = <int, String>{};
+      rawByCell.forEach((idx, list) {
+        list.sort((a, b) => a.$1.compareTo(b.$1));
+        band[idx] = [for (final t in list) t.$2].join();
+      });
+      out.addAll(band);
+      onBand?.call(band);
+    }
     return out;
   } catch (_) {
     return const {};
+  }
+}
+
+/// 二遍逐格补读拼瓦参数（encodeTilesJpg 的 compute 入参）
+class TilesOcrArgs {
+  final img.Image image;
+
+  ///< 原图（isolate 内逐瓦裁剪）
+  final List<Rect> rects;
+
+  ///< 瓦片矩形（图片坐标，已含外扩）
+  final int slotW, slotH;
+
+  ///< 统一瓦片槽尺寸（放大后）
+  final int gutter;
+
+  ///< 槽间白带宽（防跨瓦字符粘连）
+  final int perRow;
+
+  ///< 每行槽数
+  const TilesOcrArgs(
+    this.image,
+    this.rects,
+    this.slotW,
+    this.slotH,
+    this.gutter,
+    this.perRow,
+  );
+}
+
+/// 二遍补读拼瓦编码（compute isolate 内）：逐瓦裁剪→均匀性检查（亮度
+/// 极差 <22 视为无印刷：空白格/纯色无码格直接留白，不喂 OCR 不产噪）→
+/// 等比放大居中入槽，整批拼一张白底大图。重活进 isolate 与
+/// encodeCellOcrPng 同理（百万像素级同步跑主 isolate 会冻结 UI 秒级）。
+/// 编码用 JPEG q95（拼瓦数百万像素，PNG 编码数秒级拖慢逐批节奏，JPEG
+/// 快一个量级且 q95 对放大后的字形块无损感知）
+Uint8List encodeTilesJpg(TilesOcrArgs a) {
+  final n = a.rects.length;
+  final rows = (n + a.perRow - 1) ~/ a.perRow;
+  final strideX = a.slotW + a.gutter;
+  final strideY = a.slotH + a.gutter;
+  final canvas = img.Image(
+    width: strideX * a.perRow - a.gutter,
+    height: strideY * rows - a.gutter,
+  );
+  img.fill(canvas, color: img.ColorRgb8(255, 255, 255));
+  for (var k = 0; k < n; k++) {
+    final r = a.rects[k];
+    final x0 = r.left.round().clamp(0, a.image.width - 1);
+    final y0 = r.top.round().clamp(0, a.image.height - 1);
+    final x1 = r.right.round().clamp(x0 + 1, a.image.width);
+    final y1 = r.bottom.round().clamp(y0 + 1, a.image.height);
+    final crop = img.copyCrop(
+      a.image,
+      x: x0,
+      y: y0,
+      width: x1 - x0,
+      height: y1 - y0,
+    );
+    var mn = 255, mx = 0;
+    for (var y = 0; y < crop.height; y += 2) {
+      for (var x = 0; x < crop.width; x += 2) {
+        final p = crop.getPixel(x, y);
+        final l = (0.299 * p.r + 0.587 * p.g + 0.114 * p.b).round();
+        if (l < mn) {
+          mn = l;
+        }
+        if (l > mx) {
+          mx = l;
+        }
+      }
+    }
+    if (mx - mn < 22) {
+      continue; // 无印刷（空白/纯色无码）：槽留白
+    }
+    final scale = math.min(a.slotW / crop.width, a.slotH / crop.height);
+    var big = crop;
+    if (scale > 1.01) {
+      big = img.copyResize(
+        crop,
+        width: (crop.width * scale).round(),
+        height: (crop.height * scale).round(),
+      );
+    }
+    img.compositeImage(
+      canvas,
+      big,
+      dstX: strideX * (k % a.perRow) + (a.slotW - big.width) ~/ 2,
+      dstY: strideY * (k ~/ a.perRow) + (a.slotH - big.height) ~/ 2,
+    );
+  }
+  return img.encodeJpg(canvas, quality: 95);
+}
+
+/// 二遍逐格补读：整图一遍 OCR 没读到色号的格，逐格裁剪放大拼白底瓦阵
+/// 分批补识别——一次 processImage 读一批瓦（逐格单图调用要数秒×格数，
+/// 见 ocrCells 头注）。文本是图纸的权威声明，一遍没读到≠格内没有文本
+/// （字小/压格线/全局放大倍率不够都会漏），色彩回退前必须给足文本机会。
+/// 批粒度 ~120 瓦：每批一次进图，[onBatch](起始下标, 本批瓦数, 文本表)
+/// 每批回调一次（含零命中的批——本批瓦的文本阶段已终结，进度照走）。
+/// 返回/回调文本表的键是 rects 的下标（非格子编号，调用方自映射），值=
+/// 瓦内按 x 拼接的文本（可能仍不是 palette 色号，由调用方查 codeMap）
+Future<Map<int, String>> ocrCellsSecondPass(
+  img.Image image,
+  List<Rect> cellRects, {
+  void Function(int start, int count, Map<int, String> batch)? onBatch,
+}) async {
+  final out = <int, String>{};
+  if (kIsWeb || cellRects.isEmpty) {
+    return out;
+  }
+  try {
+    var sumW = 0.0, sumH = 0.0;
+    for (final r in cellRects) {
+      sumW += r.width;
+      sumH += r.height;
+    }
+    final avgW = sumW / cellRects.length;
+    final avgH = sumH / cellRects.length;
+    // 槽尺寸：格外扩 30%（压格线的字完整入瓦）后放大到槽宽 ~160px
+    // （色号字高到 40-50px 的 ML Kit 舒适区；一遍 3600/cropW 的全局倍率
+    // 在小选区上字可能只有 ~20px——补读的意义就在这），上限 8 防大格
+    // 锯齿化、槽上限 400 防离谱大格撑爆拼瓦
+    final scale = (160 / (avgW * 1.6)).clamp(1.0, 8.0);
+    final slotW = math.min(400, (avgW * 1.6 * scale).round());
+    final slotH = math.min(400, (avgH * 1.6 * scale).round());
+    final gutter = math.max(48, (slotH * 0.6).round());
+    final strideX = slotW + gutter, strideY = slotH + gutter;
+    final perRow = math.max(1, (3800 + gutter) ~/ strideX);
+    // 批量：整图高限 4200 内的整行数，再钳到 ~120 瓦/批（进度条 tick 粒度）
+    final rowsCap = math.max(1, (4200 + gutter) ~/ strideY);
+    final perBatch = math.min(perRow * rowsCap, math.max(perRow, 120));
+    // 瓦片矩形：格外扩 30% 后夹回图内
+    final rects = <Rect>[];
+    for (final cr in cellRects) {
+      final m = math.max(cr.width, cr.height) * 0.3;
+      rects.add(Rect.fromLTRB(
+        (cr.left - m).clamp(0.0, image.width - 1.0),
+        (cr.top - m).clamp(0.0, image.height - 1.0),
+        (cr.right + m).clamp(1.0, image.width.toDouble()),
+        (cr.bottom + m).clamp(1.0, image.height.toDouble()),
+      ));
+    }
+    final tmpDir = (await getTemporaryDirectory()).path;
+    final codeLike = RegExp(r'^[A-Z0-9]+$');
+    for (var b = 0; b * perBatch < rects.length; b++) {
+      final part = rects.sublist(
+        b * perBatch,
+        math.min((b + 1) * perBatch, rects.length),
+      );
+      // 注：image 随 args 整体拷入 isolate，大图每批一次拷贝成本已计入
+      // 批粒度权衡（测试图 ~2MP 级无感；真机大图若慢再优化为预裁剪共享）
+      final jpgBytes = await compute(
+        encodeTilesJpg,
+        TilesOcrArgs(image, part, slotW, slotH, gutter, perRow),
+      );
+      final tmp = File("$tmpDir/cells_ocr2_$b.jpg");
+      await tmp.writeAsBytes(jpgBytes);
+      var els = await ocrImageFile(tmp.path);
+      if (els == null) {
+        final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+        els = await ocrFilePlugin(recognizer, tmp.path);
+        await recognizer.close();
+      }
+      // 元素中心 -> 槽行列 -> 瓦下标；槽内中心区校验（同一遍 centerLimit
+      // 思路）：瓦间白带/瓦缘的文字=邻格压线字，收进来会把邻格色号安到
+      // 本格（"F2"+"1"→"F21" 型错串按 OCR 权威上色），弃
+      final byLocal = <int, List<(double, String)>>{};
+      for (final element in els) {
+        final text = element.text.trim().toUpperCase().replaceAll(" ", "");
+        if (text.isEmpty || text.length > 4 || !codeLike.hasMatch(text)) {
+          continue;
+        }
+        final c = element.rect.center;
+        final col = (c.dx / strideX).floor();
+        final row = (c.dy / strideY).floor();
+        if (col < 0 || col >= perRow || row < 0) {
+          continue;
+        }
+        final local = row * perRow + col;
+        if (local >= part.length) {
+          continue;
+        }
+        final fx = (c.dx - col * strideX) / slotW;
+        final fy = (c.dy - row * strideY) / slotH;
+        if (fx < 0.15 || fx > 0.85 || fy < 0.15 || fy > 0.85) {
+          continue;
+        }
+        byLocal.putIfAbsent(local, () => []).add((c.dx, text));
+      }
+      final batch = <int, String>{};
+      byLocal.forEach((local, list) {
+        list.sort((p, q) => p.$1.compareTo(q.$1));
+        batch[local] = [for (final t in list) t.$2].join();
+      });
+      out.addAll(batch);
+      onBatch?.call(b * perBatch, part.length, batch);
+    }
+    return out;
+  } catch (_) {
+    return out; // 补读整体失败：保持一遍结果，色彩回退兜底
   }
 }

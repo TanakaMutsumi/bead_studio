@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 
+import '../../../core/app_snack_bar.dart';
 import '../../../core/palette.dart';
 import '../../../core/pattern_model.dart';
 import '../../editor/grid_painter.dart';
@@ -745,10 +746,19 @@ class _ReviewStepState extends State<ReviewStep> {
   /// 留在页面 State，复核↔其他阶段往返不丢
   Widget _crossCountPicker() {
     const choices = [4, 5, 6, 8, 10, 12];
+    // 自定义列数（3/7/9…）不在快捷项里，initialValue 必须是菜单内的值
+    // （debug 断言直接抛），不在时传 null 仅失去初始高亮
+    final preset = choices.contains(widget.crossCount) ? widget.crossCount : null;
     return PopupMenuButton<int>(
       tooltip: "截图墙每行列数",
-      initialValue: widget.crossCount,
-      onSelected: widget.onCrossCountChange,
+      initialValue: preset,
+      onSelected: (v) {
+        if (v == -1) {
+          _promptCustomCrossCount();
+        } else {
+          widget.onCrossCountChange(v);
+        }
+      },
       itemBuilder: (_) => [
         for (final n in choices)
           PopupMenuItem(
@@ -756,9 +766,7 @@ class _ReviewStepState extends State<ReviewStep> {
             child: Row(
               children: [
                 Icon(
-                  n == widget.crossCount
-                      ? Icons.check
-                      : Icons.check,
+                  Icons.check,
                   size: 16,
                   color: n == widget.crossCount
                       ? Colors.blue
@@ -769,6 +777,17 @@ class _ReviewStepState extends State<ReviewStep> {
               ],
             ),
           ),
+        const PopupMenuItem(
+          value: -1,
+          child: Row(
+            children: [
+              SizedBox(width: 20),
+              Icon(Icons.edit, size: 16, color: Colors.black54),
+              SizedBox(width: 4),
+              Text("自定义…"),
+            ],
+          ),
+        ),
       ],
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -789,6 +808,25 @@ class _ReviewStepState extends State<ReviewStep> {
         ),
       ),
     );
+  }
+
+  /// 自定义每行列数：快捷菜单盖不住的值（3/7/9/16…）弹数字输入，钳到
+  /// 2-16（1 列截图墙没法看，>16 缩略图小于色号文本失去复核意义）
+  Future<void> _promptCustomCrossCount() async {
+    final input = await showDialog<int>(
+      context: context,
+      builder: (ctx) => const _CrossCountDialog(),
+    );
+    if (input == null) {
+      return; // 取消/空输入/非数字
+    }
+    if (input < 2 || input > 16) {
+      if (mounted) {
+        AppSnackBar.show(context, "每行格数须在 2-16 之间");
+      }
+      return;
+    }
+    widget.onCrossCountChange(input);
   }
 
   /// 图例标注数量（无条目/未填返回 null = 不对账）
@@ -931,4 +969,57 @@ class _ReviewStepState extends State<ReviewStep> {
 class _DelayedLongPressRecognizer extends LongPressGestureRecognizer {
   _DelayedLongPressRecognizer()
     : super(duration: const Duration(milliseconds: 500));
+}
+
+/// 自定义每行列数对话框。控制器由对话框自身 State 持有并在 dispose 释放：
+/// showDialog 的 Future 在 pop() 即刻完成，此刻退场动画仍在跑、TextField
+/// 还挂在树上，外层立刻 dispose 会在下一帧动画 tick 触发
+/// "TextEditingController was used after being disposed" 断言，连环炸成
+/// 整页 ErrorWidget（2026-11-06 模拟器实测红屏）；State.dispose 则等到
+/// 路由子树真正卸载（动画结束）才执行，天然安全
+class _CrossCountDialog extends StatefulWidget {
+  const _CrossCountDialog();
+
+  @override
+  State<_CrossCountDialog> createState() => _CrossCountDialogState();
+}
+
+class _CrossCountDialogState extends State<_CrossCountDialog> {
+  final _ctrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text("每行格数"),
+      content: TextField(
+        controller: _ctrl,
+        autofocus: true,
+        keyboardType: TextInputType.number,
+        maxLength: 2,
+        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+        decoration: const InputDecoration(
+          hintText: "输入 2 - 16 的整数",
+          counterText: "",
+        ),
+        onSubmitted: (t) => Navigator.pop(context, int.tryParse(t.trim())),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text("取消"),
+        ),
+        TextButton(
+          onPressed: () =>
+              Navigator.pop(context, int.tryParse(_ctrl.text.trim())),
+          child: const Text("确定"),
+        ),
+      ],
+    );
+  }
 }
