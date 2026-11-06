@@ -1920,7 +1920,7 @@ class _RestorePageState extends State<RestorePage> {
 
   /// 阶段一：选图入口（面板实现在 steps/pick_step.dart）
   Widget _buildPick() {
-    return PickStep(onPick: _pickImage, onXhsBytes: _loadImageBytes);
+    return PickStep(onPick: _pickImage, onLinkBytes: _loadImageBytes);
   }
 
   /// 命中选区把手（返回 0-7 索引，未命中返回 -1）

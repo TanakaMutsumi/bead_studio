@@ -40,6 +40,12 @@ Rect? photoLodCropRect({
   double maxCropLong = 2048,
 }) {
   final s = m.getMaxScaleOnAxis();
+  // 原图长边不大于显示图（未被 4096 上限压过）→ 全分辨率图与显示图
+  // 同尺寸，裁片不可能多出细节，LOD 永远不开（2026-11-06 修：原先只
+  // 看 zoom 阈值，小图在 zoom=1 也会白算一次裁片叠显同像素 JPEG）
+  if (math.max(srcW, srcH) <= dispLongPx) {
+    return null;
+  }
   // 阈值 = 显示图地平线：放大到每物理像素不足 1 个显示源像素才有
   // 细节可补（原图不大于显示上限时永远不触发，等价于无 LOD）
   if (s <= dispLongPx / physLongPx) {

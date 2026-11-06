@@ -3,16 +3,18 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
+import 'douyin_import_sheet.dart';
 import 'xhs_import_sheet.dart';
 
-/// 阶段一：选图入口（相册 / 拍照 / 小红书链接）
+/// 阶段一：选图入口（相册 / 拍照 / 小红书 / 抖音链接）
 class PickStep extends StatelessWidget {
   final void Function(ImageSource source) onPick;
 
-  /// 小红书链接导入：拿到选中图的原始字节，走与相册选图相同的下游链路
-  final void Function(Uint8List bytes) onXhsBytes;
+  /// 链接导入（小红书/抖音）：拿到选中图的原始字节，
+  /// 走与相册选图相同的下游链路
+  final void Function(Uint8List bytes) onLinkBytes;
 
-  const PickStep({super.key, required this.onPick, required this.onXhsBytes});
+  const PickStep({super.key, required this.onPick, required this.onLinkBytes});
 
   @override
   Widget build(BuildContext context) {
@@ -44,9 +46,15 @@ class PickStep extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             FilledButton.tonalIcon(
-              onPressed: () => showXhsImportSheet(context, onXhsBytes),
+              onPressed: () => showXhsImportSheet(context, onLinkBytes),
               icon: const Icon(Icons.link),
               label: const Text("小红书链接导入"),
+            ),
+            const SizedBox(height: 12),
+            FilledButton.tonalIcon(
+              onPressed: () => showDouyinImportSheet(context, onLinkBytes),
+              icon: const Icon(Icons.music_note),
+              label: const Text("抖音链接导入"),
             ),
           ],
         ),

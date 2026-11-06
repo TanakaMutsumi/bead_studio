@@ -51,6 +51,8 @@ UI 自动化测试走 `full-flow-test` skill（adb 驱动全流程：坐标表�
 | `lib/core/legend_detect.dart` | 图例区检测 v9（行游程法，app/模拟器唯一实现；canonical：宽 [1000,2048] native，窗外缩 1440） |
 | `lib/core/board_detect.dart` | 列序尺检测 detectRulerTop（板底硬边界，主体检测封底用） |
 | `lib/core/decode_image.dart` | 解码 Skia 优先 + 纯 Dart 回退（decodeImageRobust）；显示层重编码 JPEG + 长边限幅 |
+| `lib/core/xhs_link.dart` / `lib/core/douyin_link.dart` | 链接导入解析（免登录）：分享文案提取链接；xhs 走 img-bd 域名+保 notes_pre_post 段拿 6400px 原图；douyin 走 Baiduspider UA→`share/note/{id}` SSR→JSON-LD 拿 q75.webp 签名 URL（按对象 uri 去 CDN 镜像重，~30 天时效） |
+| `lib/features/restore/steps/xhs_import_sheet.dart` / `douyin_import_sheet.dart` / `link_image_viewer.dart` | 选图页链接导入面板（输入/解析/网格挑选三态，抖音同构）；共用大图查看器 `LinkImageViewerPage`（LOD 全分辨率裁片/双击 2.5×/保存相册，xhs/抖音共用） |
 
 ### restore_page.dart 内关键算法（排查问题先看这些）
 
@@ -90,6 +92,7 @@ UI 自动化测试走 `full-flow-test` skill（adb 驱动全流程：坐标表�
 
 | 性能三项复核（2026-11-05） | 识别耗时 / 识别期卡顿 / 放大卡顿 | 模拟器冷进程实测：**识别墙钟 4.7–9.3s**（含段图切分+OCR+配对），主线程 CPU 仅 1.45–2.64s（15–30%），spinner 连拍 diff 全程连续转动=无冻结；结果指纹稳定（16 对、C16=433，与基线零差）。**放大无卡顿**（显示位图已 4096 上限）：① 按钮缩放 ×6 连点 0.85s CPU/3.49s 墙钟（24%）；① 无捏合手势是设计如此（InteractiveViewer 属 ③）；③ 捏合放大 0.29s/1.73s（17%）、放大态平移 0.23s/次、快速平移 ×4 0.51s/2.73s（19%）——全部远离饱和。帧级 vsync 量化在 API36 模拟器无工具可用（timestats/--latency/gfxinfo 均不跟踪 Flutter 帧），卡顿结论以主线程 CPU 占用+画面连拍 diff 为准 |
 | 三项体验改进（2026-11-06） | ①图例总豆数 / ②识别期 UI 锁 / ③复核范围连选 | **已落地实测**（用户 2026-11-06 三点反馈）：① `LegendStep._totalChip` 摘要行右侧「共 N 颗」徽标（Listenable.merge 全部 countCtrl，敲键只重建徽标；有未填项括注「X 色未填」）——实测 test_pic5 共 1336 颗、改 C16 433→500 即时变 1403；② `_stageBusy`（_legendBusy/_detecting/_recognizing/_autoDetectBusy 任一）时 body 整体 `AbsorbPointer`+black38 遮罩+文案（`_busyBarrier`）——识别中重框选/挪九宫格/切模式全锁死；新 `_autoDetectBusy` 盖载入预框/魔法棒/主体自动框选（`_autoDetectSubject` 拆 `_autoDetectSubjectLocked`+try/finally 收锁），`_scanLegend`/`_recognize` 加重入守卫、`_switchPalette` 守卫扩到 _stageBusy（AppBar 不被遮罩拦）——实测图例识别 +0.3s 遮罩（lum 91.6→58.4=−38%）、识别中滑动被吞、锁随完成解除；③ 复核截图墙长按拖选改**范围连选**：`_dragAnchorCR` 锚点格 + `_applyDragRange`（锚点到指下格整片矩形，绝对语义可重放、自动滚屏重放全范围），`_tileCR`/`_cellAt` 重构——实测 4×2 对角拖=清除选中(8)（旧路径式~4-5 格）。回归：保存 bfx2→拼豆页 `已放 0/1307`（=④总豆数）零差。**注意**：test_pic5 ③框选 v4 后 bbox=[126,272 1344,1616] rowsCols=43×39（旧基线 50×45 未复核过 v4），识别 H7 对账——待办基线核对时一并看 |
+| 抖音链接导入（2026-11-06） | 选图页第 4 钮「抖音链接导入」 | **已落地实测**（用户指令：画质结论无论如何先上功能）——`core/douyin_link.dart`：分享文案提 `v.douyin.com` 短链 → **Baiduspider UA** 原生通道逐跳 302（普通 UA 只给数据加载已死的 JS 壳页）→ `iesdouyin.com/share/note/{id}/` SSR → JSON-LD `@type=article` image 数组 `q75.webp` 签名 URL（对象 uri 去重多 CDN 镜像；签名不挑客户端 ~30 天时效）；`steps/douyin_import_sheet.dart` 三态面板与 xhs 同构；查看器从 xhs 抽共用 `link_image_viewer.dart`（行为不变），顺手修 `photoLodCropRect` 守卫（原图长边≤显示上限 LOD 永不触发——原版小图 zoom=1 也过阈值，双击回整图会白算一次裁片）。**画质定案**：免登录通道天花板=q75.webp（分辨率=作者上传尺寸不缩水、PSNR~35dB、平坦色块色偏 0.6 级对识别零风险）；+2dB 的 q75.jpeg 仅浏览器页面内 detail JSON url_list 可得，免浏览器通道全试尽（detail API×多平台参数/aweme feed/api.amemv/aweme.snssdk/iesdouyin iteminfo/m.snssdk/lightbox/mobileweb）皆无。模拟器实测：耍起链接 3 图进①框图例、奶龙链接全流程至识别 18 色/1403 颗、xhs 假链接冒烟不回归；单测 8 项新增、全量 76 绿 |
 
 最新提交见 git log（五修在 f4bb17f 之后）。全流程实测通过：主页 → 还原五步 → 保存 → 板命名 → 拼豆页（`板 52×52 · 已放 0/1371` + 色条齐全），识别基线零差（H7=343）。
 
