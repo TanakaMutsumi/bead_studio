@@ -2,7 +2,7 @@
     <!-- 小红书链接导入：拉取笔记页与图片 CDN 均需联网 -->
     <uses-permission android:name="android.permission.INTERNET" />
     <application
-        android:label="bead_studio"
+        android:label="豆田"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

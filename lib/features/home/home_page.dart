@@ -79,7 +79,7 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("拼豆图案工作室")),
+      appBar: AppBar(title: const Text("豆田")),
       body: Padding(
         padding: const EdgeInsets.all(8),
         child: Column(

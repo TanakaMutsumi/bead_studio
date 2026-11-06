@@ -12,7 +12,7 @@ class BeadStudioApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: "拼豆图案工作室",
+      title: "豆田",
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorSchemeSeed: const Color(0xFF4FA8E8),

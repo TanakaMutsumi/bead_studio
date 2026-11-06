@@ -1,4 +1,4 @@
-# 拼豆图案工作室 (Bead Studio)
+# 豆田 (Bead Studio)
 
 图片 → 拼豆图案 的安卓工具（Flutter）。
 
