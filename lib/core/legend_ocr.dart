@@ -30,46 +30,11 @@ class OcrElem {
   int? pairedCount;
 
   ///< 色号侧配到的颗数
-  // 【临时调试】配对的另一侧元素引用（调试视图画连线用，正式版随调试功能一起移除）
-  OcrElem? pairedWith;
   String dbgText = "";
 
-  ///< 【临时调试】OCR 原始文本
+  ///< OCR 原始文本（合并去重按其长度保完整读数、括号剥离/救援链按其
+  /// contains("(") 分流——算法工作字段，非日志）
   OcrElem(this.seq, this.rect, this.code, this.count);
-}
-
-/// 【临时调试】一次图例 OCR 的调试快照（正式版随调试视图一起移除）
-class OcrDebugInfo {
-  final String source;
-
-  ///< 来源（自动扫描档位 / 手动框选）
-  final String imgPath;
-
-  ///< 喂给 ML Kit 的放大选区图路径
-  final int imgW, imgH;
-
-  ///< 放大图尺寸（元素框坐标系）
-  final List<OcrElem> elems;
-
-  ///< 全部识别元素（含配对引用）
-  final double selX, selY, selW, selH;
-
-  ///< 框选区（原图坐标）——复现框选用
-  final List<LegendBar> bars;
-
-  ///< 检测到的色条（颜色融合调试用）
-  OcrDebugInfo(
-    this.source,
-    this.imgPath,
-    this.imgW,
-    this.imgH,
-    this.elems,
-    this.selX,
-    this.selY,
-    this.selW,
-    this.selH, [
-    this.bars = const [],
-  ]);
 }
 
 /// 检测到的图例色条（颜色识别融合用）
@@ -426,9 +391,6 @@ List<(int, int)> pairLegendOcr(List<OcrElem> elems) {
     if (best != null) {
       best.used = true;
       c.pairedCount = best.count;
-      // 【临时调试】记录配对引用供调试视图画连线
-      c.pairedWith = best;
-      best.pairedWith = c;
     }
   }
 
@@ -467,9 +429,6 @@ List<(int, int)> pairLegendOcr(List<OcrElem> elems) {
     if (best != null) {
       best.used = true;
       c.pairedCount = best.count;
-      // 【临时调试】记录配对引用供调试视图画连线
-      c.pairedWith = best;
-      best.pairedWith = c;
     }
   }
 

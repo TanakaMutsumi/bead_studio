@@ -27,7 +27,6 @@ import '../editor/editor_page.dart';
 import '../palette_picker.dart';
 import '../works/works_page.dart';
 import 'legend_ocr_runner.dart';
-import 'ocr_debug_sheet.dart';
 import 'restore_painters.dart';
 import 'restore_types.dart';
 import 'steps/align_step.dart';
@@ -231,8 +230,6 @@ class _RestorePageState extends State<RestorePage> {
   var _legendSort = LegendSort.code;
 
   ///< 清单校对排序（仅展示视图，_legend 本身始终保持识别阅读序）
-  // 【临时调试】最近一次图例 OCR 的调试信息（放大图/元素/配对），正式版随调试视图一起移除
-  OcrDebugInfo? _ocrDebug;
   int _selHandleDrag = -1;
 
   ///< 选区把手拖拽中（-1=非把手，0-7=把手索引）
@@ -578,9 +575,6 @@ class _RestorePageState extends State<RestorePage> {
         _decoding = false;
         // 换图重置图区变换（上一张图的缩放/平移不带到新图）
         _viewerCtrl.value = Matrix4.identity();
-        // 换图即清空调试快照：新图识别前 AppBar 不显示旧图的调试入口，
-        // 否则点开看到的是上一张图的放大图/元素，误导排障
-        _ocrDebug = null;
         _stage = RestoreStage.legend;
       });
       // 载入即自动预框图例区（省一次手动框选）；识别不到就保持空选区，
@@ -794,13 +788,6 @@ class _RestorePageState extends State<RestorePage> {
           final oldCount = int.tryParse(old.countCtrl.text) ?? 0;
           if (oldCount == 0 && count > 0) {
             old.countCtrl.text = count.toString();
-            debugPrint(
-              "【临时调试】图例重复色号 ${_palette.colors[idx].id}=$count 覆盖 0 值锚点",
-            );
-          } else {
-            debugPrint(
-              "【临时调试】图例重复色号 ${_palette.colors[idx].id}=$count 被去重丢弃（图例重复印刷/误读）",
-            );
           }
         }
         final byOcr = [for (final idx in byIdx.keys) byIdx[idx]!];
@@ -859,8 +846,6 @@ class _RestorePageState extends State<RestorePage> {
     if (image == null) {
       return null;
     }
-    // 【临时调试】每次识别尝试先清旧快照：本次失败不留上一张图的旧数据
-    _ocrDebug = null;
     final run = await runLegendOcr(
       image,
       _palette,
@@ -870,7 +855,6 @@ class _RestorePageState extends State<RestorePage> {
       rh,
       source: source,
     );
-    _ocrDebug = run.debug;
     // 色卡外色号（如 MARD 卡没有的 H7）：无法入清单，明确提示用户手工补
     if (run.orphanNotes.isNotEmpty && mounted) {
       final names = run.orphanNotes.toSet().join("、");
@@ -960,11 +944,6 @@ class _RestorePageState extends State<RestorePage> {
       return;
     }
     final det = await compute(detectGridInIsolate, image);
-    // 【临时调试】初始化检测全参数打 logcat（格距初值排查），正式版移除
-    debugPrint(
-      "【临时调试】initMiniGrid img=${image.width}x${image.height} "
-      "det=${det == null ? "null" : "px=${det.pitchX.toStringAsFixed(2)} py=${det.pitchY.toStringAsFixed(2)} ox=${det.offsetX.toStringAsFixed(1)} oy=${det.offsetY.toStringAsFixed(1)} ${det.cols}x${det.rows}"}",
-    );
     if (!mounted) {
       return;
     }
@@ -1344,8 +1323,6 @@ class _RestorePageState extends State<RestorePage> {
       // 单图调用要数秒×格数，见 ocrCells 头注），每批回调即时上报进度；
       // 瓦内仍读不到的才落色彩回退。格距错得离谱（未权威格 >900）时整轮
       // 跳过——批量大且结果多半无意义
-      var ocrHit2 = 0;
-      var rescueDiff = 0;
       var pass2Done = 0;
       final retryIdx = <int>[
         for (var i = 0; i < grid.length; i++)
@@ -1372,27 +1349,6 @@ class _RestorePageState extends State<RestorePage> {
                   if (!authoritative[i]) {
                     authoritative[i] = true;
                     grid[i] = hit;
-                    ocrHit2++;
-                    // 补读命中与色彩判据的分歧数（观测用）：色彩侧同款
-                    // 采样+量化对比，分歧格打 logcat 供对账
-                    final (sr, sg, sb) = _sampleCenter(
-                      centers[i].dx,
-                      centers[i].dy,
-                      cellRects[i].width,
-                      cellRects[i].height,
-                    );
-                    final (cIdx, _) = quantizer.nearestWithin(
-                      sr,
-                      sg,
-                      sb,
-                      candidates.isEmpty ? null : candidates,
-                    );
-                    if (cIdx != hit) {
-                      rescueDiff++;
-                      debugPrint(
-                        "【临时调试】补读 r${i ~/ cols}c${i % cols}: $txt -> ${_palette.colors[hit].id}（色彩判 ${_palette.colors[cIdx].id}）",
-                      );
-                    }
                   }
                 }
               });
@@ -1479,18 +1435,6 @@ class _RestorePageState extends State<RestorePage> {
       // 复核截图数据源异步解码，不阻塞进复核页（_displayBytes 是长边
       // 限幅显示版，原图直解码会超 GLES 2048 纹理上限）
       _loadCellSrc();
-      // 【临时调试】识别计数打 logcat（基线比对用），正式版移除
-      final dbgCnt = <int, int>{};
-      for (final g in grid) {
-        dbgCnt[g] = (dbgCnt[g] ?? 0) + 1;
-      }
-      final dbgPairs = [
-        for (final k in dbgCnt.keys.toList()..sort())
-          "${k < 0 ? "BLANK" : _palette.colors[k].id}=${dbgCnt[k]}",
-      ].join(" ");
-      debugPrint(
-        "【临时调试】识别 $cols x $rows | OCR命中 $ocrHit+${ocrHit2}(补读,与色彩分歧$rescueDiff)/${cols * rows} | $dbgPairs",
-      );
     });
   }
 
@@ -1672,7 +1616,6 @@ class _RestorePageState extends State<RestorePage> {
       return;
     }
     final model = _model!;
-    final n = _picked.length;
     setState(() {
       for (final i in _picked) {
         model.grid[i] = target;
@@ -1683,17 +1626,6 @@ class _RestorePageState extends State<RestorePage> {
       }
       _picked.clear();
     });
-    // 【临时调试】归类执行打 logcat（复核纠错链路验证用），正式版移除
-    final cnt = <int, int>{};
-    for (final g in model.grid) {
-      cnt[g] = (cnt[g] ?? 0) + 1;
-    }
-    debugPrint(
-      "【临时调试】手工归类 $n 格 -> ${target < 0 ? "空白" : _palette.colors[target].id} | ${[
-        for (final k in cnt.keys.toList()..sort())
-          "${k < 0 ? "BLANK" : _palette.colors[k].id}=${cnt[k]}",
-      ].join(" ")}",
-    );
   }
 
   /// 「归类到…」是否还有有效目标：图例色或出现色快照非空（可归色），
@@ -1910,18 +1842,6 @@ class _RestorePageState extends State<RestorePage> {
                 onPressed: _autoSelectLegend,
                 icon: const Icon(Icons.auto_awesome),
                 tooltip: "自动框选图例",
-              ),
-            // 【临时调试】图例 OCR 调试入口：识别后即可查看放大图/元素/配对，正式版移除
-            if (_stage == RestoreStage.legend && _ocrDebug != null)
-              IconButton(
-                onPressed: () {
-                  final dbg = _ocrDebug;
-                  if (dbg != null) {
-                    showOcrDebugSheet(context, dbg, _palette);
-                  }
-                },
-                icon: const Icon(Icons.bug_report),
-                tooltip: "OCR 调试",
               ),
             if (_stage == RestoreStage.legend ||
                 _stage == RestoreStage.align ||
@@ -2981,13 +2901,6 @@ class _RestorePageState extends State<RestorePage> {
     );
     sel = _snapSelToGrid(sel);
     final cr = _plannedColsRows(sel);
-    // 【临时调试】自动框选结果打 logcat（对拍 sim/排查吸附偏移），正式版移除
-    debugPrint(
-      "【临时调试】autoDetectSubject img=$w x $h legendTop=${legendTop.toStringAsFixed(0)} "
-      "bbox=[${bbox.rawLeft},${bbox.rawTop.toInt()} ${bbox.rawRight},${bbox.rawBottom.toInt()}] "
-      "trim=[${bbox.left},${bbox.top} ${bbox.right},${bbox.bottom}] "
-      "rowsCols=${cr == null ? "null" : "${cr.$2}x${cr.$1}"}",
-    );
     if (cr == null) {
       return null;
     }

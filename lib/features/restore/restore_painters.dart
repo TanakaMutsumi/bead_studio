@@ -3,7 +3,6 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
-import '../../core/legend_ocr.dart';
 import '../../core/pattern_model.dart';
 
 /// 四角双线性插值：单位网格坐标 (u,v)∈[0,1]² -> 平面坐标
@@ -94,55 +93,6 @@ class SelPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant SelPainter oldDelegate) =>
       oldDelegate.rect != rect || oldDelegate.ctrl != ctrl;
-}
-
-/// 【临时调试】OCR 元素叠加层：绿框=色号、蓝框=颗数、红线=配对连线
-///
-/// 画布尺寸与放大图 1:1（外层 SizedBox 定死 imgW×imgH），元素框直接绘制。
-/// 正式版随调试功能一起移除。
-class OcrDebugPainter extends CustomPainter {
-  final List<OcrElem> elems;
-
-  final List<LegendBar> bars;
-
-  ///< 检测到的色条（橙色框，颜色融合调试用）
-  OcrDebugPainter(this.elems, [this.bars = const []]);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    canvas.clipRect(Offset.zero & size);
-    final codeP = Paint()
-      ..color = Colors.green
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
-    final numP = Paint()
-      ..color = Colors.blue
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
-    final lineP = Paint()
-      ..color = Colors.red
-      ..strokeWidth = 2;
-    final barP = Paint()
-      ..color = Colors.deepOrange
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3;
-    for (final b in bars) {
-      canvas.drawRect(b.rect, barP);
-    }
-    for (final e in elems) {
-      if (e.rect.width <= 0 || e.rect.height <= 0) {
-        continue; // 几何框退化的元素画不了框
-      }
-      canvas.drawRect(e.rect, e.code != null ? codeP : numP);
-      final other = e.pairedWith;
-      if (e.code != null && other != null && other.rect.width > 0) {
-        canvas.drawLine(e.rect.center, other.rect.center, lineP);
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant OcrDebugPainter oldDelegate) => true;
 }
 
 /// 网格覆盖层：把识别网格线画在图上，肉眼核对是否压住真实格线

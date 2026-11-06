@@ -16,9 +16,6 @@ class LegendOcrRun {
   /// 配对成功的 [(色号调色板索引, 颗数)] 按阅读顺序；异常/无配对为 null
   final List<(int, int)>? pairs;
 
-  /// 【临时调试】调试快照（放大图 + 元素 + 框选区），异常路径也可能非空
-  final OcrDebugInfo? debug;
-
   /// 色卡外色号（如 MARD 卡没有的 H7），调用方提示用户手工补
   final List<String> orphanNotes;
 
@@ -26,8 +23,7 @@ class LegendOcrRun {
   /// 「识别不完整建议重新框选」
   final int segFails;
 
-  const LegendOcrRun(this.pairs, this.debug, this.orphanNotes,
-      [this.segFails = 0]);
+  const LegendOcrRun(this.pairs, this.orphanNotes, [this.segFails = 0]);
 }
 
 /// 分段重活打包（compute isolate 入参）：裁剪/放大/色条检测/PNG 编码
@@ -48,7 +44,7 @@ class LegendPrepArgs {
   ///< 各段在全放大图的起止（含重叠；单发路径只有整图一段）
   final String tmpDir;
 
-  ///< 临时目录（段 RGBA/调试 PNG 在 isolate 内落盘，不走 isolate 出参）
+  ///< 临时目录（段 RGBA 在 isolate 内落盘，不走 isolate 出参）
   const LegendPrepArgs(
     this.image,
     this.x,
@@ -64,7 +60,7 @@ class LegendPrepArgs {
 
 /// [prepLegendOcr] 的结果（isolate 出参）
 ///
-/// 段字节与调试 PNG 都在 isolate 内落盘、只回路径：数十 MB 字节数组
+/// 段字节在 isolate 内落盘、只回路径：数十 MB 字节数组
 /// 跨 isolate 回传会在主 isolate 反序列化，主线程二次冻结（2026-11-03
 /// 实测 prep 出参 90MB 级回传，主线程与 OCR 调用同段满载）
 class LegendPrepResult {
@@ -74,17 +70,14 @@ class LegendPrepResult {
   final List<LegendBar> bars;
 
   ///< 色条检测（在全放大图坐标系）
-  final String debugPngPath;
-
-  ///< 全放大图 PNG 路径（调试快照/调试面板底图，isolate 内已写盘）
   final List<String> segPaths;
 
   ///< 各段原始 RGBA 文件路径（原生通道按文件读，段宽 = segX1[i]-segX0[i]、
   ///< 段高 = scaled.height）
-  LegendPrepResult(this.scaled, this.bars, this.debugPngPath, this.segPaths);
+  LegendPrepResult(this.scaled, this.bars, this.segPaths);
 }
 
-/// 裁剪+放大+色条检测+段落盘+PNG 落盘（顶层函数供 compute isolate 调用）
+/// 裁剪+放大+色条检测+段落盘（顶层函数供 compute isolate 调用）
 LegendPrepResult prepLegendOcr(LegendPrepArgs a) {
   final crop = img.copyCrop(
     a.image,
@@ -95,8 +88,6 @@ LegendPrepResult prepLegendOcr(LegendPrepArgs a) {
   );
   final scaled = img.copyResize(crop, width: (crop.width * a.scale).round());
   final bars = detectLegendBars(scaled);
-  final debugPngPath = "${a.tmpDir}/legend_ocr.png";
-  File(debugPngPath).writeAsBytesSync(img.encodePng(scaled));
   final segPaths = <String>[
     for (var i = 0; i < a.segX0.length; i++)
       "${a.tmpDir}/legend_seg_$i.rgba",
@@ -113,7 +104,7 @@ LegendPrepResult prepLegendOcr(LegendPrepArgs a) {
         .getBytes(order: img.ChannelOrder.rgba);
     File(segPaths[i]).writeAsBytesSync(bytes);
   }
-  return LegendPrepResult(scaled, bars, debugPngPath, segPaths);
+  return LegendPrepResult(scaled, bars, segPaths);
 }
 
 /// OCR 图例选区 -> [(印刷色号调色板索引, 印刷颗数)] 按阅读顺序
@@ -136,9 +127,6 @@ Future<LegendOcrRun> runLegendOcr(
   double rh, {
   String source = "手动框选",
 }) async {
-  var dbgPath = ""; // 【临时调试】异常路径已产出的放大图路径（写盘成功后才有值）
-  var dbgW = 0;
-  var dbgH = 0;
   try {
     // 小字放大提高识别率：按高度放大到 ~960px（数字高 ~120px+）。
     // 固定 ×2/×3 在小字图例（色号字高 ~20 原图像素）下分辨率不足，
@@ -200,9 +188,6 @@ Future<LegendOcrRun> runLegendOcr(
         tmpDir,
       ),
     );
-    dbgPath = prep.debugPngPath; // 【临时调试】记下放大图，异常路径的快照也要能看图
-    dbgW = prep.scaled.width;
-    dbgH = prep.scaled.height;
     final scaled = prep.scaled;
 
     // 精确 + 混淆变体查找表（图例 OCR 与格子 OCR 共用）
@@ -314,16 +299,7 @@ Future<LegendOcrRun> runLegendOcr(
     removeNestedFragments(elems);
     final ocrFailed = segFails >= prep.segPaths.length;
     final orphanNotes = <String>[];
-    var fixedCount = 0,
-        gapFixed = 0,
-        belowFixed = 0,
-        gridFixed = 0,
-        rightFixed = 0,
-        parenStripped = 0,
-        parenCount = 0,
-        bareCount = 0;
-    var layoutNote = "";
-    final belowDbg = <String>[]; // 【临时调试】下方/右侧 OCR 救援排障行
+    var parenCount = 0, bareCount = 0;
     if (!ocrFailed) {
       // 掉字母色号修复：深底反白/浅底浅字色号被 ML Kit 吞掉首字母，读成
       // 无括号纯数字 count（真颗数全部带括号 (N)）。当图内带括号颗数占绝对
@@ -347,7 +323,6 @@ Future<LegendOcrRun> runLegendOcr(
           fixed.dbgText = "${e.dbgText}→${palette.colors[best].id}(色块补全)";
           elems.remove(e);
           elems.add(fixed);
-          fixedCount++;
         }
       }
       // 统一布局（new1 型图纸：图例所有条目格式一致）：由已读元素推断颗数
@@ -359,7 +334,7 @@ Future<LegendOcrRun> runLegendOcr(
       // 都没有色号元素，说明该条目的色号整条被 ML Kit 吞掉。裁空隙小区
       // 放大后单独再识别（原图 + 反色两轮），读出的色号补回元素表参与
       // 最终配对
-      gapFixed = await fixOrphanCountCodes(
+      await fixOrphanCountCodes(
         palette,
         elems,
         scaled,
@@ -367,44 +342,38 @@ Future<LegendOcrRun> runLegendOcr(
         tmpDir,
         orphanNotes,
         layout: layout,
-        dbg: belowDbg,
       );
       // 孤儿色号重读（对称救援）：色号近旁无颗数 = 颗数被 ML Kit 整条吞掉
       //（wx1：B22 的 5、C21/F7/H22 的 6），裁色号下方小区放大重读补回
-      belowFixed = await fixOrphanCodeCounts(
+      await fixOrphanCodeCounts(
         elems,
         scaled,
         tmpDir,
-        dbg: belowDbg,
       );
       // 网格盲区补全：行列都在而完全静默的格位（白底浅字整条吞掉，new1
       // C23）按格位重读补回色号；右侧布局的颗数由下方布局块的模板位补读
-      gridFixed = await fixBlindGridCodes(
+      await fixBlindGridCodes(
         elems,
         prep.bars,
         scaled,
         codeMap,
         tmpDir,
         orphanNotes,
-        dbg: belowDbg,
       );
       if (layout != null) {
         // 括号格式成立时剥离首尾幻影 1（"(53)"→"1531"、"(39)"→"(391"
         // 型括号弧线误读，证据制：对侧括号在场或边缘字形窄于数字）；
         // 右侧布局中颗数被吞的条目按模板距离裁色号右侧小区重读（下方
         // 布局已由 fixOrphanCodeCounts 覆盖）
-        parenStripped = applyPhantomParenStrip(elems, layout.parens, scaled);
+        applyPhantomParenStrip(elems, layout.parens, scaled);
         if (layout.countsRight) {
-          rightFixed = await fixRightCountsByLayout(
+          await fixRightCountsByLayout(
             elems,
             scaled,
             tmpDir,
             layout,
-            dbg: belowDbg,
           );
         }
-        layoutNote =
-            " 布局(${layout.countsRight ? "右" : "下"}dx${layout.dx.toInt()}${layout.parens ? "括号" : ""})";
       }
     }
     final paired = ocrFailed
@@ -467,87 +436,8 @@ Future<LegendOcrRun> runLegendOcr(
     // OCR 读出的色号/配对颗数一律优先于颜色猜测；无色条时结果不变
     final bars = prep.bars;
     final fused = fuseLegendBars(palette, elems, paired, bars);
-    // 【临时调试】保存本次 OCR 快照（放大图 + 元素 + 色条 + 框选区），正式版移除
-    final debug = OcrDebugInfo(
-      ocrFailed
-          ? "$source（OCR异常）"
-          : segFails > 0
-              ? "$source（段$segFails/${prep.segPaths.length}失败）"
-              : source,
-      prep.debugPngPath,
-      scaled.width,
-      scaled.height,
-      elems,
-      rx,
-      ry,
-      rw,
-      rh,
-      bars,
-    );
-    // 【临时调试】元素明细同时打 logcat 与写文件（个别环境 logcat 收不到
-    // flutter tag，文件可 adb pull，像素判读调试面板太费劲），正式版移除
-    final dbgLines = <String>[
-      "框选($source) $rx,$ry ${rw}x$rh 段${prep.segPaths.length}(失败$segFails, 去重${tagged.length - elems.length}) elems=${elems.length}(色块补全$fixedCount, 空隙OCR$gapFixed, 下方OCR$belowFixed, 盲格OCR$gridFixed, 右侧OCR$rightFixed, 括号剥$parenStripped, 括号颗数$parenCount/裸数字$bareCount) 色条${bars.length}条 img=${scaled.width}x${scaled.height}${ocrFailed ? " OCR异常" : ""}$layoutNote"
-          "${orphanNotes.isEmpty ? "" : " 色卡外色号=[${orphanNotes.toSet().join(" ")}]"}",
-      ...belowDbg, // 【临时调试】下方 OCR 救援排障行（正式版随 dbg 参数移除）
-    ];
-    for (final e in elems) {
-      final kind = e.code != null
-          ? "code:${palette.colors[e.code!].id}"
-          : "count:${e.count}";
-      dbgLines.add(
-        "elem $kind raw=\"${e.dbgText}\" "
-        // 小数 rect：剥离/连通域决策对亚像素框敏感（round 差 1px 即翻转），
-        // 整数截断的日志无法在宿主机精确复现设备端行为
-        "rect=(${e.rect.left.toStringAsFixed(1)},${e.rect.top.toStringAsFixed(1)} "
-        "${e.rect.width.toStringAsFixed(1)}x${e.rect.height.toStringAsFixed(1)})",
-      );
-    }
-    for (final b in bars) {
-      final cand = b.colorIdx == null ? "✗" : palette.colors[b.colorIdx!].id;
-      final ce = b.codeElem == null
-          ? ""
-          : " 色号:${palette.colors[b.codeElem!.code!].id}";
-      final cn = b.countElem == null ? "" : " 颗数:${b.countElem!.count}";
-      dbgLines.add(
-        "bar 颜色候选$cand rgb=(${b.r},${b.g},${b.b}) "
-        "rect=(${b.rect.left.toInt()},${b.rect.top.toInt()} "
-        "${b.rect.width.toInt()}x${b.rect.height.toInt()})$ce$cn",
-      );
-    }
-    final unpaired = elems
-        .where((e) => e.code != null && e.pairedCount == null)
-        .map((e) => "${palette.colors[e.code!].id}(${e.dbgText})")
-        .join(" ");
-    dbgLines.add(
-      "result=${fused.length}对 未配色号=[${unpaired.isEmpty ? "无" : unpaired}] ${[
-        for (final (idx, n) in fused) "${palette.colors[idx].id}=$n"
-      ].join(" ")}",
-    );
-    for (final l in dbgLines) {
-      debugPrint("【临时调试】$l");
-    }
-    File("${tmpDir}/legend_ocr_log.txt").writeAsStringSync(
-      dbgLines.join("\n"),
-    );
-    return LegendOcrRun(fused, debug, orphanNotes, segFails);
+    return LegendOcrRun(fused, orphanNotes, segFails);
   } catch (_) {
-    // 【临时调试】识别抛异常也记快照（source 标"异常"）：调试视图能看到放大图 + 0 个
-    // 元素——比入口直接消失更有排障价值；放大图都没产出（crop 就失败）则保持 null
-    if (dbgPath.isNotEmpty) {
-      final debug = OcrDebugInfo(
-        "$source（异常）",
-        dbgPath,
-        dbgW,
-        dbgH,
-        const [],
-        rx,
-        ry,
-        rw,
-        rh,
-      );
-      return LegendOcrRun(null, debug, const []);
-    }
-    return const LegendOcrRun(null, null, []);
+    return const LegendOcrRun(null, []);
   }
 }
