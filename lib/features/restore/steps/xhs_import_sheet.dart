@@ -1,8 +1,10 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard;
+import 'package:image/image.dart' as img;
 
 import '../../../core/app_snack_bar.dart';
 import '../../../core/decode_image.dart';
@@ -366,6 +368,14 @@ class _XhsImportSheetState extends State<_XhsImportSheet> {
 
 enum _Phase { input, loading, pick }
 
+/// LOD 裁片 isolate 端：全分辨率图上取矩形 → JPEG q92（顶层函数供
+/// compute 调用；img.Image 随消息拷入 isolate，124MB 级拷贝 ~0.1s 可接受）
+Uint8List _cropJpg((img.Image, int, int, int, int) a) {
+  final (im, x, y, w, h) = a;
+  final crop = img.copyCrop(im, x: x, y: y, width: w, height: h);
+  return Uint8List.fromList(img.encodeJpg(crop, quality: 92));
+}
+
 /// 全屏原图查看：黑底，缩放与 app 其他图显同款——双指捏合 + 外置
 /// ZoomControls 条（放大/缩小/还原）+ 双击以点击处为锚放大/回整图；
 /// 右上角下载按钮存相册
@@ -401,6 +411,23 @@ class _XhsViewerPageState extends State<_XhsViewerPage> {
   Offset _canvasOrigin = Offset.zero;
   Offset _dblAnchor = Offset.zero;
 
+  ///< 全分辨率解码图（LOD 裁片源；显示上限 4096 压不住原图时放大
+  ///< 到地平线以上就按可见区域裁它叠显，清晰度推到原图本身）
+  img.Image? _full;
+
+  ///< 最大缩放倍率（build 期间按 原图地平线×2 夹 [8,16] 动态定：
+  ///< 5364px 图 ~10×、6400px ~12×，小图维持 8——倍率随导入图大小走）
+  double _maxZoom = kPhotoMaxZoom;
+
+  ///< 当前 LOD 裁片字节与其覆盖的画布矩形（null = 未激活/已清除）
+  Uint8List? _cropBytes;
+  Rect? _cropCanvasRect;
+  var _cropBusy = false;
+  var _cropPending = false;
+
+  ///< 设备像素比速记（build 期间赋值，LOD 阈值/倍率推导用）
+  double _dpr = 1.0;
+
   @override
   void initState() {
     super.initState();
@@ -417,7 +444,8 @@ class _XhsViewerPageState extends State<_XhsViewerPage> {
     try {
       final bytes = await widget.ensureOriginal(widget.image);
       // 显示层重编码走全局 4096 上限（kDisplayMaxEdge，2026-11-05 起全
-      // app 显示统一放宽）；保存/识别用的都是未限幅原始字节
+      // app 显示统一放宽）；保存/识别用的都是未限幅原始字节。decoded
+      // 全分辨率图留住当 LOD 裁片源（放大超地平线后可见区裁片叠显）
       final (decoded, display) = await decodeForDisplay(bytes);
       if (!mounted) {
         return;
@@ -425,6 +453,7 @@ class _XhsViewerPageState extends State<_XhsViewerPage> {
       setState(() {
         _bytes = bytes;
         _display = display;
+        _full = decoded;
         _dispW = decoded.width;
         _dispH = decoded.height;
       });
@@ -460,6 +489,7 @@ class _XhsViewerPageState extends State<_XhsViewerPage> {
   void _onDoubleTap() {
     if (_ctrl.value.getMaxScaleOnAxis() > 1.01) {
       _ctrl.value = Matrix4.identity();
+      _maybeCrop();
       return;
     }
     // 图区坐标 → 画布盒坐标（ZoomControls.zoomAt 的锚点/夹限按画布盒算）
@@ -472,9 +502,87 @@ class _XhsViewerPageState extends State<_XhsViewerPage> {
       viewport: _canvasSize,
       content: _canvasSize,
       factor: 2.5,
-      maxScale: kPhotoMaxZoom,
+      maxScale: _maxZoom,
       anchor: anchor,
     );
+    _maybeCrop();
+  }
+
+  /// LOD 裁片：缩放过显示图地平线后，取可见区域对应的全分辨率矩形，
+  /// isolate 裁片重编码叠显（叠在限幅显示图之上、按画布坐标对位）。
+  /// 缩回阈值以下/平移仍在现有裁片覆盖内则不动。
+  Future<void> _maybeCrop() async {
+    final full = _full;
+    if (full == null || _canvasSize == Size.zero || _display == null) {
+      return;
+    }
+    if (_cropBusy) {
+      _cropPending = true;
+      return;
+    }
+    final dispLong = math
+        .min(math.max(_dispW, _dispH), kDisplayMaxEdge)
+        .toDouble();
+    final physLong = _canvasSize.longestSide * _dpr;
+    final rect = photoLodCropRect(
+      m: _ctrl.value,
+      canvas: _canvasSize,
+      srcW: full.width,
+      srcH: full.height,
+      dispLongPx: dispLong,
+      physLongPx: physLong,
+    );
+    if (rect == null) {
+      if (_cropBytes != null) {
+        setState(() {
+          _cropBytes = null;
+          _cropCanvasRect = null;
+        });
+      }
+      return;
+    }
+    // 裁片覆盖的画布矩形（源矩形放回画布坐标）
+    final canvasRect = Rect.fromLTRB(
+      rect.left * _canvasSize.width / full.width,
+      rect.top * _canvasSize.height / full.height,
+      rect.right * _canvasSize.width / full.width,
+      rect.bottom * _canvasSize.height / full.height,
+    );
+    final covered = _cropCanvasRect;
+    if (_cropBytes != null &&
+        covered != null &&
+        covered.contains(canvasRect.topLeft) &&
+        covered.contains(canvasRect.bottomRight)) {
+      return; // 平移未超出已有裁片覆盖，无需重算
+    }
+    _cropBusy = true;
+    try {
+      final bytes = await compute(
+        _cropJpg,
+        (
+          full,
+          rect.left.round(),
+          rect.top.round(),
+          rect.width.round().clamp(1, full.width),
+          rect.height.round().clamp(1, full.height),
+        ),
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _cropBytes = bytes;
+        _cropCanvasRect = canvasRect;
+      });
+    } catch (_) {
+      // 裁片失败保持限幅显示图，不影响交互
+    } finally {
+      _cropBusy = false;
+    }
+    if (_cropPending) {
+      _cropPending = false;
+      _maybeCrop();
+    }
   }
 
   @override
@@ -547,19 +655,45 @@ class _XhsViewerPageState extends State<_XhsViewerPage> {
                             (c.maxWidth - cw) / 2,
                             (c.maxHeight - ch) / 2,
                           );
+                          _dpr = MediaQuery.devicePixelRatioOf(ctx);
+                          // 最大倍率随原图大小走：原图地平线（原图像素/
+                          // 屏幕物理像素）×2 夹 [8,16]（5364px ~10×、
+                          // 6400px ~12×；LOD 裁片保证放大后依然清晰）
+                          _maxZoom = (math.max(_dispW, _dispH) /
+                                  (math.max(cw, ch) * _dpr) *
+                                  2)
+                              .clamp(kPhotoMaxZoom, 16.0)
+                              .toDouble();
                           return GestureDetector(
                             onDoubleTapDown: (d) => _dblAnchor = d.localPosition,
                             onDoubleTap: _onDoubleTap,
                             child: Center(
                               child: InteractiveViewer(
                                 transformationController: _ctrl,
-                                maxScale: kPhotoMaxZoom,
+                                maxScale: _maxZoom,
+                                onInteractionEnd: (_) => _maybeCrop(),
                                 child: SizedBox(
                                   width: cw,
                                   height: ch,
-                                  child: Image.memory(
-                                    _display!,
-                                    fit: BoxFit.fill,
+                                  child: Stack(
+                                    children: [
+                                      Positioned.fill(
+                                        child: Image.memory(
+                                          _display!,
+                                          fit: BoxFit.fill,
+                                        ),
+                                      ),
+                                      // LOD 裁片：全分辨率可见区叠在限幅
+                                      // 显示图上，按画布坐标精确对位
+                                      if (_cropBytes != null)
+                                        Positioned.fromRect(
+                                          rect: _cropCanvasRect!,
+                                          child: Image.memory(
+                                            _cropBytes!,
+                                            fit: BoxFit.fill,
+                                          ),
+                                        ),
+                                    ],
                                   ),
                                 ),
                               ),
@@ -581,7 +715,8 @@ class _XhsViewerPageState extends State<_XhsViewerPage> {
                               controller: _ctrl,
                               contentSize: () => _canvasSize,
                               viewportSize: () => _canvasSize,
-                              maxScale: kPhotoMaxZoom,
+                              maxScale: _maxZoom,
+                              onChanged: _maybeCrop,
                             ),
                             const SizedBox(height: 8),
                             const Text(

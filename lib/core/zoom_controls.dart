@@ -14,6 +14,68 @@ import 'package:flutter/rendering.dart' show RenderStack;
 /// 不适用本常量（各页维持 10/12）。
 const double kPhotoMaxZoom = 8;
 
+/// 放大后按可见区域取全分辨率裁片（LOD）的源矩形计算。
+///
+/// 照片显示层被 [kDisplayMaxEdge] 限幅，缩放超过显示图地平线（显示源
+/// 像素 ÷ 屏幕物理像素）后只是像素化放大；若原图更大，按本函数算出
+/// 可见区域对应的**原图像素**矩形、裁片重编码叠显，可把清晰度地平线
+/// 推到原图本身（5364px 图放大极限相应从 8 升到 ~10×）。
+///
+/// 返回 null = 缩放未过阈值（显示图本身已够清晰）或可见区不在画布内，
+/// 调用方应清除已有裁片。
+///
+/// [m] 当前变换（InteractiveViewer 控制器值）；[canvas] 画布逻辑尺寸
+/// （视口=画布盒的几何）；[srcW]/[srcH] 原图像素尺寸；[dispLongPx]
+/// 显示图长边像素（≤ kDisplayMaxEdge 的那份）；[physLongPx] 画布长边
+/// 物理像素（逻辑 × dpr）；[margin] 可见区四周外扩比例（平移时免重算
+/// 的缓冲）；[maxCropLong] 裁片长边上限（纹理/编码开销）。
+Rect? photoLodCropRect({
+  required Matrix4 m,
+  required Size canvas,
+  required int srcW,
+  required int srcH,
+  required double dispLongPx,
+  required double physLongPx,
+  double margin = 0.25,
+  double maxCropLong = 2048,
+}) {
+  final s = m.getMaxScaleOnAxis();
+  // 阈值 = 显示图地平线：放大到每物理像素不足 1 个显示源像素才有
+  // 细节可补（原图不大于显示上限时永远不触发，等价于无 LOD）
+  if (s <= dispLongPx / physLongPx) {
+    return null;
+  }
+  final t = m.getTranslation();
+  final vis = Rect.fromLTWH(
+        -t.x / s,
+        -t.y / s,
+        canvas.width / s,
+        canvas.height / s,
+      ).intersect(Offset.zero & canvas);
+  if (vis.isEmpty) {
+    return null;
+  }
+  final padded = vis
+      .inflate(math.max(vis.width, vis.height) * margin)
+      .intersect(Offset.zero & canvas);
+  var r = Rect.fromLTRB(
+    padded.left * srcW / canvas.width,
+    padded.top * srcH / canvas.height,
+    padded.right * srcW / canvas.width,
+    padded.bottom * srcH / canvas.height,
+  );
+  final long = math.max(r.width, r.height);
+  if (long > maxCropLong) {
+    final k = maxCropLong / long;
+    r = Rect.fromCenter(
+      center: r.center,
+      width: r.width * k,
+      height: r.height * k,
+    );
+  }
+  return r;
+}
+
 /// 可缩放画布的缩放控制组：放大 / 缩小 / 还原全幅，横排三钮（外置用）
 ///
 /// 以当前画面（视口）中心为锚缩放——中心处内容不动，画面向外扩张/
