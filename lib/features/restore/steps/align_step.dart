@@ -48,12 +48,18 @@ class AlignStep extends StatelessWidget {
 
   ///< 四角重置回默认
   final void Function(bool v) onBlankChanged;
+  final double step;
+
+  ///< 微调步长档位（图片像素；格子大小与上下左右微移共用）
+  final void Function(double v) onStepChange;
+
+  ///< 步长档位切换
   final void Function(double step) onAdjustPitch;
 
-  ///< 格子大小 ±（步进 ±0.2 图片像素）
+  ///< 格子大小 ±（步进 = 步长档位，图片像素，X/Y 等比）
   final void Function(double dx, double dy) onNudge;
 
-  ///< 微移（±1 格距/8）
+  ///< 微移（dx/dy = ±步长档位，带符号图片像素）
   final VoidCallback onRecognize;
 
   ///< 开始识别（四角模式入口）
@@ -90,6 +96,8 @@ class AlignStep extends StatelessWidget {
     required this.onSwitchMode,
     required this.onResetCorners,
     required this.onBlankChanged,
+    required this.step,
+    required this.onStepChange,
     required this.onAdjustPitch,
     required this.onNudge,
     required this.onRecognize,
@@ -232,12 +240,12 @@ class AlignStep extends StatelessWidget {
                   children: [
                     const Text("格子大小"),
                     _compactIconBtn(
-                      onPressed: pitchX > 0 ? () => onAdjustPitch(-0.2) : null,
+                      onPressed: pitchX > 0 ? () => onAdjustPitch(-step) : null,
                       icon: Icons.remove_circle_outline,
                     ),
                     Text(pitchX > 0 ? pitchX.toStringAsFixed(2) : "--"),
                     _compactIconBtn(
-                      onPressed: pitchX > 0 ? () => onAdjustPitch(0.2) : null,
+                      onPressed: pitchX > 0 ? () => onAdjustPitch(step) : null,
                       icon: Icons.add_circle_outline,
                     ),
                   ],
@@ -246,25 +254,50 @@ class AlignStep extends StatelessWidget {
                   children: [
                     const Text("微移"),
                     _compactIconBtn(
-                      onPressed: pitchX > 0 ? () => onNudge(-1, 0) : null,
-                      icon: Icons.arrow_left,
+                      onPressed: pitchX > 0 ? () => onNudge(-step, 0) : null,
+                      icon: Icons.arrow_back,
                       tooltip: "左移",
                     ),
                     _compactIconBtn(
-                      onPressed: pitchX > 0 ? () => onNudge(0, -1) : null,
+                      onPressed: pitchX > 0 ? () => onNudge(0, -step) : null,
                       icon: Icons.arrow_upward,
                       tooltip: "上移",
                     ),
                     _compactIconBtn(
-                      onPressed: pitchX > 0 ? () => onNudge(0, 1) : null,
+                      onPressed: pitchX > 0 ? () => onNudge(0, step) : null,
                       icon: Icons.arrow_downward,
                       tooltip: "下移",
                     ),
                     _compactIconBtn(
-                      onPressed: pitchX > 0 ? () => onNudge(1, 0) : null,
-                      icon: Icons.arrow_right,
+                      onPressed: pitchX > 0 ? () => onNudge(step, 0) : null,
+                      icon: Icons.arrow_forward,
                       tooltip: "右移",
                     ),
+                  ],
+                ),
+                // 步长档位：格子大小与微移共用（每次点击改变的图片像素数）。
+                // chips 单排放下 5 档（compact+收窄 padding ~300px < 360dp 窄屏）
+                Row(
+                  children: [
+                    const Text("步长"),
+                    for (final (v, label) in _stepChoices)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 6),
+                        child: ChoiceChip(
+                          label: Text(
+                            label,
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                          selected: step == v,
+                          onSelected: (_) => onStepChange(v),
+                          visualDensity: VisualDensity.compact,
+                          materialTapTargetSize:
+                              MaterialTapTargetSize.shrinkWrap,
+                          labelPadding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                          ),
+                        ),
+                      ),
                   ],
                 ),
                 const SizedBox(height: 4),
@@ -280,7 +313,8 @@ class AlignStep extends StatelessWidget {
                             ? const SizedBox(
                                 width: 16,
                                 height: 16,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
                               )
                             : const Icon(Icons.refresh, size: 18),
                         label: Text(detecting ? "检测中…" : "重新识别"),
@@ -306,6 +340,16 @@ class AlignStep extends StatelessWidget {
     );
   }
 }
+
+/// 步长档位（值 + 显示文本）：格子大小与微移每次点击的图片像素数，
+/// 默认最细档 0.01
+const _stepChoices = [
+  (0.01, "0.01"),
+  (0.05, "0.05"),
+  (0.1, "0.1"),
+  (0.5, "0.5"),
+  (1.0, "1")
+];
 
 /// 紧凑图标按钮（对齐面板格子大小/微移行专用）：默认 IconButton 48
 /// 逻辑宽，一行 6 个加标签在窄屏溢出，压到 36 宽/22 图标

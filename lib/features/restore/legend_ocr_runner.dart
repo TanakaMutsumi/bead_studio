@@ -89,8 +89,7 @@ LegendPrepResult prepLegendOcr(LegendPrepArgs a) {
   final scaled = img.copyResize(crop, width: (crop.width * a.scale).round());
   final bars = detectLegendBars(scaled);
   final segPaths = <String>[
-    for (var i = 0; i < a.segX0.length; i++)
-      "${a.tmpDir}/legend_seg_$i.rgba",
+    for (var i = 0; i < a.segX0.length; i++) "${a.tmpDir}/legend_seg_$i.rgba",
   ];
   for (var i = 0; i < a.segX0.length; i++) {
     final bytes = img
@@ -107,6 +106,19 @@ LegendPrepResult prepLegendOcr(LegendPrepArgs a) {
   return LegendPrepResult(scaled, bars, segPaths);
 }
 
+/// 图例 OCR 链进度回调：(阶段文案, 已处理, 总数)。总数 0 = 无细粒度
+/// 计数的阶段（准备/收尾），UI 显示文案 + 不定长进度条
+typedef LegendOcrProgress = void Function(String label, int done, int total);
+
+/// 图例 OCR 链像素预算：放大后图例条总像素上限。
+///
+/// 2026-11-07 可丽饼 6K 原图（5960×7976）实测：5664×474 图例条被宽条
+/// 分支「用满放大上限」推到 ×8 → 45312×3792 ≈ 172MP/688MB 中间图，
+/// 段文件 14×61MB 落盘 + 14 段串行识别，图例识别分钟级。预算压轴后
+/// 放大字高仍远超 ML Kit 稳定区（~74px），质量不受影响；常规 2K 内
+/// 手机照/截图（≤14MP）不触预算，行为零变
+const double kLegendScaleBudgetPx = 24e6;
+
 /// OCR 图例选区 -> [(印刷色号调色板索引, 印刷颗数)] 按阅读顺序
 ///
 /// 图纸图例每条目 = 色块 + 色号 + 颗数（印刷数字）；颗数有时跟在色号右侧同行，
@@ -118,6 +130,7 @@ LegendPrepResult prepLegendOcr(LegendPrepArgs a) {
 /// 元素换算回全放大图坐标后 [mergeSegmentElems] 合并去重。
 /// OCR 环节抛异常时仍可由色条融合产清单；裁剪/写盘失败 pairs 为 null
 /// （调用方回退色块量化清单）。
+/// [onProgress] 阶段进度回调（准备/分段识别/各补读链/收尾），UI 进度条用
 Future<LegendOcrRun> runLegendOcr(
   img.Image image,
   BeadPalette palette,
@@ -126,6 +139,7 @@ Future<LegendOcrRun> runLegendOcr(
   double rw,
   double rh, {
   String source = "手动框选",
+  LegendOcrProgress? onProgress,
 }) async {
   try {
     // 小字放大提高识别率：按高度放大到 ~960px（数字高 ~120px+）。
@@ -138,7 +152,8 @@ Future<LegendOcrRun> runLegendOcr(
     final cap = 3800 / math.max(rw, rh);
     final segX0 = <int>[];
     final segX1 = <int>[];
-    if (rw > rh && rw * scale > 3800) {
+    var wideSeg = rw > rh && rw * scale > 3800;
+    if (wideSeg) {
       // 宽条分段：宽度约束解除后用满放大上限（wx1 实测 ×2.87 时字高仅
       // 20-30px，30 个色号只配出 19 个颗数、4 条整条目丢失；分段后每段
       // 独立 ≤3800，字高可到 ~80px 稳定区）。高度同时不得超限
@@ -146,6 +161,16 @@ Future<LegendOcrRun> runLegendOcr(
       if (rh * scale > 3800) {
         scale = 3800 / rh;
       }
+    } else if (scale > cap) {
+      scale = cap;
+    }
+    // 像素预算压轴（巨源图见 kLegendScaleBudgetPx 注释）：预算可能把
+    // 宽条压回单段，须重判分段态
+    if (rw * rh * scale * scale > kLegendScaleBudgetPx) {
+      scale = math.sqrt(kLegendScaleBudgetPx / (rw * rh));
+      wideSeg = rw > rh && rw * scale > 3800;
+    }
+    if (wideSeg) {
       final total = (rw * scale).round();
       // 段间重叠须 ≥ 最大元素宽（色号 2-4 字符）：按行高 1/16 估字高再
       // 放大 6 字符宽。重叠不足时切点落在元素内部，两段各读出半截——
@@ -166,13 +191,11 @@ Future<LegendOcrRun> runLegendOcr(
         }
       }
     } else {
-      if (scale > cap) {
-        scale = cap;
-      }
       segX0.add(0);
       segX1.add((rw * scale).round());
     }
 
+    onProgress?.call("正在放大图例图像…", 0, 0);
     final tmpDir = (await getTemporaryDirectory()).path;
     final prep = await compute(
       prepLegendOcr,
@@ -222,7 +245,7 @@ Future<LegendOcrRun> runLegendOcr(
               code,
               null,
             );
-            e.dbgText = element.text; // 【临时调试】保留原始文本
+            e.dbgText = element.text; // 原始文本入 dbgText：补读/配对链靠括号形态分流
             out.add(e);
             continue;
           }
@@ -240,7 +263,7 @@ Future<LegendOcrRun> runLegendOcr(
             null,
             n,
           );
-          e.dbgText = element.text; // 【临时调试】保留原始文本
+          e.dbgText = element.text; // 原始文本入 dbgText：补读/配对链靠括号形态分流
           out.add(e);
         }
       }
@@ -255,13 +278,15 @@ Future<LegendOcrRun> runLegendOcr(
     var recognizer = TextRecognizer(script: TextRecognitionScript.latin);
     try {
       for (var i = 0; i < prep.segPaths.length; i++) {
+        onProgress?.call("识别图例文字", i + 1, prep.segPaths.length);
         try {
           // 段识别走原生后台线程通道（bead_native_ocr：插件通道固定在
           // 平台线程=UI 线程上构位图+推理，每次调用主线程 100% 冻结；
           // 段 RGBA 由 prep isolate 落盘、通道直接读文件，主 isolate
           // 全程不碰大字节）。通道不可用回退插件（保功能，会冻结）
           final segW = segX1[i] - segX0[i];
-          var els = await ocrRgbaFile(prep.segPaths[i], segW, prep.scaled.height);
+          var els =
+              await ocrRgbaFile(prep.segPaths[i], segW, prep.scaled.height);
           if (els == null) {
             els = await ocrRgbaPlugin(
               recognizer,
@@ -307,12 +332,10 @@ Future<LegendOcrRun> runLegendOcr(
       // 后缀取色卡候选，用条目色块颜色（色号左侧最饱和区）最近匹配补全。
       // 后缀候选多（如 16 有 A16~H16），颜色是唯一决定性约束——图例色块
       // 印的就是该色号的实物色
-      parenCount = elems
-          .where((e) => e.code == null && e.dbgText.contains("("))
-          .length;
-      bareCount = elems
-          .where((e) => e.code == null && !e.dbgText.contains("("))
-          .length;
+      parenCount =
+          elems.where((e) => e.code == null && e.dbgText.contains("(")).length;
+      bareCount =
+          elems.where((e) => e.code == null && !e.dbgText.contains("(")).length;
       if (parenCount >= 6 && bareCount > 0 && bareCount * 2 <= parenCount) {
         for (final e in swatchCodeCandidates(elems)) {
           final best = fixCodeBySwatch(palette, e.count!, e.rect, scaled);
@@ -334,6 +357,8 @@ Future<LegendOcrRun> runLegendOcr(
       // 都没有色号元素，说明该条目的色号整条被 ML Kit 吞掉。裁空隙小区
       // 放大后单独再识别（原图 + 反色两轮），读出的色号补回元素表参与
       // 最终配对
+      FixProgress relabel(String text) =>
+          (d, t) => onProgress?.call(text, d, t);
       await fixOrphanCountCodes(
         palette,
         elems,
@@ -342,6 +367,7 @@ Future<LegendOcrRun> runLegendOcr(
         tmpDir,
         orphanNotes,
         layout: layout,
+        onProgress: relabel("补读漏掉的色号"),
       );
       // 孤儿色号重读（对称救援）：色号近旁无颗数 = 颗数被 ML Kit 整条吞掉
       //（wx1：B22 的 5、C21/F7/H22 的 6），裁色号下方小区放大重读补回
@@ -349,6 +375,7 @@ Future<LegendOcrRun> runLegendOcr(
         elems,
         scaled,
         tmpDir,
+        onProgress: relabel("补读颗数"),
       );
       // 网格盲区补全：行列都在而完全静默的格位（白底浅字整条吞掉，new1
       // C23）按格位重读补回色号；右侧布局的颗数由下方布局块的模板位补读
@@ -359,6 +386,7 @@ Future<LegendOcrRun> runLegendOcr(
         codeMap,
         tmpDir,
         orphanNotes,
+        onProgress: relabel("补读盲区色号"),
       );
       if (layout != null) {
         // 括号格式成立时剥离首尾幻影 1（"(53)"→"1531"、"(39)"→"(391"
@@ -372,13 +400,13 @@ Future<LegendOcrRun> runLegendOcr(
             scaled,
             tmpDir,
             layout,
+            onProgress: relabel("补读右侧颗数"),
           );
         }
       }
     }
-    final paired = ocrFailed
-        ? <(int, int)>[]
-        : pairLegendOcr(elems).toList();
+    onProgress?.call("整理配对结果…", 0, 0);
+    final paired = ocrFailed ? <(int, int)>[] : pairLegendOcr(elems).toList();
     // 颗数位判定：正上方有色号（配对轮 2 同款窗口）或正上方有检测色条
     // （条下窗口内）——位于颗数位的裸数字是颗数不是色号，变体兜底不得
     // 把它变幻影条目（wx1 行 2 最左的 82 曾被兜底成 B2）
@@ -386,7 +414,9 @@ Future<LegendOcrRun> runLegendOcr(
       for (final e in elems)
         if (e.rect.height > 0) e.rect.height,
     ];
-    final avgH = heights.isEmpty ? 40.0 : heights.reduce((a, b) => a + b) / heights.length;
+    final avgH = heights.isEmpty
+        ? 40.0
+        : heights.reduce((a, b) => a + b) / heights.length;
     bool inCountPosition(OcrElem e) {
       for (final c in elems) {
         if (c.code != null &&

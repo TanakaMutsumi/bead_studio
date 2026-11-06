@@ -215,6 +215,12 @@ class _RestorePageState extends State<RestorePage> {
   final _legendColsCtrl = TextEditingController();
   final _legendRowsCtrl = TextEditingController();
   var _legendBusy = false;
+  String? _legendProgLabel;
+
+  ///< 图例识别阶段文案（null=未开始/无细粒度阶段），进度条配套
+  int _legendProgDone = 0;
+  int _legendProgTotal = 0;
+
   var _autoDetectBusy = false;
 
   ///< 自动框选（图例区/主体）isolate 检测进行中——body 整体 UI 锁之一
@@ -366,6 +372,11 @@ class _RestorePageState extends State<RestorePage> {
       return "正在识别，请稍候…";
     }
     if (_legendBusy) {
+      if (_legendProgLabel != null) {
+        return _legendProgTotal > 0
+            ? "正在识别图例：$_legendProgLabel $_legendProgDone/$_legendProgTotal"
+            : "正在识别图例：$_legendProgLabel";
+      }
       return "正在识别图例，请稍候…";
     }
     if (_detecting) {
@@ -417,6 +428,10 @@ class _RestorePageState extends State<RestorePage> {
   int _reviewCrossCount = 6;
 
   ///< 复核截图墙每行列数（用户可调，跨阶段往返保持）
+  double _alignStep = 0.01;
+
+  ///< 九宫格微调步长档位（0.01/0.05/0.1/0.5/1 图片像素，
+  /// 格子大小与上下左右微移共用；默认最细档）
 
   // ========== 四角对齐（歪图透视矫正，均分网格救不了斜拍） ==========
   var _useCornerAlign = false;
@@ -723,7 +738,12 @@ class _RestorePageState extends State<RestorePage> {
     if (image == null || _legendBusy) {
       return; // 已在识别：body 遮罩拦了主入口，双保险防极端时序重入
     }
-    setState(() => _legendBusy = true);
+    setState(() {
+      _legendBusy = true;
+      _legendProgLabel = null;
+      _legendProgDone = 0;
+      _legendProgTotal = 0;
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final (rx, ry, rw, rh) = _selToImage(_legendSel);
       // 灰度整扫 + 网格检测 + 逐格中值采样是整选区像素遍历（大框=整图，
@@ -750,7 +770,21 @@ class _RestorePageState extends State<RestorePage> {
       // OCR 权威模式：印刷色号是图纸的权威声明。读到的色号直接构成清单
       // （宽松框选把图案区框进来时，杂色量化条目全部被剔净），颗数随配对填入；
       // 读不到（web/异常/配对太少）回退纯色块量化清单（现状行为，颗数手填）。
-      final pairs = await _ocrLegendPairs(rx, ry, rw, rh);
+      final pairs = await _ocrLegendPairs(
+        rx,
+        ry,
+        rw,
+        rh,
+        onProgress: (label, done, total) {
+          if (mounted) {
+            setState(() {
+              _legendProgLabel = label;
+              _legendProgDone = done;
+              _legendProgTotal = total;
+            });
+          }
+        },
+      );
       if (!mounted) {
         return;
       }
@@ -802,6 +836,8 @@ class _RestorePageState extends State<RestorePage> {
       }
       setState(() {
         _legendBusy = false;
+        _legendProgLabel = null;
+        _legendProgTotal = 0;
         _legendColsCtrl.text = cols.toString();
         _legendRowsCtrl.text = rows.toString();
         _legend = entries;
@@ -838,6 +874,7 @@ class _RestorePageState extends State<RestorePage> {
     double rw,
     double rh, {
     String source = "手动框选",
+    void Function(String label, int done, int total)? onProgress,
   }) async {
     if (kIsWeb) {
       return null;
@@ -854,6 +891,7 @@ class _RestorePageState extends State<RestorePage> {
       rw,
       rh,
       source: source,
+      onProgress: onProgress,
     );
     // 色卡外色号（如 MARD 卡没有的 H7）：无法入清单，明确提示用户手工补
     if (run.orphanNotes.isNotEmpty && mounted) {
@@ -1025,7 +1063,7 @@ class _RestorePageState extends State<RestorePage> {
     return area.contains(p) ? 0 : -1;
   }
 
-  /// 格子大小 ±（图片坐标步进 0.2，X/Y 等比缩放，网格锚点不动）
+  /// 格子大小 ±（步长档位图片像素，X/Y 等比缩放，网格锚点不动）
   void _adjustPitch(double step) {
     if (_pitchX <= 0 || _pitchY <= 0) {
       return;
@@ -1040,7 +1078,8 @@ class _RestorePageState extends State<RestorePage> {
     });
   }
 
-  /// 微移九宫格（步进 = 格距 / 8，显示坐标换算）
+  /// 微移九宫格（[dx]/[dy] 带符号图片像素步长，面板传 ±步长档位；
+  /// 显示坐标换算）
   void _nudge(double dx, double dy) {
     final anchor = _miniAnchor;
     if (_pitchX <= 0 || _pitchY <= 0 || anchor == null) {
@@ -1048,10 +1087,11 @@ class _RestorePageState extends State<RestorePage> {
     }
     final ds = _displaySize();
     final image = _image!;
-    final stepX = _pitchX * ds.width / image.width / 8;
-    final stepY = _pitchY * ds.height / image.height / 8;
     setState(() {
-      _miniAnchor = Offset(anchor.dx + dx * stepX, anchor.dy + dy * stepY);
+      _miniAnchor = Offset(
+        anchor.dx + dx * ds.width / image.width,
+        anchor.dy + dy * ds.height / image.height,
+      );
     });
   }
 
@@ -1292,7 +1332,8 @@ class _RestorePageState extends State<RestorePage> {
           band.forEach((i, txt) {
             txtByCell[i] = txt;
             final hit = codeMap[txt];
-            if (hit != null && (candidates.isEmpty || candidates.contains(hit))) {
+            if (hit != null &&
+                (candidates.isEmpty || candidates.contains(hit))) {
               if (!authoritative[i]) {
                 authoritative[i] = true;
                 grid[i] = hit;
@@ -1403,9 +1444,7 @@ class _RestorePageState extends State<RestorePage> {
           );
           final blank = _blankEnable && distSq > _blankDistSq;
           grid[i] = blank ? -1 : idx;
-          scores[i] = blank
-              ? 0
-              : (1.0 - distSq / _blankDistSq).clamp(0.0, 1.0);
+          scores[i] = blank ? 0 : (1.0 - distSq / _blankDistSq).clamp(0.0, 1.0);
         }
       }
       if (!mounted) {
@@ -1925,6 +1964,18 @@ class _RestorePageState extends State<RestorePage> {
                     ),
                   ),
                 ],
+                if (_legendBusy && _legendProgTotal > 0) ...[
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: 220,
+                    child: LinearProgressIndicator(
+                      value: _legendProgDone / _legendProgTotal,
+                      minHeight: 6,
+                      color: Colors.white,
+                      backgroundColor: Colors.white24,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -1978,8 +2029,7 @@ class _RestorePageState extends State<RestorePage> {
   /// 框中心拖动会误命中上/下边中把手，整框平移永远触发不了
   int _hitSelHandle(Rect sel, Offset p) {
     final scale = _viewerCtrl.value.storage[0];
-    final radius =
-        math.min(22.0, math.min(sel.width, sel.height) / 3) / scale;
+    final radius = math.min(22.0, math.min(sel.width, sel.height) / 3) / scale;
     final pts = [
       sel.topLeft,
       Offset(sel.center.dx, sel.top),
@@ -2720,6 +2770,8 @@ class _RestorePageState extends State<RestorePage> {
       onSwitchMode: _switchAlignMode,
       onResetCorners: _resetCorners,
       onBlankChanged: (v) => setState(() => _blankEnable = v),
+      step: _alignStep,
+      onStepChange: (v) => setState(() => _alignStep = v),
       onAdjustPitch: _adjustPitch,
       onNudge: _nudge,
       onRecognize: _recognize,

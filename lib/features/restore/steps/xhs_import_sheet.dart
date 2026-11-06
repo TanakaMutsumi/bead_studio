@@ -20,7 +20,11 @@ Future<void> showXhsImportSheet(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
-    showDragHandle: true,
+    // 下拉手势整个关闭面板：解析/下载期会误关导致导入中断，全程禁用。
+    // 注意 showDragHandle 必须一起去掉——SDK 在 enableDrag:false 时反而
+    // 给把手单独挂拖拽检测（把手保留为关闭途径），留着照样能拖关
+    //（关闭走返回键/点外部，忙碌期由面板内 PopScope 拦截）
+    enableDrag: false,
     builder: (_) => const _XhsImportSheet(),
   );
   if (bytes != null) {
@@ -146,58 +150,88 @@ class _XhsImportSheetState extends State<_XhsImportSheet> {
   @override
   Widget build(BuildContext context) {
     final maxHeight = MediaQuery.of(context).size.height * 0.85;
-    return Padding(
-      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxHeight: maxHeight),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 8, 8),
-              child: Row(
+    // 解析中锁整个面板（返回键/点外部都拦——中断即整轮作废）；下载原图
+    // 只锁内容不拦退出（最长可达数十秒，网络卡死时要留逃生口）
+    final parsing = _phase == _Phase.loading;
+    final busy = parsing || _downloading;
+    return PopScope(
+      canPop: !parsing,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) {
+          AppSnackBar.show(context, '正在解析链接，请稍候…');
+        }
+      },
+      child: Padding(
+        padding:
+            EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: maxHeight),
+          child: Stack(
+            children: [
+              Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(Icons.link, size: 18),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      _phase == _Phase.pick
-                          ? (_note!.title.isEmpty ? '选择一张图纸' : _note!.title)
-                          : '从小红书链接导入',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.bold),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 8, 8),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.link, size: 18),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            _phase == _Phase.pick
+                                ? (_note!.title.isEmpty
+                                    ? '选择一张图纸'
+                                    : _note!.title)
+                                : '从小红书链接导入',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                        if (_phase == _Phase.pick)
+                          IconButton(
+                            tooltip: '重新输入链接',
+                            onPressed: () =>
+                                setState(() => _phase = _Phase.input),
+                            icon: const Icon(Icons.refresh, size: 20),
+                          ),
+                      ],
                     ),
                   ),
+                  Flexible(child: _buildBody()),
                   if (_phase == _Phase.pick)
-                    IconButton(
-                      tooltip: '重新输入链接',
-                      onPressed: () => setState(() => _phase = _Phase.input),
-                      icon: const Icon(Icons.refresh, size: 20),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          onPressed:
+                              _selected >= 0 && !_downloading ? _confirm : null,
+                          icon: _downloading
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child:
+                                      CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.auto_awesome),
+                          label: Text(_downloading ? '正在下载原图…' : '开始还原'),
+                        ),
+                      ),
                     ),
                 ],
               ),
-            ),
-            Flexible(child: _buildBody()),
-            if (_phase == _Phase.pick)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
-                child: SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: _selected >= 0 && !_downloading ? _confirm : null,
-                    icon: _downloading
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.auto_awesome),
-                    label: Text(_downloading ? '正在下载原图…' : '开始还原'),
+              // 忙碌锁：半透明遮罩吞掉内容区一切点击（换选/重新输入/双击大图），
+              // 既有进度反馈（按钮 spinner/解析中文案）从遮罩下透出可辨
+              if (busy)
+                Positioned.fill(
+                  child: AbsorbPointer(
+                    child: ColoredBox(color: Colors.black26),
                   ),
                 ),
-              ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -207,18 +241,18 @@ class _XhsImportSheetState extends State<_XhsImportSheet> {
     return switch (_phase) {
       _Phase.input => _buildInput(),
       _Phase.loading => const Padding(
-        padding: EdgeInsets.all(40),
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircularProgressIndicator(),
-              SizedBox(height: 12),
-              Text('正在解析链接…', style: TextStyle(fontSize: 13)),
-            ],
+          padding: EdgeInsets.all(40),
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 12),
+                Text('正在解析链接…', style: TextStyle(fontSize: 13)),
+              ],
+            ),
           ),
         ),
-      ),
       _Phase.pick => _buildGrid(),
     };
   }
@@ -302,7 +336,8 @@ class _XhsImportSheetState extends State<_XhsImportSheet> {
                       errorBuilder: (_, __, ___) => const ColoredBox(
                         color: Colors.black12,
                         child: Center(
-                          child: Icon(Icons.broken_image, color: Colors.black26),
+                          child:
+                              Icon(Icons.broken_image, color: Colors.black26),
                         ),
                       ),
                     ),

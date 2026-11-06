@@ -198,6 +198,14 @@ test_pic5 基准：16 色图例，识别后清单应约 16 条（H7 黑 343 颗�
 | 保存成功 留在本页 | (387,1332) |
 | 保存成功 直接开始拼豆 | (702,1332) |
 
+### 豆板选择页（BoardSelectPage，主页「开始拼豆」第一跳）
+| 控件 | 坐标 |
+|------|------|
+| AppBar 新建空板 | (1014,213) |
+| 板卡片（第一格，含缩略图+名称） | (191,525)——**卡片中心在网格列内非屏幕中线**，dump 取 clickable 节点 bounds 再 tap |
+| 卡片角标菜单（打开/重命名/删除） | 卡片右上 (约 x+140,y-160)，dump 实测 |
+| 空板自动跳转 | 首次加载列表为空 → 自动 pushReplacement 新板设置（无板时代旧直达习惯） |
+
 ### 板设置页（BoardSetupPage）
 | 控件 | 坐标 |
 |------|------|
@@ -324,6 +332,7 @@ sleep 1
 
 | 日期 | 修改人 | 内容 |
 |------|--------|------|
+| 2026-11-07 二轮 | Claude | **四项改进实测通过（步长档/豆板选择页/导入忙碌锁/图例预算+进度条）**。本轮流程操作教训：a) **PhotoPicker 网格纵向位置会漂**（同会话两次打开：第一次第一行 y=1583，第二次 y=849，疑与上次选中态/边缘动画有关）——选图 tap 前必 dump 实测网格 y；b) **`enableDrag:false` 关不住 modal 底板的拖把手**——SDK bottom_sheet.dart 在 enableDrag:false 时反而给 showDragHandle 单独挂 `_BottomSheetGestureDetector`（把手保留为关闭途径），实测把手区下扫照样关面板；**要彻底禁拖必须连 `showDragHandle: true` 一起删**（xhs/抖音面板已改，把手消失后面板顶上移 ~100px，坐标随之变）；c) **dump 输出格式是 `y x 类 文本`**——PopupMenuItem 坐标 (904,510) 曾被当 (540,510) 点空，x/y 谁先谁后看模板注释，Flutter 节点 x 本不可信但菜单/相册属系统组件坐标双可信；d) **gradle daemon 卡死复发**（新 daemon 0 CPU 停 12 分钟+昨晚僵尸 daemon 同存）——杀全部 java/dart 进程走离线配方 39s 过（见 memory gradle-offline-x64-build）；e) **图例 6K 原图识别 OOM 崩溃坐实**：logcat `FATAL EXCEPTION: pool-3-thread-1 java.lang.OutOfMemoryError (139MB allocation)`，堆顶仅 201MB——大图排查先看 AndroidRuntime FATAL 而非只盯 flutter tag；f) ②面板「格子大小」± 钮无 tooltip 不入语义树——PIL 放大行条带定位圆钮中心（本轮 −(260,1845) +(470,1845)），步长档 chips 有文本可直接 dump |
 | 2026-11-07 | Claude | **二遍逐格补读回归通过（0ce0af9）+ 调试块全量清理（8330fe3）+ v0.2.0 交付物重出**（release 全架构 APK 95,905,044B md5 `62766C30…541`，smoke：release 全流程 ①16色/1336颗→④总豆数 1307 与 debug 逐项一致，识别中实时进度 93% 抓到实证）。基线换新见 §6（39×43/1307/1336——**上会话 45×50 挂账与 39×43 内容一致**：两框均 1307 豆，大框只多包 573 空白格，几何上 45 列×31.33=1410px 超 bbox 宽即证其框松）。本轮环境教训：a) **PowerShell→adb 的 `content query --projection a,b` 引号被剥整串当一个列名**（Invalid column）——省 projection 全列 query 再 Select-String 过滤最稳；b) **任务记录被相机寄生**：install -r 杀进程后 `am start` 报 "delivered to running top-most instance" 且前台是 camera2（TaskInfo baseIntent=bead MainActivity 但 topActivity=CaptureActivity）——`am start -n … -f 0x10008000`（NEW_TASK|CLEAR_TASK）重建任务即好，勿误判 app 崩溃；c) 识别指纹 logcat 打印已删，回归对账走 §6 UI 读数（共N颗/总豆数/空白/⚠项），别再 grep 临时调试 |
 | 2026-11-06 | Claude | **近白空白文本第一判据 + 复核每行列数实测通过，v0.2.0 发布**（实现详见 project-status §5 同日二轮行）。本轮流程操作教训：a) **会话 shell 已由 Bash 换成 PowerShell 5.1**——`>` 重定向是文本模式会毁二进制（screencap PNG 直接 UnidentifiedImageError），**二进制落盘一律 `cmd /c "adb exec-out screencap -p > x.png"`**；无 `&&`；内联 python 引号地狱改为先写 .py 文件再 `python -I` 执行；b) **`su 2000 content call --method scan_file` 本轮返回 STREAM=null 且未索引**（与 11-06 上午教训 d 矛盾，不可依赖），`am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file://…` 稳定索引——推图后必 query 验证再选图；c) **平涂合成图（色块+白缝、无照片纹理）主体自动框选会失败**（聚到单格 rowsCols=null）——手动拖框是正路：PIL 定位黑环/内容包围盒 → `input swipe x1 y1 x2 y2 500`，吸附按整格归位（合成图 24×24 精确）；d) 复核「每行N格」选择器**放 chips 横滚行末端会被裁不可发现**，落在缩放条左端才常显（§3 已加坐标）；e) 冷启动盲走导航链曾整链漂到图片转换页——每步 dump 验证再 tap 是铁律 |
 | 2026-11-06 | Claude | **抖音链接导入上线 + xhs 查看器抽共用**（`lib/core/douyin_link.dart` + `steps/douyin_import_sheet.dart`；查看器抽为 `steps/link_image_viewer.dart` 供 xhs/抖音共用，LOD/双击/保存相册行为不变）。配方：分享文案提取 `v.douyin.com` 短链 → **Baiduspider UA** 过原生通道逐跳 302（普通 UA 只给数据加载已死的 JS 壳页）→ `iesdouyin.com/share/note/{id}/` SSR → JSON-LD `@type=article` image 数组拿 `~tplv-dy-aweme-images:q75.webp` 签名 URL（按对象 uri 去重多 CDN 镜像；签名不挑客户端 ~30 天时效）。画质结论：分辨率=作者上传尺寸不缩水，q75.webp PSNR~35dB 对识别零风险；更优 q75.jpeg(+2dB) 仅浏览器页面内 fetch 可得，免浏览器通道全试尽（detail API/amemv/lightbox/mobileweb）皆无，不追。模拟器实测：耍起链接 3 图进①框图例、奶龙链接全流程至识别 18 色/1403 颗；xhs 冒烟（假链接→正确报错）不回归。**选图页坐标改为 4 钮纵排：相册 1285/拍照 1450/小红书 1615/抖音 1780（§2.1/§3 已更新）**。本轮教训：a) **Dart raw 字符串不做插值**——lint 改 `r'…$_var'` 后正则成字面量 `$urlChars`，模拟器表象「未识别到抖音链接」，单测才暴露；要插值必须非 raw 串+`\\.` 转义；b) **adb input text 带 URL 尾斜杠会被 IME 组合态搅坏**（打出 `…/v`，DEL 追打无效）——BACK×2 关面板重开 sheet 重打，且不带尾斜杠；c) **adb 打不了双击**（两次 input tap 间隔必超 300ms 窗口）——查看器双击/LOD 交互改 widget test 覆盖；d) **flutter_test 两坑**：引擎 codec 对 webp 挂起不抛错（fixture 换 PNG），`compute()` 真 isolate 在 FakeAsync 区永不跑——`tester.runAsync` 轮询真实时间窗(2s×N)直到出图再断言，`pumpAndSettle` 会因 spinner 假超时；e) `photoLodCropRect` 补守卫：原图长边≤显示上限时 LOD 永不触发（原版小图 zoom=1 也过阈值，双击回整图会白算一次裁片叠显同像素 JPEG，违背其注释契约）；大图路径（>4096 被压显示）行为不变 |

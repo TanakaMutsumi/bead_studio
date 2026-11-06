@@ -283,9 +283,8 @@ List<OcrElem> mergeSegmentElems(
     for (final (e, _) in tagged)
       if (e.rect.height > 0) e.rect.height,
   ];
-  final avgH = heights.isEmpty
-      ? 40.0
-      : heights.reduce((a, b) => a + b) / heights.length;
+  final avgH =
+      heights.isEmpty ? 40.0 : heights.reduce((a, b) => a + b) / heights.length;
   final totalW = segX1.last;
   final suspect = List<bool>.filled(tagged.length, false);
   for (var i = 0; i < tagged.length; i++) {
@@ -571,24 +570,18 @@ List<LegendBar> _mergeBarFragments(List<LegendBar> bars) {
         if (d2 >= 64 * 64) {
           continue;
         }
-        final yOverlap =
-            math.min(a.rect.bottom, b.rect.bottom) -
-                math.max(a.rect.top, b.rect.top);
-        final gapX =
-            math.max(a.rect.left, b.rect.left) -
-                math.min(a.rect.right, b.rect.right);
-        final xOverlap =
-            math.min(a.rect.right, b.rect.right) -
-                math.max(a.rect.left, b.rect.left);
-        final gapY =
-            math.max(a.rect.top, b.rect.top) -
-                math.min(a.rect.bottom, b.rect.bottom);
+        final yOverlap = math.min(a.rect.bottom, b.rect.bottom) -
+            math.max(a.rect.top, b.rect.top);
+        final gapX = math.max(a.rect.left, b.rect.left) -
+            math.min(a.rect.right, b.rect.right);
+        final xOverlap = math.min(a.rect.right, b.rect.right) -
+            math.max(a.rect.left, b.rect.left);
+        final gapY = math.max(a.rect.top, b.rect.top) -
+            math.min(a.rect.bottom, b.rect.bottom);
         final minH = math.min(a.rect.height, b.rect.height);
-        final horiz =
-            gapX <= 0.5 * minH && yOverlap >= 0.6 * minH;
-        final vert =
-            gapY <= 0.6 * minH &&
-                xOverlap >= 0.5 * math.min(a.rect.width, b.rect.width);
+        final horiz = gapX <= 0.5 * minH && yOverlap >= 0.6 * minH;
+        final vert = gapY <= 0.6 * minH &&
+            xOverlap >= 0.5 * math.min(a.rect.width, b.rect.width);
         if (!horiz && !vert) {
           continue;
         }
@@ -704,7 +697,10 @@ List<(int, int)> fuseLegendBars(
   // 的右缘比自己的更近，会链式错位
   double codeDist(OcrElem e, Rect r) {
     final c = e.rect.center;
-    if (c.dx >= r.left && c.dx <= r.right && c.dy >= r.top && c.dy <= r.bottom) {
+    if (c.dx >= r.left &&
+        c.dx <= r.right &&
+        c.dy >= r.top &&
+        c.dy <= r.bottom) {
       return 0; // 印在条内
     }
     if (c.dy >= r.top - avgH && c.dy <= r.bottom + avgH) {
@@ -731,7 +727,9 @@ List<(int, int)> fuseLegendBars(
       if (b.codeElem != null) {
         continue;
       }
-      if (c.dx >= b.rect.left && c.dx <= b.rect.right && c.dy >= b.rect.top &&
+      if (c.dx >= b.rect.left &&
+          c.dx <= b.rect.right &&
+          c.dy >= b.rect.top &&
           c.dy <= b.rect.bottom) {
         b.codeElem = e;
         claimed.add(e);
@@ -829,7 +827,8 @@ List<(int, int)> fuseLegendBars(
           e.rect.center.dy <= r.bottom + avgH;
       if (below || right) {
         // 下方布局优先：右侧兜底距离加惩罚，正下方的颗数不被斜上方抢走
-        final d = below ? e.rect.top - r.bottom : e.rect.left - r.right + avgH * 2;
+        final d =
+            below ? e.rect.top - r.bottom : e.rect.left - r.right + avgH * 2;
         if (d < bestD) {
           bestD = d;
           best = b;
@@ -869,7 +868,8 @@ List<(int, int)> fuseLegendBars(
       continue; // 颜色对不上色卡且 OCR 没读出色号：不可信不入清单
     }
     anchors.add(
-      _Anchor(b.rect, idx, ce?.pairedCount ?? b.countElem?.count ?? 0, ce != null),
+      _Anchor(
+          b.rect, idx, ce?.pairedCount ?? b.countElem?.count ?? 0, ce != null),
     );
   }
   final barElems = {for (final b in bars) b.codeElem};
@@ -942,9 +942,7 @@ List<(int, int)> fuseLegendBars(
     }
     // 出界锚点（条带下方无色条的行）：按中心 y 顺序聚行，行号接在
     // 条带行之后
-    final beyond = anchors
-        .where((a) => !rowKey.containsKey(a))
-        .toList()
+    final beyond = anchors.where((a) => !rowKey.containsKey(a)).toList()
       ..sort((a, b) => a.rect.center.dy.compareTo(b.rect.center.dy));
     var next = rowTops.length;
     double? lastC;
@@ -1045,6 +1043,10 @@ int? parseCountText(String raw) {
 /// [orphanNotes] 供上层提示用户手工补。[ocrGap] 可注入替换空隙识别
 ///（单测用）。[tmpDirPath] 为历史参数：喂图改 fromBitmap 原始字节后不再
 /// 落临时文件，仅为调用方签名兼容保留（四个 fix* 同）
+/// 补读链进度回调：(已处理, 总数)——阶段文案由编排层（legend_ocr_runner
+/// 的 relabel）注入，核心函数只报计数
+typedef FixProgress = void Function(int done, int total);
+
 Future<int> fixOrphanCountCodes(
   BeadPalette palette,
   List<OcrElem> elems,
@@ -1055,6 +1057,7 @@ Future<int> fixOrphanCountCodes(
   LegendLayout? layout,
   Future<(String, Rect)?> Function(img.Image gapBig)? ocrGap,
   List<String>? dbg,
+  FixProgress? onProgress,
 }) async {
   if (elems.isEmpty) {
     return 0;
@@ -1135,7 +1138,9 @@ Future<int> fixOrphanCountCodes(
     }
   }
   var fixed = 0;
+  var progI = 0;
   for (final c in orphans) {
+    onProgress?.call(++progI, orphans.length);
     double gLeft, gTop, gBottom, gRight;
     if (countsBelow) {
       // 颗数下布局：缺失的色号在颗数正上方 ~1.6-4 字高处，横向以颗数
@@ -1144,8 +1149,8 @@ Future<int> fixOrphanCountCodes(
       gLeft = (acx - avgH * 5).clamp(0.0, scaled.width - 1.0);
       gRight = (acx + avgH * 5).clamp(gLeft + 1.0, scaled.width.toDouble());
       gTop = (c.rect.top - avgH * 4.2).clamp(0.0, scaled.height - 1.0);
-      gBottom = (c.rect.top - avgH * 1.6)
-          .clamp(gTop + 1.0, scaled.height.toDouble());
+      gBottom =
+          (c.rect.top - avgH * 1.6).clamp(gTop + 1.0, scaled.height.toDouble());
     } else {
       // 空隙左界：左邻元素（同行、在颗数左侧、不太远）的最大右缘
       gLeft = c.rect.left - avgH * 6;
@@ -1283,6 +1288,7 @@ Future<int> fixOrphanCodeCounts(
   String tmpDirPath, {
   Future<(String, Rect)?> Function(img.Image gapBig)? ocrGap,
   List<String>? dbg,
+  FixProgress? onProgress,
 }) async {
   if (elems.isEmpty) {
     return 0;
@@ -1313,9 +1319,8 @@ Future<int> fixOrphanCodeCounts(
     return false;
   }
 
-  final orphans = elems
-      .where((e) => e.code != null && !hasCountNearby(e))
-      .toList();
+  final orphans =
+      elems.where((e) => e.code != null && !hasCountNearby(e)).toList();
   if (orphans.isEmpty) {
     return 0;
   }
@@ -1344,7 +1349,9 @@ Future<int> fixOrphanCodeCounts(
   );
   const zoom = 3;
   var fixed = 0;
+  var progI = 0;
   for (final s in orphans) {
+    onProgress?.call(++progI, orphans.length);
     // 下方最近颗数行（行顶须在配对轮 2 窗口内，补回才配得上）
     double? rowTop;
     for (final t in rowCountTops) {
@@ -1365,11 +1372,10 @@ Future<int> fixOrphanCodeCounts(
     // 文本靠宽度上限剔除
     final acx = s.rect.center.dx;
     final gLeft = (acx - avgH * 6).clamp(0.0, scaled.width - 1.0);
-    final gRight = (acx + avgH * 6)
-        .clamp(gLeft + 1.0, scaled.width.toDouble());
+    final gRight = (acx + avgH * 6).clamp(gLeft + 1.0, scaled.width.toDouble());
     final gTop = (rowTop - avgH * 0.3).clamp(0.0, scaled.height - 1.0);
-    final gBottom = (rowTop + avgH * 1.4)
-        .clamp(gTop + 1.0, scaled.height.toDouble());
+    final gBottom =
+        (rowTop + avgH * 1.4).clamp(gTop + 1.0, scaled.height.toDouble());
     final gapW = gRight - gLeft;
     if (gapW < avgH * 0.8 || gBottom - gTop < avgH) {
       continue; // 小区放不下颗数
@@ -1464,6 +1470,7 @@ Future<int> fixBlindGridCodes(
   List<String> orphanNotes, {
   Future<(String, Rect)?> Function(img.Image gapBig)? ocrGap,
   List<String>? dbg,
+  FixProgress? onProgress,
 }) async {
   if (elems.isEmpty) {
     return 0;
@@ -1501,7 +1508,10 @@ Future<int> fixBlindGridCodes(
     return 0; // 单行/单列图例没有「网格内空格」可言
   }
   bool overlaps(Rect a, Rect b) =>
-      a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+      a.left < b.right &&
+      b.left < a.right &&
+      a.top < b.bottom &&
+      b.top < a.bottom;
 
   // 静默格：格位框（列首左 -1.5 字高 .. +9 字高 × 行首顶 -1 .. +2 字高，
   // 盖住条目 色块尾+色号+颗数 的印刷区）内无任何元素/色条
@@ -1550,7 +1560,9 @@ Future<int> fixBlindGridCodes(
     }
   }
   var fixed = 0;
+  var progI = 0;
   for (final cell in probed) {
+    onProgress?.call(++progI, probed.length);
     final gap = img.copyCrop(
       scaled,
       x: cell.left.toInt(),
@@ -1685,7 +1697,10 @@ String? _stripPhantomEdges(String t, img.Image scaled, Rect rect) {
   }
   final widths = [for (final c in comps) c.width];
   final maxW = widths.reduce(math.max);
-  final wide = [for (final w in widths) if (w >= maxW * 0.55) w];
+  final wide = [
+    for (final w in widths)
+      if (w >= maxW * 0.55) w
+  ];
   // 一对数字粘连成一个连通域（m==n-1）时宽类基准失真，按最宽的一半估
   final digitW = m == n - 1 ? maxW / 2 : _median(wide);
   if (digitW <= 0) {
@@ -1898,6 +1913,7 @@ Future<int> fixRightCountsByLayout(
   LegendLayout layout, {
   Future<(String, Rect)?> Function(img.Image gapBig)? ocrGap,
   List<String>? dbg,
+  FixProgress? onProgress,
 }) async {
   if (elems.isEmpty) {
     return 0;
@@ -1947,7 +1963,9 @@ Future<int> fixRightCountsByLayout(
   }
   const zoom = 3;
   var fixed = 0;
+  var progI = 0;
   for (final s in orphans) {
+    onProgress?.call(++progI, orphans.length);
     final gLeft =
         (s.rect.right + layout.dx * 0.15).clamp(0.0, scaled.width - 1.0);
     final gRight = (s.rect.right + layout.dx * 1.6)
@@ -2080,7 +2098,8 @@ Future<(String, Rect)?> ocrGapVariants(
       final pad = (avgH * padF * z).round();
       if (pad > 0) {
         final bg = (mode == 1 || mode == 3) ? 0 : 255;
-        final p2 = img.Image(width: v.width + pad * 2, height: v.height + pad * 2);
+        final p2 =
+            img.Image(width: v.width + pad * 2, height: v.height + pad * 2);
         img.fill(p2, color: img.ColorRgba8(bg, bg, bg, 255));
         img.compositeImage(p2, v, dstX: pad, dstY: pad);
         v = p2;
@@ -2200,7 +2219,11 @@ List<Rect> _inkComponents(
         for (var dy = -1; dy <= 1; dy++) {
           for (var dx = -1; dx <= 1; dx++) {
             final nx = cx + dx, ny = cy + dy;
-            if (nx < 0 || nx >= w || ny < 0 || ny >= h || (dx == 0 && dy == 0)) {
+            if (nx < 0 ||
+                nx >= w ||
+                ny < 0 ||
+                ny >= h ||
+                (dx == 0 && dy == 0)) {
               continue;
             }
             final idx = ny * w + nx;
@@ -2282,9 +2305,7 @@ List<Rect> _adaptiveInkComps(
   for (var y = 0; y < h; y++) {
     for (var x = 0; x < w; x++) {
       final p = image.getPixel(x0 + x, y0 + y);
-      hist[(0.299 * p.r + 0.587 * p.g + 0.114 * p.b)
-          .round()
-          .clamp(0, 255)]++;
+      hist[(0.299 * p.r + 0.587 * p.g + 0.114 * p.b).round().clamp(0, 255)]++;
     }
   }
   final otsu = _otsuThreshold(hist, w * h).toDouble();
@@ -2314,7 +2335,10 @@ List<Rect> _adaptiveInkComps(
       // 条屑高 8-16px 把中位压到 8，旧 0.45×中位过滤形同虚设）；真字形
       // 高度均匀（实测同盒内 48-64px，比值 ≥0.75），0.6 倍于最高者只杀屑
       final maxH = [for (final c in cs) c.height].reduce(math.max);
-      cs = [for (final c in cs) if (c.height >= maxH * 0.6) c];
+      cs = [
+        for (final c in cs)
+          if (c.height >= maxH * 0.6) c
+      ];
     }
     onDbg?.call(
       "${bright ? "亮" : "暗"}${thr.toStringAsFixed(0)}: "
@@ -2353,11 +2377,10 @@ img.Image _adaptiveBinarize(img.Image g) {
       final p = g.getPixel(x, y);
       final v = (0.299 * p.r + 0.587 * p.g + 0.114 * p.b).round();
       gray[i] = v;
-      integral[(y + 1) * (w + 1) + (x + 1)] =
-          v +
-              integral[y * (w + 1) + (x + 1)] +
-              integral[(y + 1) * (w + 1) + x] -
-              integral[y * (w + 1) + x];
+      integral[(y + 1) * (w + 1) + (x + 1)] = v +
+          integral[y * (w + 1) + (x + 1)] +
+          integral[(y + 1) * (w + 1) + x] -
+          integral[y * (w + 1) + x];
     }
   }
   final half = (math.min(w, h) ~/ 4).clamp(7, 30);
@@ -2366,11 +2389,10 @@ img.Image _adaptiveBinarize(img.Image g) {
     final ty0 = math.max(0, y - half), ty1 = math.min(h - 1, y + half);
     for (var x = 0; x < w; x++) {
       final tx0 = math.max(0, x - half), tx1 = math.min(w - 1, x + half);
-      final sum =
-          integral[(ty1 + 1) * (w + 1) + (tx1 + 1)] -
-              integral[ty0 * (w + 1) + (tx1 + 1)] -
-              integral[(ty1 + 1) * (w + 1) + (tx0)] +
-              integral[ty0 * (w + 1) + (tx0)];
+      final sum = integral[(ty1 + 1) * (w + 1) + (tx1 + 1)] -
+          integral[ty0 * (w + 1) + (tx1 + 1)] -
+          integral[(ty1 + 1) * (w + 1) + (tx0)] +
+          integral[ty0 * (w + 1) + (tx0)];
       final mean = sum / ((tx1 - tx0 + 1) * (ty1 - ty0 + 1));
       final v = gray[y * w + x] < mean - 12 ? 0 : 255;
       out.setPixelRgba(x, y, v, v, v, 255);
@@ -2567,7 +2589,8 @@ List<double> _glyphPatch(img.Image image, Rect r) {
   if (x1 - x0 <= 0 || y1 - y0 <= 0) {
     return List<double>.filled(40 * 60, 0);
   }
-  final crop = img.copyCrop(image, x: x0, y: y0, width: x1 - x0, height: y1 - y0);
+  final crop =
+      img.copyCrop(image, x: x0, y: y0, width: x1 - x0, height: y1 - y0);
   final small = img.copyResize(
     crop,
     width: 40,
@@ -2749,9 +2772,8 @@ Future<(String, Rect)?> ocrGapText(
   final codeLike = RegExp(r'^[A-Z]{1,2}\d{1,2}$');
   // 纯数字判定：颗数重读轮放宽到数字形近字母（5↔S、6↔G、8↔B、1↔I/L、
   // 0↔O），换算交给 parseCountText；色号救援轮保持纯数字不动
-  final numLike = preferNumber
-      ? RegExp(r'^[\dOSBGIL]{1,3}$')
-      : RegExp(r'^\d{1,3}$');
+  final numLike =
+      preferNumber ? RegExp(r'^[\dOSBGIL]{1,3}$') : RegExp(r'^\d{1,3}$');
   final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
   try {
     for (var round = 0; round < 2; round++) {
@@ -2932,53 +2954,50 @@ Future<Map<int, String>> ocrCells(
       }
       // 元素中心（放大图坐标）-> 图片坐标 -> 归类到格
       final rawByCell = <int, List<(double, String)>>{};
-    for (final element in els) {
-      final text = element.text.trim().toUpperCase().replaceAll(" ", "");
-      if (text.isEmpty ||
-          text.length > 4 ||
-          !RegExp(r'^[A-Z0-9]+$').hasMatch(text)) {
-        continue; // 只收色号样式（≤4 字母数字），长文本/杂项不做
-      }
-      final bc = element.rect.center;
-      final p = Offset(cx0 + bc.dx / scale, by0 + bc.dy / scale);
-          int? cellIdx;
-          if (!useCorner) {
-            // 九宫格模式：按格线相位直接解析 col/row，中心距校验防
-            // 串格（文字压在格线上时 floor 会落到邻格）
-            final col = ((p.dx - gridOrigin.dx) / pitchX).floor();
-            final row = ((p.dy - gridOrigin.dy) / pitchY).floor();
-            if (col >= 0 && col < cols && row >= 0 && row < rows) {
-              final idx = row * cols + col;
-              if ((p - centers[idx]).distance < centerLimit) {
-                cellIdx = idx;
-              }
+      for (final element in els) {
+        final text = element.text.trim().toUpperCase().replaceAll(" ", "");
+        if (text.isEmpty ||
+            text.length > 4 ||
+            !RegExp(r'^[A-Z0-9]+$').hasMatch(text)) {
+          continue; // 只收色号样式（≤4 字母数字），长文本/杂项不做
+        }
+        final bc = element.rect.center;
+        final p = Offset(cx0 + bc.dx / scale, by0 + bc.dy / scale);
+        int? cellIdx;
+        if (!useCorner) {
+          // 九宫格模式：按格线相位直接解析 col/row，中心距校验防
+          // 串格（文字压在格线上时 floor 会落到邻格）
+          final col = ((p.dx - gridOrigin.dx) / pitchX).floor();
+          final row = ((p.dy - gridOrigin.dy) / pitchY).floor();
+          if (col >= 0 && col < cols && row >= 0 && row < rows) {
+            final idx = row * cols + col;
+            if ((p - centers[idx]).distance < centerLimit) {
+              cellIdx = idx;
             }
           }
-          if (cellIdx == null) {
-            // 兜底（四角模式主路径）：最近格中心，超限丢弃。格子联合
-            // 包围盒（不含外扩半格）之外的元素是选区外内容（行列编号/
-            // 图例杂文）——裁剪外扩半格会把它读进 OCR，若被收进边缘格
-            // 会与格内色号按 x 拼接成 "F2"+"1"→"F21" 型错串（撞上混淆
-            // 变体即按 OCR 权威错认上色），直接丢弃
-            if (p.dx < bLeft ||
-                p.dx > bRight ||
-                p.dy < bTop ||
-                p.dy > bBottom) {
-              continue;
-            }
-            var best = -1;
-            var bestD = double.infinity;
-            for (var i = 0; i < centers.length; i++) {
-              final d = (p - centers[i]).distance;
-              if (d < bestD) {
-                bestD = d;
-                best = i;
-              }
-            }
-            if (best >= 0 && bestD < centerLimit) {
-              cellIdx = best;
+        }
+        if (cellIdx == null) {
+          // 兜底（四角模式主路径）：最近格中心，超限丢弃。格子联合
+          // 包围盒（不含外扩半格）之外的元素是选区外内容（行列编号/
+          // 图例杂文）——裁剪外扩半格会把它读进 OCR，若被收进边缘格
+          // 会与格内色号按 x 拼接成 "F2"+"1"→"F21" 型错串（撞上混淆
+          // 变体即按 OCR 权威错认上色），直接丢弃
+          if (p.dx < bLeft || p.dx > bRight || p.dy < bTop || p.dy > bBottom) {
+            continue;
+          }
+          var best = -1;
+          var bestD = double.infinity;
+          for (var i = 0; i < centers.length; i++) {
+            final d = (p - centers[i]).distance;
+            if (d < bestD) {
+              bestD = d;
+              best = i;
             }
           }
+          if (best >= 0 && bestD < centerLimit) {
+            cellIdx = best;
+          }
+        }
         if (cellIdx != null) {
           rawByCell.putIfAbsent(cellIdx, () => []).add((p.dx, text));
         }

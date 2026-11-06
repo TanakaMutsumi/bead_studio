@@ -32,11 +32,14 @@ import 'placed_work.dart';
 /// 保存确认（是=保存后继续；否=不保存继续；点外部=留在本页），未命名板
 /// 选「是」先问豆板名。不打开旧豆板进入 = 新的空板
 ///
-/// [initial] 保存作品后直接开始拼豆时带入的作品；null = 从主界面进入（空板）
+/// [initial] 保存作品后直接开始拼豆时带入的作品；null = 不带入
+/// [initialBoard] 从豆板选择页进入时带入的豆板（载入其配置与作品摆位）；
+/// 两个都 null = 新的空板
 class BoardSetupPage extends StatefulWidget {
   final WorkEntry? initial;
+  final BoardEntry? initialBoard;
 
-  const BoardSetupPage({super.key, this.initial});
+  const BoardSetupPage({super.key, this.initial, this.initialBoard});
 
   @override
   State<BoardSetupPage> createState() => _BoardSetupPageState();
@@ -88,7 +91,11 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     super.initState();
     final e = widget.initial;
     if (e == null) {
-      return; // 从主页进入：新的空板（要继续旧板走「打开豆板」）
+      final b = widget.initialBoard;
+      if (b != null) {
+        _loadBoard(b); // 从豆板选择页进入：载入选中豆板（异步，含失效作品跳过）
+      }
+      return; // 都不带：新的空板（要继续旧板走「打开豆板」）
     }
     final b = e.board;
     if (b != null) {

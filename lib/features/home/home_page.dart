@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/palette.dart';
 import '../../core/palette_registry.dart';
-import '../board/board_setup_page.dart';
+import '../board/board_select_page.dart';
 import '../import/import_page.dart';
 import '../restore/restore_page.dart';
 import '../works/works_page.dart';
@@ -92,8 +92,8 @@ class _HomePageState extends State<HomePage> {
                       context,
                       icon: Icons.grid_view_outlined,
                       title: "开始拼豆",
-                      subtitle: "多作品摆板拼装",
-                      onTap: () => _push(const BoardSetupPage()),
+                      subtitle: "选择豆板摆板拼装",
+                      onTap: () => _push(const BoardSelectPage()),
                     ),
                   ),
                   Expanded(
