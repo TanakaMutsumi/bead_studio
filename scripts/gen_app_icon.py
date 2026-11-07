@@ -473,19 +473,23 @@ def _lattice_mask(a0, a1, n, lw):
     return m[..., None]
 
 
-def _bleed_lattice_mask(off, pitch, lw):
-    """从 off 起、按 pitch 等距的格线铺满全画布(无限延伸,无外框)"""
+def _bleed_lattice_mask(off, pitch, lw, offy=None):
+    """从 off(竖线)/offy(横线,默认=off)起、按 pitch 等距的格线铺满全画布(无限延伸,无外框)"""
     m = np.zeros((S, S))
     t = lw / 2
-    k = -20
-    while True:
-        p = off + k * pitch
-        if p > 1 - t:
-            break
-        if p >= t:
-            m[int(t * S):int((1 - t) * S), int((p - t) * S):int((p + t) * S)] = 1.0
-            m[int((p - t) * S):int((p + t) * S), int(t * S):int((1 - t) * S)] = 1.0
-        k += 1
+    offy = off if offy is None else offy
+    for base in (off, offy):
+        k = -20
+        while True:
+            p = base + k * pitch
+            if p > 1 - t:
+                break
+            if p >= t:
+                if base is off:   # 竖线:x=p
+                    m[int(t * S):int((1 - t) * S), int((p - t) * S):int((p + t) * S)] = 1.0
+                else:             # 横线:y=p
+                    m[int((p - t) * S):int((p + t) * S), int(t * S):int((1 - t) * S)] = 1.0
+            k += 1
     return m[..., None]
 
 
@@ -493,13 +497,18 @@ def art_M(mode='full'):
     """图纸纸底 + 填色格(紧贴格线) + 覆盖式格线,正常拼豆图纸的样子。
     full = 带圆角外框的整幅卡片(legacy / web 独立方图);
     bg / shapes / mono / maskable = 自适应体系:格线满铺全画布、无限延伸、无外框,
-    圆形遮罩自然裁切格线;豆苗 12 格落在安全圆(0.18..0.82)且与背景格线同坐标对齐。"""
+    圆形遮罩自然裁切格线;豆苗 12 格(x 居中 0.245..0.755,y 上移 0.195..0.705)与背景格线同坐标对齐。"""
     mono_flag = (mode == 'mono')
     # ---------- 自适应体系(圆形遮罩:格线无限延伸) ----------
     if mode in ('bg', 'shapes', 'mono', 'maskable'):
-        a0, a1 = 0.18, 0.82
+        # 实测桌面遮罩=圆 r=0.326C(65%,小于 72% 规范):居中方形最多 46%,故用
+        # 「顶部两角为空」的几何事实——豆苗 51%:x 居中(0.245..0.755),y 整体上移
+        # 5%(0.195..0.705):叶冠距上缘 ~5px、土角/叶冠角恰好吻边(≤1px),全部
+        # 完整;72% 圆形桌面下同样完整且更宽松。
+        ax0, ax1 = 0.245, 0.755
+        ay0, ay1 = 0.195, 0.705
         n = 12
-        cell = (a1 - a0) / n
+        cell = (ax1 - ax0) / n
         paper = grad_stops([hexc('#FBFAF2'), hexc('#E9EEDC')], TDIAG)
         canvas = _transparent() if mode in ('shapes', 'mono') else _canvas(paper)
         if mode in ('shapes', 'mono', 'maskable'):
@@ -509,7 +518,7 @@ def art_M(mode='full'):
                         continue
                     jit = 1.0 + (((r * 7 + c * 13) % 5) - 2) * 0.015
                     color = hexc(J_COLORS[ch]) * jit
-                    x0, y0 = a0 + c * cell, a0 + r * cell
+                    x0, y0 = ax0 + c * cell, ay0 + r * cell
                     if mono_flag:
                         cm = mask_pil(lambda d, X=x0, Y=y0:
                                       d.rectangle([X * S, Y * S, (X + cell) * S, (Y + cell) * S], fill=255))
@@ -518,7 +527,7 @@ def art_M(mode='full'):
                         canvas = sq_tile(canvas, x0, y0, cell, cell * 0.06,
                                          lighten(color, 0.07), darken(color, 0.05))
         if mode in ('bg', 'mono', 'maskable'):
-            lat = _bleed_lattice_mask(a0, cell, cell * 0.16)
+            lat = _bleed_lattice_mask(ax0, cell, cell * 0.16, offy=ay0)
             canvas = comp(canvas, lat * (1.0 if mono_flag else 0.30),
                           WHITE if mono_flag else hexc('#47523F'))
         return canvas
