@@ -30,3 +30,6 @@ Thumbs.db
 # 本地工具与交付产物
 .vscode/
 dist/
+
+# Python byte cache
+__pycache__/
