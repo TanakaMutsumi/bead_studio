@@ -473,17 +473,61 @@ def _lattice_mask(a0, a1, n, lw):
     return m[..., None]
 
 
+def _bleed_lattice_mask(off, pitch, lw):
+    """从 off 起、按 pitch 等距的格线铺满全画布(无限延伸,无外框)"""
+    m = np.zeros((S, S))
+    t = lw / 2
+    k = -20
+    while True:
+        p = off + k * pitch
+        if p > 1 - t:
+            break
+        if p >= t:
+            m[int(t * S):int((1 - t) * S), int((p - t) * S):int((p + t) * S)] = 1.0
+            m[int((p - t) * S):int((p + t) * S), int(t * S):int((1 - t) * S)] = 1.0
+        k += 1
+    return m[..., None]
+
+
 def art_M(mode='full'):
-    """图纸纸底 + 填色格(紧贴格线) + 覆盖式格线 + 圆角外框,正常拼豆图纸的样子。
-    bg = 纯纸色(自适应背景层);shapes = 整幅完整设计(自适应前景层,保证桌面渲染与预览一致);
-    mono = 白色格线+外框+色格剪影(主题图标层)。"""
+    """图纸纸底 + 填色格(紧贴格线) + 覆盖式格线,正常拼豆图纸的样子。
+    full = 带圆角外框的整幅卡片(legacy / web 独立方图);
+    bg / shapes / mono / maskable = 自适应体系:格线满铺全画布、无限延伸、无外框,
+    圆形遮罩自然裁切格线;豆苗 12 格落在安全圆(0.18..0.82)且与背景格线同坐标对齐。"""
+    mono_flag = (mode == 'mono')
+    # ---------- 自适应体系(圆形遮罩:格线无限延伸) ----------
+    if mode in ('bg', 'shapes', 'mono', 'maskable'):
+        a0, a1 = 0.18, 0.82
+        n = 12
+        cell = (a1 - a0) / n
+        paper = grad_stops([hexc('#FBFAF2'), hexc('#E9EEDC')], TDIAG)
+        canvas = _transparent() if mode in ('shapes', 'mono') else _canvas(paper)
+        if mode in ('shapes', 'mono', 'maskable'):
+            for r, row in enumerate(J_ROWS):
+                for c, ch in enumerate(row):
+                    if ch == '.':
+                        continue
+                    jit = 1.0 + (((r * 7 + c * 13) % 5) - 2) * 0.015
+                    color = hexc(J_COLORS[ch]) * jit
+                    x0, y0 = a0 + c * cell, a0 + r * cell
+                    if mono_flag:
+                        cm = mask_pil(lambda d, X=x0, Y=y0:
+                                      d.rectangle([X * S, Y * S, (X + cell) * S, (Y + cell) * S], fill=255))
+                        canvas = comp(canvas, cm, WHITE)
+                    else:
+                        canvas = sq_tile(canvas, x0, y0, cell, cell * 0.06,
+                                         lighten(color, 0.07), darken(color, 0.05))
+        if mode in ('bg', 'mono', 'maskable'):
+            lat = _bleed_lattice_mask(a0, cell, cell * 0.16)
+            canvas = comp(canvas, lat * (1.0 if mono_flag else 0.30),
+                          WHITE if mono_flag else hexc('#47523F'))
+        return canvas
+    # ---------- full:带外框卡片(独立方图) ----------
     n = 12
     a0, a1 = 0.10, 0.90
     cell = (a1 - a0) / n
     paper = grad_stops([hexc('#FBFAF2'), hexc('#E9EEDC')], TDIAG)
-    if mode == 'bg':
-        return _canvas(paper)
-    canvas = _transparent() if mode == 'mono' else _canvas(paper)
+    canvas = _canvas(paper)
     for r, row in enumerate(J_ROWS):
         for c, ch in enumerate(row):
             if ch == '.':
@@ -491,21 +535,15 @@ def art_M(mode='full'):
             jit = 1.0 + (((r * 7 + c * 13) % 5) - 2) * 0.015
             color = hexc(J_COLORS[ch]) * jit
             x0, y0 = a0 + c * cell, a0 + r * cell
-            if mode == 'mono':
-                cm = mask_pil(lambda d, X=x0, Y=y0:
-                              d.rectangle([X * S, Y * S, (X + cell) * S, (Y + cell) * S], fill=255))
-                canvas = comp(canvas, cm, WHITE)
-            else:
-                canvas = sq_tile(canvas, x0, y0, cell, cell * 0.06,
-                                 lighten(color, 0.07), darken(color, 0.05))
-    mono = (mode == 'mono')
+            canvas = sq_tile(canvas, x0, y0, cell, cell * 0.06,
+                             lighten(color, 0.07), darken(color, 0.05))
     lat = _lattice_mask(a0, a1, n, cell * 0.16)
-    canvas = comp(canvas, lat * (1.0 if mono else 0.30), WHITE if mono else hexc('#47523F'))
+    canvas = comp(canvas, lat * 0.30, hexc('#47523F'))
     bw = 0.022
     frame = mask_pil(lambda d: d.rounded_rectangle(
         [(a0 - bw) * S, (a0 - bw) * S, (a1 + bw) * S, (a1 + bw) * S],
         radius=0.05 * S, outline=255, width=int(bw * S)))
-    canvas = comp(canvas, frame * (1.0 if mono else 0.55), WHITE if mono else hexc('#47523F'))
+    canvas = comp(canvas, frame * 0.55, hexc('#47523F'))
     return canvas
 
 
@@ -556,9 +594,9 @@ def shapes_on(shapes_rgba, size, frac):
 
 LEGACY = {'mdpi': 48, 'hdpi': 72, 'xhdpi': 96, 'xxhdpi': 144, 'xxxhdpi': 192}
 ADAPTIVE = {'mdpi': 108, 'hdpi': 162, 'xhdpi': 216, 'xxhdpi': 324, 'xxxhdpi': 432}
-# 前景层占画布比例:M 的 shapes 就是整幅完整设计,需整体放进 66% 安全区,
+# 前景层占画布比例:M 的自适应前景层网格坐标已按全画布设计(与背景格线对齐),1:1 放置;
 # 其余方案 shapes 只是图案主体,62% 即可
-FRAC = {'M': 0.66}
+FRAC = {'M': 1.0}
 
 
 def apply(variant):
@@ -593,7 +631,7 @@ def apply(variant):
     masked_icon(art, 32, 'rounded').save(os.path.join(web, 'favicon.png'))
     for sz in (192, 512):
         full = shrink(to_pil(bg), sz)
-        fg = shrink(to_pil(shapes), int(sz * 0.78))
+        fg = shrink(to_pil(shapes), int(sz * (frac if frac >= 1.0 else 0.78)))
         full.paste(fg, ((sz - fg.width) // 2, (sz - fg.height) // 2), fg)
         full.save(os.path.join(web, 'icons', 'Icon-maskable-%d.png' % sz))
     written.append('web/ icons x4 + favicon')
