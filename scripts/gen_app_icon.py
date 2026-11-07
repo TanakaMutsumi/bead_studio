@@ -474,35 +474,38 @@ def _lattice_mask(a0, a1, n, lw):
 
 
 def art_M(mode='full'):
-    """图纸纸底 + 填色格(紧贴格线) + 覆盖式格线 + 圆角外框,正常拼豆图纸的样子"""
+    """图纸纸底 + 填色格(紧贴格线) + 覆盖式格线 + 圆角外框,正常拼豆图纸的样子。
+    bg = 纯纸色(自适应背景层);shapes = 整幅完整设计(自适应前景层,保证桌面渲染与预览一致);
+    mono = 白色格线+外框+色格剪影(主题图标层)。"""
     n = 12
     a0, a1 = 0.10, 0.90
     cell = (a1 - a0) / n
     paper = grad_stops([hexc('#FBFAF2'), hexc('#E9EEDC')], TDIAG)
-    canvas = _transparent() if mode in ('shapes', 'mono') else _canvas(paper)
-    if mode != 'bg':
-        for r, row in enumerate(J_ROWS):
-            for c, ch in enumerate(row):
-                if ch == '.':
-                    continue
-                jit = 1.0 + (((r * 7 + c * 13) % 5) - 2) * 0.015
-                color = hexc(J_COLORS[ch]) * jit
-                x0, y0 = a0 + c * cell, a0 + r * cell
-                if mode == 'mono':
-                    cm = mask_pil(lambda d, X=x0, Y=y0:
-                                  d.rectangle([X * S, Y * S, (X + cell) * S, (Y + cell) * S], fill=255))
-                    canvas = comp(canvas, cm, WHITE)
-                else:
-                    canvas = sq_tile(canvas, x0, y0, cell, cell * 0.06,
-                                     lighten(color, 0.07), darken(color, 0.05))
-    if mode in ('full', 'bg'):
-        lat = _lattice_mask(a0, a1, n, cell * 0.16)
-        canvas = comp(canvas, lat * 0.30, hexc('#47523F'))
-        bw = 0.022
-        frame = mask_pil(lambda d: d.rounded_rectangle(
-            [(a0 - bw) * S, (a0 - bw) * S, (a1 + bw) * S, (a1 + bw) * S],
-            radius=0.05 * S, outline=255, width=int(bw * S)))
-        canvas = comp(canvas, frame * 0.55, hexc('#47523F'))
+    if mode == 'bg':
+        return _canvas(paper)
+    canvas = _transparent() if mode == 'mono' else _canvas(paper)
+    for r, row in enumerate(J_ROWS):
+        for c, ch in enumerate(row):
+            if ch == '.':
+                continue
+            jit = 1.0 + (((r * 7 + c * 13) % 5) - 2) * 0.015
+            color = hexc(J_COLORS[ch]) * jit
+            x0, y0 = a0 + c * cell, a0 + r * cell
+            if mode == 'mono':
+                cm = mask_pil(lambda d, X=x0, Y=y0:
+                              d.rectangle([X * S, Y * S, (X + cell) * S, (Y + cell) * S], fill=255))
+                canvas = comp(canvas, cm, WHITE)
+            else:
+                canvas = sq_tile(canvas, x0, y0, cell, cell * 0.06,
+                                 lighten(color, 0.07), darken(color, 0.05))
+    mono = (mode == 'mono')
+    lat = _lattice_mask(a0, a1, n, cell * 0.16)
+    canvas = comp(canvas, lat * (1.0 if mono else 0.30), WHITE if mono else hexc('#47523F'))
+    bw = 0.022
+    frame = mask_pil(lambda d: d.rounded_rectangle(
+        [(a0 - bw) * S, (a0 - bw) * S, (a1 + bw) * S, (a1 + bw) * S],
+        radius=0.05 * S, outline=255, width=int(bw * S)))
+    canvas = comp(canvas, frame * (1.0 if mono else 0.55), WHITE if mono else hexc('#47523F'))
     return canvas
 
 
@@ -553,6 +556,9 @@ def shapes_on(shapes_rgba, size, frac):
 
 LEGACY = {'mdpi': 48, 'hdpi': 72, 'xhdpi': 96, 'xxhdpi': 144, 'xxxhdpi': 192}
 ADAPTIVE = {'mdpi': 108, 'hdpi': 162, 'xhdpi': 216, 'xxhdpi': 324, 'xxxhdpi': 432}
+# 前景层占画布比例:M 的 shapes 就是整幅完整设计,需整体放进 66% 安全区,
+# 其余方案 shapes 只是图案主体,62% 即可
+FRAC = {'M': 0.66}
 
 
 def apply(variant):
@@ -560,6 +566,7 @@ def apply(variant):
     bg = ARTS[variant]('bg')
     shapes = ARTS[variant]('shapes')
     mono = ARTS[variant]('mono')
+    frac = FRAC.get(variant, 0.62)
     res = os.path.join(ROOT, 'android', 'app', 'src', 'main', 'res')
     web = os.path.join(ROOT, 'web')
     written = []
@@ -570,8 +577,8 @@ def apply(variant):
     os.makedirs(anydpi, exist_ok=True)
     for dpi, sz in ADAPTIVE.items():
         shrink(to_pil(bg), sz).save(os.path.join(res, 'mipmap-%s' % dpi, 'ic_launcher_background.png'))
-        shapes_on(shapes, sz, 0.62).save(os.path.join(res, 'mipmap-%s' % dpi, 'ic_launcher_foreground.png'))
-        shapes_on(mono, sz, 0.62).save(os.path.join(res, 'mipmap-%s' % dpi, 'ic_launcher_monochrome.png'))
+        shapes_on(shapes, sz, frac).save(os.path.join(res, 'mipmap-%s' % dpi, 'ic_launcher_foreground.png'))
+        shapes_on(mono, sz, frac).save(os.path.join(res, 'mipmap-%s' % dpi, 'ic_launcher_monochrome.png'))
         written.append('mipmap-%s/ x3 adaptive' % dpi)
     with open(os.path.join(anydpi, 'ic_launcher.xml'), 'w', encoding='utf-8') as f:
         f.write('<?xml version="1.0" encoding="utf-8"?>\n'
