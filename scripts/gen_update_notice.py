@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""「豆田」v0.2.0 更新公告长图生成器
+"""「豆田」v0.2.0 更新公告长图生成器(版式 v2)
 用法: python scripts/gen_update_notice.py  -> dist/更新公告_v0.2.0.png
-风格与 gen_icon_journey 一致(米底白卡/红绿点缀/Noto Sans SC);
-头部为自适应图标(72% 圆遮罩观感)+ 演变三连(A -> J -> M)。
+版式: 图纸格纹理头图 + 大图标 / 定名卡 / 数据块一排 / 五个功能卡(编号章+
+粗体短条目) / 安装卡;不做设计过程叙事,只讲最终结果。
 """
 import os
 import sys
@@ -14,26 +14,58 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gen_app_icon as g
 
 ROOT = g.ROOT
-W, MARGIN = 2160, 100
-CARD_PAD = 74
+W, MARGIN = 2160, 96
+INNER = W - 2 * MARGIN
+PAD = 70
 F = lambda sz, bold=False: ImageFont.truetype(
     os.path.join(ROOT, 'assets', 'fonts',
                  'NotoSansSC-Bold.otf' if bold else 'NotoSansSC-Regular.otf'), sz)
 
 BG = (245, 243, 238)
 CARD, CARD_BD = (255, 255, 255), (228, 224, 216)
-INK, SUB = (43, 42, 38), (138, 133, 122)
+INK, SUB = (43, 42, 38), (120, 116, 106)
 RED = (206, 84, 72)
 GREEN = (86, 148, 74)
 GREEN_SOFT = (123, 182, 97)
-INSTALL_BG, INSTALL_BD = (238, 246, 234), (191, 224, 166)
+GREEN_PALE = (238, 246, 234)
+INSTALL_BD = (191, 224, 166)
+GRID_LINE = (236, 232, 222)
 
-BODY, BODY_LH = 46, 78
-HEAD, HEAD_SZ = 64, 62
+FS, FS_LH = 44, 76          # 条目字号/行高
+
+STATS = [('15', '项改进'), ('37 秒', '6K 原图识别'), ('2~16', '截图墙每行列数'), ('无损', '抖音图文原图')]
+
+FEATURES = [
+    ('01', '识别更准了', [
+        ('空白格不虚涨', '图纸外的空白格直接算空白；印了色号的白豆一颗不丢'),
+        ('漏读自动补认', '太小、压线的字逐格裁出放大再读，认出色号按色号来'),
+    ]),
+    ('02', '大图识别又快又稳', [
+        ('不再卡死崩溃', '超大原图不再放大出上亿像素中间图，自动控制规模'),
+        ('全程进度可见', '进行到哪一步、已确认多少格，一眼可见不用干等'),
+    ]),
+    ('03', '复核更省力了', [
+        ('整片拖选', '按住半秒锁定，起点拖到终点一次选中，贴边自动滚屏'),
+        ('每行 2~16 格', '想多看几格调大、想看清格内字调小，自定义直接输'),
+        ('共 N 颗徽标', '图例右侧实时总数，和图纸标注一眼对账'),
+        ('识别中锁定画面', '防止中途误碰改动导致认错位'),
+    ]),
+    ('04', '导入的图更清楚了', [
+        ('抖音变原图', '和作者上传的完全一样清楚，免登录、操作不变'),
+        ('小红书更稳', '链接粘贴修复，大图放大更清楚'),
+    ]),
+    ('05', '拼豆入口更顺手了', [
+        ('开始拼豆先选豆板', '缩略图、件数、保存时间一目了然，可重命名/删除/新建'),
+        ('对齐步长档 0.01~1', '格子大小与上下左右微调统一按当前档位走'),
+        ('链接导入防误触', '解析、下载期间面板锁定，不怕误关中断'),
+    ]),
+]
+
+INSTALL = ('下载 bead_studio_v0.2.0.apk 直接安装即可（覆盖旧版本），作品和拼豆进度'
+           '全部保留；安装后桌面会显示新的「豆田」图标。')
 
 
 def adaptive_circle(size, frac=0.72):
-    """自适应层合成后按圆遮罩裁切(桌面观感)"""
     bg = g.art_M('bg')[..., :3]
     fg = g.art_M('shapes')
     a = fg[..., 3:]
@@ -47,43 +79,8 @@ def adaptive_circle(size, frac=0.72):
     return out
 
 
-def full_icon(key, size):
-    return g.masked_icon(g.ARTS[key]('full'), size, 'rounded')
-
-
-SECTIONS = [
-    (RED, '定名「豆田」，有了自己的图标', 'hero', [
-        '「拼豆图案工作室」正式定名「豆田」——豆子的田，桌面名称与应用内标题全部统一。',
-        '全新图标「图纸格豆苗」：一颗绿豆苗从拼豆图纸的格线里长出来。13 稿、5 轮挑选才定下来：不要抽象渐变、不要圆豆，就要拼豆图纸本来的样子。',
-        'Android 桌面上无论圆形还是圆角方形图标槽都自适应，图纸格线无限延伸、边缘自然裁切；安装后桌面图标自动换新。',
-    ]),
-    (GREEN, '识别更准了', None, [
-        '空白格不会再被认成白色豆豆：图纸用到白色、米白色的豆（H2、H1 这类）时，图案外的空白格以前会被成片认成白色，一张图凭空多出几百颗；现在格子里没印字就直接算空白，真正印了色号的白豆一颗不丢。',
-        '看漏的字会自动放大再看一遍：字很小或压在格线上的色号，第一遍识别会看漏，现在逐格裁出放大再认一遍——认出印刷色号就按色号来，比猜颜色准得多。',
-    ]),
-    (GREEN, '大图识别又快又稳', None, [
-        '超大原图不再卡死崩溃：以前 6K 级别的小红书原图要先放大出上亿像素的中间图，等一分多钟还可能中途崩掉；现在自动控制放大规模，实测同样大图约 37 秒完整识别 37 色。',
-        '识别全程能看到进度：进行到哪一步、已确认多少格，一眼可见，不用干等。',
-    ]),
-    (GREEN, '复核更省力了', None, [
-        '按住拖一下，整片格子一次选中：按住半秒锁定，从起点拖到终点一整片选中/取消，拖到屏幕边上自动滚动接着选。',
-        '截图墙每行显示几格可以调（2~16 格）：想一屏多看几格调大，想看清格子里的字就调小；列表里没有的数字点「自定义」直接输。',
-        '图例清单右侧常驻「共 N 颗」：改数字立即更新，和图纸标注总数一眼对账。',
-        '识别进行中会暂时锁定画面，避免中途误碰导致认错位。',
-    ]),
-    (GREEN, '导入的图更清楚了', None, [
-        '抖音图文导入变成原图：和作者发布的完全一样清楚（以前是被平台压缩过的），放大数格子不再糊；仍免登录、操作不变。',
-        '小红书导入修好了链接复制粘贴的小问题，大图放大也更清楚。',
-    ]),
-    (GREEN, '拼豆入口更顺手了', None, [
-        '「开始拼豆」先选豆板：豆板选择页里缩略图、名称、作品数、保存时间一目了然，可重命名、删除、新建空板；还没有豆板时自动进新空板，和以前直达的习惯一致。',
-        '九宫格对齐微调加了步长档（0.01 / 0.05 / 0.1 / 0.5 / 1）：「格子大小」和上下左右微移统一按当前档位走。',
-        '链接导入防误触：解析、下载期间面板自动锁定，不会误触换图、误关面板导致导入中断。',
-    ]),
-    (GREEN, '安装说明', 'install', [
-        '下载 bead_studio_v0.2.0.apk 直接安装即可（覆盖旧版本），作品和拼豆进度全部保留；安装后桌面会显示新的「豆田」图标。',
-    ]),
-]
+def full_icon(size):
+    return g.masked_icon(g.ARTS['M']('full'), size, 'rounded')
 
 
 def wrap(text, font, maxw):
@@ -98,22 +95,41 @@ def wrap(text, font, maxw):
     return lines
 
 
-def bullet_height(texts, inner_w):
-    h = 8
-    for i, t in enumerate(texts):
-        lines = wrap(t, F(BODY), inner_w - 56)
-        h += len(lines) * BODY_LH + (26 if i < len(texts) - 1 else 0)
-    return h
+def rich_lines(head, body, maxw):
+    """首行=粗体head+空格+body, 溢出后按 body 续行;返回 [(text, bold, offset_x)] 行集"""
+    fh, fb = F(FS, True), F(FS)
+    hw = fh.getlength(head + '  ')
+    out = [(head, True, 0)]
+    room = maxw - hw
+    cur, curw = '', 0
+    for ch in body:
+        w = fb.getlength(ch)
+        if curw + w > room:
+            out.append((cur, False, hw))
+            cur, curw, room = ch, w, maxw
+        else:
+            cur += ch
+            curw += w
+    if cur:
+        out.append((cur, False, hw))
+    return out
+
+
+def feature_card_h(items):
+    h = PAD + 64 + 52          # 编号章 + 标题 + 间距
+    for head, body in items:
+        n = len(rich_lines(head, body, INNER - 2 * PAD - 96))
+        h += n * FS_LH + 30
+    return h - 30 + PAD
 
 
 def measure():
-    h = 560                                    # 页眉(图标+标题)
-    for color, title, kind, texts in SECTIONS:
-        inner_w = W - 2 * MARGIN - 2 * CARD_PAD
-        body_h = bullet_height(texts, inner_w)
-        extra = 300 if kind == 'hero' else 0
-        h += HEAD + 46 + body_h + extra + 2 * CARD_PAD + 56   # 卡片本体 + 段距
-    h += 70
+    h = 640                    # 头图
+    h += 46 + 350              # 定名卡
+    h += 46 + 300              # 数据块
+    for _, _, items in FEATURES:
+        h += 46 + feature_card_h(items)
+    h += 46 + 240 + 80         # 安装卡 + 底边距
     return h
 
 
@@ -121,53 +137,75 @@ def draw_board():
     H = measure()
     board = Image.new('RGB', (W, H), BG)
     d = ImageDraw.Draw(board)
-    # ---------- 页眉 ----------
-    icon = adaptive_circle(300)
-    board.paste(icon, (W // 2 - 150, 96), icon)
-    d.text((W // 2, 452), '豆田 v0.2.0 更新公告', font=F(96, True), fill=INK, anchor='ma')
-    d.text((W // 2, 570), '2026-11-09 · 大版本：定名与新图标 + 15 项改进', font=F(44), fill=SUB, anchor='ma')
-    y = 660
-    # ---------- 各节 ----------
-    for color, title, kind, texts in SECTIONS:
-        inner_w = W - 2 * MARGIN - 2 * CARD_PAD
-        body_h = bullet_height(texts, inner_w)
-        hero_h = 300 if kind == 'hero' else 0
-        card_h = HEAD + 46 + body_h + hero_h + 2 * CARD_PAD
-        if kind == 'install':
-            d.rounded_rectangle([MARGIN, y, W - MARGIN, y + card_h], radius=26,
-                                fill=INSTALL_BG, outline=INSTALL_BD, width=3)
-        else:
-            d.rounded_rectangle([MARGIN, y, W - MARGIN, y + card_h], radius=26,
-                                fill=CARD, outline=CARD_BD, width=2)
-        x0, ty = MARGIN + CARD_PAD, y + CARD_PAD
-        d.rounded_rectangle([x0, ty + 8, x0 + 14, ty + HEAD_SZ - 8], radius=7, fill=color)
-        d.text((x0 + 44, ty), title, font=F(HEAD_SZ, True), fill=INK)
-        ty += HEAD + 46
-        if kind == 'hero':
-            # 演变三连: A 初稿 -> J 方向 -> M 定稿
-            strip_y = ty
-            caps = [('初稿 · 九宫豆田', 'A'), ('第 4 稿 · 方豆豆苗', 'J'), ('定稿 · 图纸格豆苗', 'M')]
-            cell_w = inner_w // 3
-            for i, (cap, key) in enumerate(caps):
-                cx = x0 + i * cell_w + cell_w // 2
-                ic = adaptive_circle(210) if key == 'M' else full_icon(key, 210)
-                board.paste(ic, (cx - 105, strip_y), ic)
-                d.text((cx, strip_y + 226), cap, font=F(38), fill=SUB, anchor='ma')
-                if i < 2:
-                    d.text((x0 + (i + 1) * cell_w - cell_w // 2 + cell_w // 8, strip_y + 88),
-                           '→', font=F(64, True), fill=(180, 176, 166), anchor='ma')
-            ty += hero_h
-        for i, t in enumerate(texts):
-            lines = wrap(t, F(BODY), inner_w - 56)
-            for li, ln in enumerate(lines):
+    # ---------- 头图: 图纸格纹理 + 图标 + 标题 + 徽标 ----------
+    hero_h = 640
+    for p in range(0, W, 96):
+        d.line([(p, 0), (p, hero_h)], fill=GRID_LINE, width=3)
+        d.line([(0, p), (W, p)], fill=GRID_LINE, width=3)
+    icon = adaptive_circle(330)
+    board.paste(icon, (W // 2 - 165, 84), icon)
+    d.text((W // 2, 452), '豆田  v0.2.0', font=F(96, True), fill=INK, anchor='ma')
+    badge = '大版本更新 · 15 项改进 · 2026-11-09'
+    bw = F(42, True).getlength(badge) + 108
+    d.rounded_rectangle([W // 2 - bw // 2, 560, W // 2 + bw // 2, 636], radius=38,
+                        fill=(255, 255, 255), outline=GREEN_SOFT, width=3)
+    d.text((W // 2, 598), badge, font=F(42, True), fill=GREEN, anchor='mm')
+    y = hero_h
+    # ---------- 定名卡 ----------
+    ch = 350
+    d.rounded_rectangle([MARGIN, y, W - MARGIN, y + ch], radius=28, fill=CARD,
+                        outline=CARD_BD, width=2)
+    ic = full_icon(230)
+    board.paste(ic, (MARGIN + PAD, y + 60), ic)
+    tx = MARGIN + PAD + 230 + 80
+    d.text((tx, y + 62), '定名「豆田」，有了自己的图标', font=F(62, True), fill=INK)
+    for i, t in enumerate(['「拼豆图案工作室」正式定名「豆田」——豆子的田，名称全部统一。',
+                           '全新图标「图纸格豆苗」：绿豆苗从拼豆图纸的完整格线里长出来，',
+                           'Android 各种图标槽形都自适应，安装后桌面自动换新。']):
+        d.text((tx, y + 170 + i * 58), t, font=F(42), fill=SUB)
+    y += ch + 46
+    # ---------- 数据块 ----------
+    tw = (INNER - 3 * 36) // 4
+    for i, (num, cap) in enumerate(STATS):
+        x0 = MARGIN + i * (tw + 36)
+        d.rounded_rectangle([x0, y, x0 + tw, y + 300], radius=28, fill=CARD,
+                            outline=CARD_BD, width=2)
+        d.text((x0 + tw // 2, y + 92), num, font=F(88, True),
+               fill=RED if i == 0 else GREEN, anchor='ma')
+        d.line([(x0 + tw // 2 - 40, y + 158), (x0 + tw // 2 + 40, y + 158)],
+               fill=GREEN_SOFT, width=4)
+        cap_lines = wrap(cap, F(38), tw - 60)
+        for li, ln in enumerate(cap_lines):
+            d.text((x0 + tw // 2, y + 198 + li * 54), ln, font=F(38), fill=SUB, anchor='ma')
+    y += 300 + 46
+    # ---------- 功能卡 ----------
+    for no, title, items in FEATURES:
+        ch = feature_card_h(items)
+        d.rounded_rectangle([MARGIN, y, W - MARGIN, y + ch], radius=28, fill=CARD,
+                            outline=CARD_BD, width=2)
+        cx0, cy0 = MARGIN + PAD, y + PAD
+        d.rounded_rectangle([cx0, cy0, cx0 + 64, cy0 + 64], radius=16, fill=GREEN)
+        d.text((cx0 + 32, cy0 + 32), no, font=F(36, True), fill=(255, 255, 255), anchor='mm')
+        d.text((cx0 + 96, cy0), title, font=F(60, True), fill=INK)
+        ty = cy0 + 64 + 52
+        for head, body in items:
+            lines = rich_lines(head, body, INNER - 2 * PAD - 96)
+            for li, (txt, bold, ox) in enumerate(lines):
                 if li == 0:
-                    d.ellipse([x0 + 6, ty + 26, x0 + 26, ty + 46], fill=GREEN_SOFT)
-                d.text((x0 + 56, ty), ln, font=F(BODY), fill=INK)
-                ty += BODY_LH
-            ty += 26
-        y += card_h + 56
+                    d.rounded_rectangle([cx0 + 6, ty + 26, cx0 + 26, ty + 46], radius=5,
+                                        fill=GREEN_SOFT)
+                d.text((cx0 + 52 + ox, ty), txt, font=F(FS, bold), fill=INK if bold else SUB)
+                ty += FS_LH
+            ty += 30
+        y += ch + 46
+    # ---------- 安装卡 ----------
+    ch = 240
+    d.rounded_rectangle([MARGIN, y, W - MARGIN, y + ch], radius=28, fill=GREEN_PALE,
+                        outline=INSTALL_BD, width=3)
+    d.text((MARGIN + PAD, y + 52), '安装说明', font=F(56, True), fill=GREEN)
+    for i, ln in enumerate(wrap(INSTALL, F(42), INNER - 2 * PAD)):
+        d.text((MARGIN + PAD, y + 140 + i * 60), ln, font=F(42), fill=INK)
     out = os.path.join(ROOT, 'dist', '更新公告_v0.2.0.png')
-    os.makedirs(os.path.dirname(out), exist_ok=True)
     board.save(out)
     print('NOTICE ->', out, board.size)
 
