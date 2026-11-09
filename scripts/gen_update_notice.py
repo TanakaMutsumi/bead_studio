@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""「豆田」v0.2.0 更新公告长图生成器(版式 v2)
+"""「豆田」v0.2.0 更新公告长图生成器(版式 v3)
 用法: python scripts/gen_update_notice.py  -> dist/更新公告_v0.2.0.png
-版式: 图纸格纹理头图 + 大图标 / 定名卡 / 数据块一排 / 五个功能卡(编号章+
-粗体短条目) / 安装卡;不做设计过程叙事,只讲最终结果。
+版式: 图纸格纹理头图 + 大图标 / 定名卡 / 亮点数据块(大字+完整说明) /
+五个功能卡(编号章 + 双列小卡条目) / 安装卡;只讲最终结果。
 """
 import os
 import sys
@@ -28,16 +28,24 @@ RED = (206, 84, 72)
 GREEN = (86, 148, 74)
 GREEN_SOFT = (123, 182, 97)
 GREEN_PALE = (238, 246, 234)
+TILE_BG = (242, 245, 239)
+TILE_BD = (224, 232, 222)
 INSTALL_BD = (191, 224, 166)
 GRID_LINE = (236, 232, 222)
 
-FS, FS_LH = 44, 76          # 条目字号/行高
+H_FS, B_FS = 46, 40          # 小卡标题/正文字号
+H_LH, B_LH = 56, 56
 
-STATS = [('15', '项改进'), ('37 秒', '6K 原图识别'), ('2~16', '截图墙每行列数'), ('无损', '抖音图文原图')]
+STATS = [
+    ('37 秒', '6K 超大原图完整识别', '以前一分多钟还可能崩'),
+    ('2~16 格', '复核每行列数随手调', '多看几格 / 看清格内字'),
+    ('无损', '抖音图文导入变原图', '和作者上传的一样清楚'),
+    ('免登录', '小红书 / 抖音链接导入', '粘贴链接直接拿原图'),
+]
 
 FEATURES = [
     ('01', '识别更准了', [
-        ('空白格不虚涨', '图纸外的空白格直接算空白；印了色号的白豆一颗不丢'),
+        ('空白格不虚涨', '图纸外的空白格直接算空白，印了色号的白豆一颗不丢'),
         ('漏读自动补认', '太小、压线的字逐格裁出放大再读，认出色号按色号来'),
     ]),
     ('02', '大图识别又快又稳', [
@@ -46,7 +54,7 @@ FEATURES = [
     ]),
     ('03', '复核更省力了', [
         ('整片拖选', '按住半秒锁定，起点拖到终点一次选中，贴边自动滚屏'),
-        ('每行 2~16 格', '想多看几格调大、想看清格内字调小，自定义直接输'),
+        ('每行 2~16 格', '列表里没有的数字点「自定义」直接输'),
         ('共 N 颗徽标', '图例右侧实时总数，和图纸标注一眼对账'),
         ('识别中锁定画面', '防止中途误碰改动导致认错位'),
     ]),
@@ -55,7 +63,7 @@ FEATURES = [
         ('小红书更稳', '链接粘贴修复，大图放大更清楚'),
     ]),
     ('05', '拼豆入口更顺手了', [
-        ('开始拼豆先选豆板', '缩略图、件数、保存时间一目了然，可重命名/删除/新建'),
+        ('开始拼豆先选豆板', '缩略图、件数、保存时间一目了然，可重命名 / 删除 / 新建'),
         ('对齐步长档 0.01~1', '格子大小与上下左右微调统一按当前档位走'),
         ('链接导入防误触', '解析、下载期间面板锁定，不怕误关中断'),
     ]),
@@ -95,41 +103,54 @@ def wrap(text, font, maxw):
     return lines
 
 
-def rich_lines(head, body, maxw):
-    """首行=粗体head+空格+body, 溢出后按 body 续行;返回 [(text, bold, offset_x)] 行集"""
-    fh, fb = F(FS, True), F(FS)
-    hw = fh.getlength(head + '  ')
-    out = [(head, True, 0)]
-    room = maxw - hw
-    cur, curw = '', 0
-    for ch in body:
-        w = fb.getlength(ch)
-        if curw + w > room:
-            out.append((cur, False, hw))
-            cur, curw, room = ch, w, maxw
-        else:
-            cur += ch
-            curw += w
-    if cur:
-        out.append((cur, False, hw))
-    return out
+def tile_h(body, tw):
+    n = len(wrap(body, F(B_FS), tw - 2 * 30))
+    return 30 + H_LH + 14 + n * B_LH + 30
 
 
 def feature_card_h(items):
-    h = PAD + 64 + 52          # 编号章 + 标题 + 间距
-    for head, body in items:
-        n = len(rich_lines(head, body, INNER - 2 * PAD - 96))
-        h += n * FS_LH + 30
-    return h - 30 + PAD
+    tw = (INNER - 2 * PAD - 36) // 2
+    h = PAD + 64 + 46
+    rows = [(items[i:i + 2]) for i in range(0, len(items), 2)]
+    for row in rows:
+        span = len(row) == 1 and len(items) % 2 == 1 and row is rows[-1]
+        w = INNER - 2 * PAD if span else tw
+        h += max(tile_h(b, w) for _, b in row) + 24
+    return h - 24 + PAD
+
+
+def draw_feature(d, board, y, no, title, items):
+    ch = feature_card_h(items)
+    d.rounded_rectangle([MARGIN, y, W - MARGIN, y + ch], radius=28, fill=CARD,
+                        outline=CARD_BD, width=2)
+    cx0, cy0 = MARGIN + PAD, y + PAD
+    d.rounded_rectangle([cx0, cy0, cx0 + 64, cy0 + 64], radius=16, fill=GREEN)
+    d.text((cx0 + 32, cy0 + 32), no, font=F(36, True), fill=(255, 255, 255), anchor='mm')
+    d.text((cx0 + 96, cy0 + 2), title, font=F(60, True), fill=INK)
+    ty = cy0 + 64 + 46
+    tw = (INNER - 2 * PAD - 36) // 2
+    rows = [(items[i:i + 2]) for i in range(0, len(items), 2)]
+    for ri, row in enumerate(rows):
+        span = len(row) == 1 and len(items) % 2 == 1 and ri == len(rows) - 1
+        w = INNER - 2 * PAD if span else tw
+        rh = max(tile_h(b, w) for _, b in row)
+        for ci, (head, body) in enumerate(row):
+            x0 = cx0 + (0 if span else ci * (tw + 36))
+            d.rounded_rectangle([x0, ty, x0 + w, ty + rh], radius=20,
+                                fill=TILE_BG, outline=TILE_BD, width=2)
+            d.ellipse([x0 + 30, ty + 32, x0 + 52, ty + 54], fill=GREEN_SOFT)
+            d.text((x0 + 70, ty + 30), head, font=F(H_FS, True), fill=INK)
+            for li, ln in enumerate(wrap(body, F(B_FS), w - 2 * 30)):
+                d.text((x0 + 30, ty + 30 + H_LH + 14 + li * B_LH), ln, font=F(B_FS), fill=SUB)
+        ty += rh + 24
+    return ch
 
 
 def measure():
-    h = 640                    # 头图
-    h += 46 + 350              # 定名卡
-    h += 46 + 300              # 数据块
-    for _, _, items in FEATURES:
+    h = 640 + 46 + 350 + 46 + 330
+    for no, title, items in FEATURES:
         h += 46 + feature_card_h(items)
-    h += 46 + 240 + 80         # 安装卡 + 底边距
+    h += 46 + 240 + 80
     return h
 
 
@@ -137,7 +158,7 @@ def draw_board():
     H = measure()
     board = Image.new('RGB', (W, H), BG)
     d = ImageDraw.Draw(board)
-    # ---------- 头图: 图纸格纹理 + 图标 + 标题 + 徽标 ----------
+    # ---------- 头图 ----------
     hero_h = 640
     for p in range(0, W, 96):
         d.line([(p, 0), (p, hero_h)], fill=GRID_LINE, width=3)
@@ -164,40 +185,22 @@ def draw_board():
                            'Android 各种图标槽形都自适应，安装后桌面自动换新。']):
         d.text((tx, y + 170 + i * 58), t, font=F(42), fill=SUB)
     y += ch + 46
-    # ---------- 数据块 ----------
+    # ---------- 亮点数据块 ----------
     tw = (INNER - 3 * 36) // 4
-    for i, (num, cap) in enumerate(STATS):
+    for i, (num, l1, l2) in enumerate(STATS):
         x0 = MARGIN + i * (tw + 36)
-        d.rounded_rectangle([x0, y, x0 + tw, y + 300], radius=28, fill=CARD,
+        d.rounded_rectangle([x0, y, x0 + tw, y + 330], radius=28, fill=CARD,
                             outline=CARD_BD, width=2)
-        d.text((x0 + tw // 2, y + 92), num, font=F(88, True),
-               fill=RED if i == 0 else GREEN, anchor='ma')
-        d.line([(x0 + tw // 2 - 40, y + 158), (x0 + tw // 2 + 40, y + 158)],
-               fill=GREEN_SOFT, width=4)
-        cap_lines = wrap(cap, F(38), tw - 60)
-        for li, ln in enumerate(cap_lines):
-            d.text((x0 + tw // 2, y + 198 + li * 54), ln, font=F(38), fill=SUB, anchor='ma')
-    y += 300 + 46
+        d.rounded_rectangle([x0 + 20, y + 20, x0 + tw - 20, y + 26], radius=3, fill=GREEN_PALE)
+        d.rounded_rectangle([x0 + tw // 2 - 70, y + 24, x0 + tw // 2 + 70, y + 30],
+                            radius=3, fill=GREEN_SOFT)
+        d.text((x0 + tw // 2, y + 118), num, font=F(84, True), fill=GREEN, anchor='mm')
+        d.text((x0 + tw // 2, y + 196), l1, font=F(38, True), fill=INK, anchor='ma')
+        d.text((x0 + tw // 2, y + 258), l2, font=F(34), fill=SUB, anchor='ma')
+    y += 330 + 46
     # ---------- 功能卡 ----------
     for no, title, items in FEATURES:
-        ch = feature_card_h(items)
-        d.rounded_rectangle([MARGIN, y, W - MARGIN, y + ch], radius=28, fill=CARD,
-                            outline=CARD_BD, width=2)
-        cx0, cy0 = MARGIN + PAD, y + PAD
-        d.rounded_rectangle([cx0, cy0, cx0 + 64, cy0 + 64], radius=16, fill=GREEN)
-        d.text((cx0 + 32, cy0 + 32), no, font=F(36, True), fill=(255, 255, 255), anchor='mm')
-        d.text((cx0 + 96, cy0), title, font=F(60, True), fill=INK)
-        ty = cy0 + 64 + 52
-        for head, body in items:
-            lines = rich_lines(head, body, INNER - 2 * PAD - 96)
-            for li, (txt, bold, ox) in enumerate(lines):
-                if li == 0:
-                    d.rounded_rectangle([cx0 + 6, ty + 26, cx0 + 26, ty + 46], radius=5,
-                                        fill=GREEN_SOFT)
-                d.text((cx0 + 52 + ox, ty), txt, font=F(FS, bold), fill=INK if bold else SUB)
-                ty += FS_LH
-            ty += 30
-        y += ch + 46
+        y += draw_feature(d, board, y, no, title, items) + 46
     # ---------- 安装卡 ----------
     ch = 240
     d.rounded_rectangle([MARGIN, y, W - MARGIN, y + ch], radius=28, fill=GREEN_PALE,
