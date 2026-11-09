@@ -474,18 +474,20 @@ def _lattice_mask(a0, a1, n, lw):
 
 
 def _bleed_lattice_mask(off, pitch, lw, offy=None):
-    """从 off(竖线)/offy(横线,默认=off)起、按 pitch 等距的格线铺满全画布(无限延伸,无外框)"""
+    """从 off(竖线)/offy(横线,默认=off)起、按 pitch 等距的格线铺满全画布(无限延伸,无外框)
+    注意:横竖判断用轴标签,不能用 `base is off`——ax0/ay0 同值时 CPython 合并常量为同一对象会误判"""
     m = np.zeros((S, S))
     t = lw / 2
-    offy = off if offy is None else offy
-    for base in (off, offy):
+    if offy is None:
+        offy = off
+    for axis, base in (('v', off), ('h', offy)):
         k = -20
         while True:
             p = base + k * pitch
             if p > 1 - t:
                 break
             if p >= t:
-                if base is off:   # 竖线:x=p
+                if axis == 'v':   # 竖线:x=p
                     m[int(t * S):int((1 - t) * S), int((p - t) * S):int((p + t) * S)] = 1.0
                 else:             # 横线:y=p
                     m[int((p - t) * S):int((p + t) * S), int(t * S):int((1 - t) * S)] = 1.0
