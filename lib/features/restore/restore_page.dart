@@ -224,6 +224,17 @@ class _RestorePageState extends State<RestorePage> {
   var _autoDetectBusy = false;
 
   ///< 自动框选（图例区/主体）isolate 检测进行中——body 整体 UI 锁之一
+  int _busyGen = 0;
+
+  ///< 忙操作代号（generation）：每次新链路启动 ++，用户终止也 ++。
+  ///< 链路各检查点比对「启动时快照 != 当前值」即知已被终止（结果丢弃，
+  ///< 只收自己的锁）。isolate 单元无法强杀，终止 = UI 立即解锁 + 后台
+  ///< 链路在下个检查点（进度回调/await 返回）自停，避免双链路并发跑
+  ///< 大图 OCR 的内存峰值
+  bool _busyCancelled = false;
+
+  ///< 最近一次忙操作是被用户终止的（启动新链路时清；终止路径不发
+  ///< 「未识别到主体区」之类的误导提示）
   List<LegendEntry> _legend = [];
 
   ///< 识别出的图例清单
@@ -360,8 +371,7 @@ class _RestorePageState extends State<RestorePage> {
   ///< 全是白调且状态与结果脱节，一律锁死等完成（用户 2026-11-06 定）。
   ///< AppBar 导航不锁（返回上一步/退出已有各自守卫提示）
   bool get _stageBusy =>
-      _legendBusy || _detecting || _recognizing || _autoDetectBusy ||
-      _decoding;
+      _legendBusy || _detecting || _recognizing || _autoDetectBusy || _decoding;
 
   ///< UI 锁遮罩文案（按耗时量级排优先级：主识别最长放最前），未锁 null。
   ///< _decoding（选图页读字节+解码）只在 pick 阶段为真，与其余四锁互斥
@@ -552,6 +562,9 @@ class _RestorePageState extends State<RestorePage> {
     // 选定即上 UI 锁（读字节+解码期间选图页此前无任何反馈，用户会连点
     // 重选/误开链接面板——2026-11-09 用户反馈）；_loadImageBytes 内部的
     // 置位/清位照旧兜底，这里只把锁提前到 readAsBytes
+    _busyGen++;
+    _busyCancelled = false;
+    final gen = _busyGen;
     setState(() => _decoding = true);
     Uint8List bytes;
     try {
@@ -563,6 +576,9 @@ class _RestorePageState extends State<RestorePage> {
       }
       return;
     }
+    if (gen != _busyGen) {
+      return; // 读字节期间被终止：弃图不解锁（_confirmCancelBusy 已清锁）
+    }
     await _loadImageBytes(bytes);
   }
 
@@ -570,12 +586,18 @@ class _RestorePageState extends State<RestorePage> {
   /// 自动预框图例
   Future<void> _loadImageBytes(Uint8List bytes) async {
     try {
+      _busyGen++;
+      _busyCancelled = false;
+      final gen = _busyGen;
       setState(() => _decoding = true);
       // 显示层统一走重编码 JPEG + 长边限幅（decodeForDisplay），识别/裁剪
       // 仍用 decoded 原始像素
       final (decoded, display) = await decodeForDisplay(bytes);
       if (!mounted) {
         return;
+      }
+      if (gen != _busyGen) {
+        return; // 解码期间被终止：弃图（锁已由 _confirmCancelBusy 清）
       }
       setState(() {
         _bytes = bytes;
@@ -628,8 +650,8 @@ class _RestorePageState extends State<RestorePage> {
           setState(() => _autoDetectBusy = false);
         }
       }
-      if (!mounted || !identical(_image, loadedImage)) {
-        return;
+      if (!mounted || !identical(_image, loadedImage) || gen != _busyGen) {
+        return; // 预框期间换图/被终止：检测结果丢弃
       }
       if (auto != null) {
         setState(() => _legendSel = auto);
@@ -757,6 +779,9 @@ class _RestorePageState extends State<RestorePage> {
     if (image == null || _legendBusy) {
       return; // 已在识别：body 遮罩拦了主入口，双保险防极端时序重入
     }
+    _busyGen++;
+    _busyCancelled = false;
+    final gen = _busyGen;
     setState(() {
       _legendBusy = true;
       _legendProgLabel = null;
@@ -775,7 +800,7 @@ class _RestorePageState extends State<RestorePage> {
       if (!mounted) {
         return;
       }
-      if (!identical(_image, image)) {
+      if (!identical(_image, image) || gen != _busyGen) {
         setState(() => _legendBusy = false);
         return;
       }
@@ -795,6 +820,11 @@ class _RestorePageState extends State<RestorePage> {
         rw,
         rh,
         onProgress: (label, done, total) {
+          if (gen != _busyGen) {
+            // 用户终止：抛出沿 runLegendOcr 链冒泡（其 catch 吞成空结果），
+            // 逐 gap 中断后台重活；调用侧 gen 检查丢弃整轮清单
+            throw const BusyCancelled();
+          }
           if (mounted) {
             setState(() {
               _legendProgLabel = label;
@@ -807,8 +837,8 @@ class _RestorePageState extends State<RestorePage> {
       if (!mounted) {
         return;
       }
-      if (!identical(_image, image)) {
-        // OCR 期间换图（返回键回选图步重选）：旧图清单丢弃只解除识别态，
+      if (!identical(_image, image) || gen != _busyGen) {
+        // OCR 期间换图/被终止：旧图清单丢弃只解除识别态，
         // 不写入新图的图例状态
         setState(() => _legendBusy = false);
         return;
@@ -994,6 +1024,9 @@ class _RestorePageState extends State<RestorePage> {
     if (image == null || _detecting) {
       return; // 检测进行中防重入（来回切阶段触发两次会竞态覆盖锚点）
     }
+    _busyGen++;
+    _busyCancelled = false;
+    final gen = _busyGen;
     setState(() => _detecting = true);
     // postFrameCallback 让 _detecting 提示先渲染一帧再起 isolate
     await WidgetsBinding.instance.endOfFrame;
@@ -1004,9 +1037,9 @@ class _RestorePageState extends State<RestorePage> {
     if (!mounted) {
       return;
     }
-    if (!identical(_image, image)) {
-      // 检测期间换图（isolate 跑着时经返回键回选图步重选）：旧图结果丢弃
-      // 只解除检测态——_detecting 卡 true 会拦住新图的检测入口
+    if (!identical(_image, image) || gen != _busyGen) {
+      // 检测期间换图/被终止（isolate 跑着时经返回键回选图步重选）：旧图
+      // 结果丢弃只解除检测态——_detecting 卡 true 会拦住新图的检测入口
       setState(() => _detecting = false);
       return;
     }
@@ -1270,6 +1303,9 @@ class _RestorePageState extends State<RestorePage> {
       _colsCtrl.text = cols.toString();
       _rowsCtrl.text = rows.toString();
     }
+    _busyGen++;
+    _busyCancelled = false;
+    final gen = _busyGen;
     setState(() {
       _recognizing = true;
       _recognTotal = cols * rows;
@@ -1344,6 +1380,9 @@ class _RestorePageState extends State<RestorePage> {
       final txtByCell = <int, String>{};
       var ocrHit = 0;
       void resolveBand(Map<int, String> band) {
+        if (gen != _busyGen) {
+          throw const BusyCancelled(); // 用户终止：中断分带循环
+        }
         if (!mounted) {
           return;
         }
@@ -1364,18 +1403,29 @@ class _RestorePageState extends State<RestorePage> {
         });
       }
 
-      await ocrCells(
-        image,
-        cellRects,
-        centers,
-        Offset(rx + offX, ry + offY),
-        cols,
-        rows,
-        useCorner,
-        pitchX,
-        pitchY,
-        onBand: resolveBand,
-      );
+      try {
+        await ocrCells(
+          image,
+          cellRects,
+          centers,
+          Offset(rx + offX, ry + offY),
+          cols,
+          rows,
+          useCorner,
+          pitchX,
+          pitchY,
+          onBand: resolveBand,
+        );
+      } on BusyCancelled {
+        if (mounted) {
+          setState(() {
+            _recognizing = false;
+            _recognTotal = 0;
+            _recognDone = 0;
+          });
+        }
+        return;
+      }
       // 二遍逐格补读（文本第一判据，2026-11-06 用户反馈）：一遍整图 OCR
       // 没读到色号≠格内没有文本——字小/压格线/全局放大倍率不够都会漏，
       // 此前这些格直接落色彩回退（候选含近白时白底成片吸 H2 的根因即
@@ -1389,36 +1439,50 @@ class _RestorePageState extends State<RestorePage> {
           if (!authoritative[i]) i,
       ];
       if (retryIdx.length <= 900) {
-        await ocrCellsSecondPass(
-          image,
-          [for (final i in retryIdx) cellRects[i]],
-          onBatch: (start, count, batch) {
-            if (!mounted) {
-              return;
-            }
-            setState(() {
-              batch.forEach((k, txt) {
-                final i = retryIdx[start + k];
-                if (txt.isEmpty) {
-                  return;
-                }
-                txtByCell[i] = txt;
-                final hit = codeMap[txt];
-                if (hit != null &&
-                    (candidates.isEmpty || candidates.contains(hit))) {
-                  if (!authoritative[i]) {
-                    authoritative[i] = true;
-                    grid[i] = hit;
+        try {
+          await ocrCellsSecondPass(
+            image,
+            [for (final i in retryIdx) cellRects[i]],
+            onBatch: (start, count, batch) {
+              if (gen != _busyGen) {
+                throw const BusyCancelled(); // 用户终止：中断补读批次
+              }
+              if (!mounted) {
+                return;
+              }
+              setState(() {
+                batch.forEach((k, txt) {
+                  final i = retryIdx[start + k];
+                  if (txt.isEmpty) {
+                    return;
                   }
-                }
+                  txtByCell[i] = txt;
+                  final hit = codeMap[txt];
+                  if (hit != null &&
+                      (candidates.isEmpty || candidates.contains(hit))) {
+                    if (!authoritative[i]) {
+                      authoritative[i] = true;
+                      grid[i] = hit;
+                    }
+                  }
+                });
+                // 本批瓦全部出最终判据（文本命中，或文本阶段终结→色彩回退
+                // 在收尾循环定型）——进度按已确认格数计，每批稳步推进
+                pass2Done += count;
+                _recognDone = ocrHit + pass2Done;
               });
-              // 本批瓦全部出最终判据（文本命中，或文本阶段终结→色彩回退
-              // 在收尾循环定型）——进度按已确认格数计，每批稳步推进
-              pass2Done += count;
-              _recognDone = ocrHit + pass2Done;
+            },
+          );
+        } on BusyCancelled {
+          if (mounted) {
+            setState(() {
+              _recognizing = false;
+              _recognTotal = 0;
+              _recognDone = 0;
             });
-          },
-        );
+          }
+          return;
+        }
       }
       // 色彩回退：两遍文本都没给出候选色号的格。textless 判据用两遍合并
       // 结果——两遍都没读到文本=真·无字
@@ -1467,6 +1531,15 @@ class _RestorePageState extends State<RestorePage> {
         }
       }
       if (!mounted) {
+        return;
+      }
+      if (gen != _busyGen) {
+        // 终止确认发生在最后一刻（回调检查全过）：结果仍丢弃
+        setState(() {
+          _recognizing = false;
+          _recognTotal = 0;
+          _recognDone = 0;
+        });
         return;
       }
       setState(() {
@@ -1998,12 +2071,74 @@ class _RestorePageState extends State<RestorePage> {
                     ),
                   ),
                 ],
+                const SizedBox(height: 16),
+                TextButton(
+                  onPressed: _confirmCancelBusy,
+                  style: TextButton.styleFrom(
+                    backgroundColor: Colors.white12,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 18,
+                      vertical: 4,
+                    ),
+                    minimumSize: const Size(0, 32),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: const Text("终止", style: TextStyle(fontSize: 13)),
+                ),
               ],
             ),
           ),
         ),
       ],
     );
+  }
+
+  /// 终止当前忙操作（遮罩上「终止」钮）：确认后作废旧链路（_busyGen++）
+  /// 并立即清全部忙锁解锁 UI——isolate 单元无法强杀，后台链路在下个
+  /// 检查点自停（见 _busyGen 注释），其收尾 setState 幂等无害
+  Future<void> _confirmCancelBusy() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("终止当前操作？"),
+        content: const Text("已进行到一半的进度会丢弃，可随时重新发起。"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text("继续等待"),
+          ),
+          TextButton(
+            // 确认瞬间操作可能已自然结束（识别比弹窗交互快）：只关弹窗
+            // 不作废——gen++ 会误杀刚落定的结果链
+            onPressed: () => Navigator.pop(ctx, !_stageBusy),
+            child: const Text("终止"),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) {
+      return;
+    }
+    if (!_stageBusy) {
+      // 弹窗挂着期间操作已完成：结果已正常写入，终止无事可做
+      AppSnackBar.show(context, "操作已完成，无需终止");
+      return;
+    }
+    setState(() {
+      _busyGen++;
+      _busyCancelled = true;
+      _decoding = false;
+      _legendBusy = false;
+      _detecting = false;
+      _recognizing = false;
+      _autoDetectBusy = false;
+      _legendProgLabel = null;
+      _legendProgDone = 0;
+      _legendProgTotal = 0;
+      _recognTotal = 0;
+      _recognDone = 0;
+    });
   }
 
   /// 切换色卡（图例清单作废，需重新识别）
@@ -2930,9 +3065,12 @@ class _RestorePageState extends State<RestorePage> {
     if (image == null || _pitchX <= 0 || _pitchY <= 0 || _autoDetectBusy) {
       return null;
     }
+    _busyGen++;
+    _busyCancelled = false;
+    final gen = _busyGen;
     setState(() => _autoDetectBusy = true);
     try {
-      return await _autoDetectSubjectLocked(image);
+      return await _autoDetectSubjectLocked(image, gen);
     } finally {
       if (mounted) {
         setState(() => _autoDetectBusy = false);
@@ -2940,8 +3078,9 @@ class _RestorePageState extends State<RestorePage> {
     }
   }
 
-  /// _autoDetectSubject 的检测本体（busy 已置位，进/出由外层 finally 收）
-  Future<Rect?> _autoDetectSubjectLocked(img.Image image) async {
+  /// _autoDetectSubject 的检测本体（busy 已置位，进/出由外层 finally 收；
+  /// [gen] 为启动时快照，两段 compute 之间据此弃终止结果）
+  Future<Rect?> _autoDetectSubjectLocked(img.Image image, int gen) async {
     final w = image.width, h = image.height;
     // 图例带顶（图片坐标）：优先图例选区，其次自动检测的图例带；两皆无
     // 不排除（整图候选）
@@ -2959,8 +3098,8 @@ class _RestorePageState extends State<RestorePage> {
       detectSubjectInIsolate,
       SubjectDetectArgs(image, legendTop, _pitchX, _pitchY),
     );
-    if (!mounted || !identical(_image, image)) {
-      return null;
+    if (!mounted || !identical(_image, image) || gen != _busyGen) {
+      return null; // 检测期间换图/被终止：结果弃
     }
     if (bbox == null) {
       return null;
@@ -2988,7 +3127,10 @@ class _RestorePageState extends State<RestorePage> {
       return;
     }
     if (rect == null) {
-      AppSnackBar.show(context, "未识别到主体区，请手动框选");
+      if (!_busyCancelled) {
+        // 终止路径静默退出（弹「未识别到主体区」会误导）
+        AppSnackBar.show(context, "未识别到主体区，请手动框选");
+      }
       return;
     }
     setState(() => _selDisplay = rect);

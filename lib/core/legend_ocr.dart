@@ -1047,6 +1047,14 @@ int? parseCountText(String raw) {
 /// 的 relabel）注入，核心函数只报计数
 typedef FixProgress = void Function(int done, int total);
 
+/// 忙操作被用户终止：编排层注入的进度回调（FixProgress/onBand/onBatch
+/// 等）在检查点抛出，本文件的分带/补读循环 `on BusyCancelled rethrow`
+/// 放行（其余异常照旧吞成空结果），由调用方（restore_page 的识别链）
+/// 捕获后清锁退出——isolate 单元无法强杀，终止=回调检查点尽快中断
+class BusyCancelled implements Exception {
+  const BusyCancelled();
+}
+
 /// 补读小区构图参数（[buildGapVariant] 的 compute 入参）：[gap] 为主
 /// isolate 裁好的原生分辨率小区（MB 级，跨 isolate 拷贝 ~ms 级），构图
 /// 重活在 isolate 内做——放大/反色/二值化/衬底逐候选数百 ms 同步块跑
@@ -1392,7 +1400,8 @@ Future<int> fixOrphanCountCodes(
         // 深底暗字第三轮（浅色列漂白+深区Otsu二值）：原图/反色 ML Kit
         // 全瞎时，小区平均灰度深说明字墨与底色同暗（new1 G29 色号印深蓝
         // 条上 Δ≈20）；白底图例（wx1 型）灰度浅不触发，行为不变
-        final d3a = await gapVariant(gap, zoom: z, darkBar: true, invertToo: true);
+        final d3a =
+            await gapVariant(gap, zoom: z, darkBar: true, invertToo: true);
         hit = await ocrGapText(
           d3a.v,
           inverted: d3a.inverted,
@@ -1421,7 +1430,8 @@ Future<int> fixOrphanCountCodes(
         // 第四轮兜底（局部自适应二值化）：Otsu 双模不清（底/字灰度
         // 交叠）时按局部均值硬分
         if (hit == null) {
-          final d4 = await gapVariant(gap, zoom: z, adaptive: true, invertToo: true);
+          final d4 =
+              await gapVariant(gap, zoom: z, adaptive: true, invertToo: true);
           hit = await ocrGapText(
             d4.v,
             inverted: d4.inverted,
@@ -3218,6 +3228,8 @@ Future<Map<int, String>> ocrCells(
       onBand?.call(band);
     }
     return out;
+  } on BusyCancelled {
+    rethrow; // 用户终止：放行给调用方清锁，不吞成「识别为空」
   } catch (_) {
     return const {};
   }
@@ -3419,6 +3431,8 @@ Future<Map<int, String>> ocrCellsSecondPass(
       onBatch?.call(b * perBatch, part.length, batch);
     }
     return out;
+  } on BusyCancelled {
+    rethrow; // 用户终止：放行给调用方清锁，不吞成「补读失败」
   } catch (_) {
     return out; // 补读整体失败：保持一遍结果，色彩回退兜底
   }
