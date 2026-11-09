@@ -2071,20 +2071,25 @@ class _RestorePageState extends State<RestorePage> {
                     ),
                   ),
                 ],
-                const SizedBox(height: 16),
+                const SizedBox(height: 18),
                 TextButton(
                   onPressed: _confirmCancelBusy,
                   style: TextButton.styleFrom(
-                    backgroundColor: Colors.white12,
+                    backgroundColor: const Color(0xFFE53935),
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 18,
-                      vertical: 4,
+                      horizontal: 26,
+                      vertical: 8,
                     ),
-                    minimumSize: const Size(0, 32),
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    minimumSize: const Size(0, 38),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(19),
+                    ),
                   ),
-                  child: const Text("终止", style: TextStyle(fontSize: 13)),
+                  child: const Text(
+                    "终 止",
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                  ),
                 ),
               ],
             ),
@@ -2098,6 +2103,7 @@ class _RestorePageState extends State<RestorePage> {
   /// 并立即清全部忙锁解锁 UI——isolate 单元无法强杀，后台链路在下个
   /// 检查点自停（见 _busyGen 注释），其收尾 setState 幂等无害
   Future<void> _confirmCancelBusy() async {
+    final wasLegend = _legendBusy; // 快照：仅终止图例识别时清清单
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -2138,6 +2144,20 @@ class _RestorePageState extends State<RestorePage> {
       _legendProgTotal = 0;
       _recognTotal = 0;
       _recognDone = 0;
+      // 终止=进度彻底清零（2026-11-09 用户反馈）：终止图例识别时页面
+      // 上残留的识别清单（含本次识别前就在的旧结果）一并清掉——页面
+      // 回到未识别的干净状态，不留「进度还在」的表象；被终止链路的
+      // 丢弃分支只收自己的锁不再碰 _legend，不会二次 dispose。终止
+      // 其他链路（格距检测/主体框选等）不动清单——那是另一步的成果
+      if (wasLegend && _legend.isNotEmpty) {
+        for (final e in _legend) {
+          e.countCtrl.dispose();
+        }
+        _legend = [];
+        _legendByOcr = false;
+        _legendColsCtrl.clear();
+        _legendRowsCtrl.clear();
+      }
     });
   }
 
