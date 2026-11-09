@@ -15,7 +15,7 @@ Flutter 拼豆图纸还原 App（Android 优先，web 兼容）。核心链路�
 |------|------|
 | 接续开发 / 项目现状 / 代码地图 / 环境全表 | `.claude/skills/project-status.md` |
 | 走全流程 UI 测试（adb 坐标表/页面判别/坑清单） | `.claude/skills/full-flow-test.md` |
-| 发新版本 / 出更新公告（模板每版必用） | `.claude/skills/update-notice.md` |
+| 发新版本 / 出更新公告（模板每版必用，可 `/update-notice` 直调） | `.claude/skills/update-notice/SKILL.md` |
 | 动图例/主体检测算法 | `docs/vision_tuning_notes.md` |
 
 ## Windows/adb 环境要点（详见 project-status §2）
