@@ -2,11 +2,21 @@ import 'package:flutter/material.dart';
 
 import '../../core/palette.dart';
 
-/// 编辑器的工具行 / 选区条 / 操作行 / 分板条 / 颜色条 / 拼装进度条
+/// 编辑器的工具行 / 选区条 / 分板条 / 颜色条 / 拼装进度条 / 颜色圆行
 /// （从页面抽出，状态留在页面、回调注入）
 
 /// 工具类型
-enum EditorTool { brush, eraser, bucket, eyedropper, select }
+enum EditorTool {
+  view,
+
+  ///< 查看：点/拖画布无任何副作用——作品库打开的图默认此工具，
+  ///< 纯看图不误改；想画再显式切画笔
+  brush,
+  eraser,
+  bucket,
+  eyedropper,
+  select,
+}
 
 /// 粗略判断浅色（决定色块上文字颜色）
 bool isLightColor(BeadColor c) =>
@@ -44,6 +54,11 @@ class EditorToolRow extends StatelessWidget {
           children: [
             SegmentedButton<EditorTool>(
               segments: const [
+                ButtonSegment(
+                  value: EditorTool.view,
+                  icon: Icon(Icons.visibility_outlined),
+                  label: Text("查看"),
+                ),
                 ButtonSegment(
                   value: EditorTool.brush,
                   icon: Icon(Icons.brush),
@@ -113,9 +128,11 @@ class EditorSelectionBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Wrap 防溢出：大字号/窄屏下「选区 NxN + 三个按钮」一行放不下
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
-      child: Row(
+      child: Wrap(
+        crossAxisAlignment: WrapCrossAlignment.center,
         children: [
           Text("选区 $selW×$selH",
               style: Theme.of(context).textTheme.labelMedium),
@@ -129,71 +146,67 @@ class EditorSelectionBar extends StatelessWidget {
   }
 }
 
-/// 整图操作行：翻转/旋转/改尺寸/降噪/限色/换色
-class EditorOpsRow extends StatelessWidget {
-  final VoidCallback onFlipH;
-  final VoidCallback onFlipV;
-  final VoidCallback onRotate;
-  final VoidCallback onResize;
-  final VoidCallback onDenoise;
-  final VoidCallback onLimitColors;
-  final VoidCallback onReplaceColor;
+/// 编辑模式底部颜色行：当前色圆 + 色号/色名，点整行弹色卡换色
+/// （2026-11-09 用户反馈重排：原全宽「选择颜色」按钮改为色圆形态，
+/// 一眼看到当前画的是什么色；未选色画灰圆占位）
+class EditorColorDotRow extends StatelessWidget {
+  final BeadPalette palette;
+  final int? currentColor;
+  final VoidCallback onTap;
 
-  const EditorOpsRow({
+  const EditorColorDotRow({
     super.key,
-    required this.onFlipH,
-    required this.onFlipV,
-    required this.onRotate,
-    required this.onResize,
-    required this.onDenoise,
-    required this.onLimitColors,
-    required this.onReplaceColor,
+    required this.palette,
+    required this.currentColor,
+    required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 44,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        children: [
-          ActionChip(
-            avatar: const Icon(Icons.flip_outlined, size: 18),
-            label: const Text("左右翻转"),
-            onPressed: onFlipH,
+    final idx = currentColor;
+    final c = idx != null && idx < palette.colors.length
+        ? palette.colors[idx]
+        : null;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 6, 16, 10),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+          child: Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: c == null
+                      ? null
+                      : Color.fromARGB(255, c.r, c.g, c.b),
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: Colors.black26),
+                ),
+                child: c == null
+                    ? const Icon(
+                        Icons.palette_outlined,
+                        size: 20,
+                        color: Colors.black38,
+                      )
+                    : null,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  c == null
+                      ? "未选色 · 点击选择绘画颜色"
+                      : "${c.id} ${c.name} · 点击换色",
+                  style: Theme.of(context).textTheme.bodyMedium,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
           ),
-          ActionChip(
-            avatar: const Icon(Icons.flip),
-            label: const Text("上下翻转"),
-            onPressed: onFlipV,
-          ),
-          ActionChip(
-            avatar: const Icon(Icons.rotate_right_outlined),
-            label: const Text("旋转90°"),
-            onPressed: onRotate,
-          ),
-          ActionChip(
-            avatar: const Icon(Icons.photo_size_select_large),
-            label: const Text("改尺寸"),
-            onPressed: onResize,
-          ),
-          ActionChip(
-            avatar: const Icon(Icons.auto_fix_high),
-            label: const Text("降噪"),
-            onPressed: onDenoise,
-          ),
-          ActionChip(
-            avatar: const Icon(Icons.palette_outlined),
-            label: const Text("限制色数"),
-            onPressed: onLimitColors,
-          ),
-          ActionChip(
-            avatar: const Icon(Icons.swap_horiz),
-            label: const Text("全局换色"),
-            onPressed: onReplaceColor,
-          ),
-        ],
+        ),
       ),
     );
   }

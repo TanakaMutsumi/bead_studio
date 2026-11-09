@@ -63,7 +63,10 @@ class _EditorPageState extends State<EditorPage> {
 
   ///< 网格内容版本号，驱动画布重绘
   final _history = SnapshotHistory<_Snapshot>();
-  var _tool = EditorTool.brush;
+  var _tool = EditorTool.view;
+
+  ///< 默认「查看」：打开作品点/拖画布零副作用（2026-11-09 用户反馈
+  ///< 误触绘制）——想画显式切画笔；选色/吸管取色后自动切回画笔
   var _brushSize = 1;
   int? _currentColor;
 
@@ -196,14 +199,21 @@ class _EditorPageState extends State<EditorPage> {
       return;
     }
 
+    // 查看工具：点/拖画布零副作用（默认工具，防打开作品误触绘制）
+    if (_tool == EditorTool.view) {
+      return;
+    }
+
     switch (_tool) {
+      case EditorTool.view: // 前面已 early return，此分支不可达（保穷尽）
+        return;
       case EditorTool.brush:
       case EditorTool.eraser:
         final color = _currentColor;
         if (_tool == EditorTool.brush && color == null) {
           // 未选色不落笔：先在颜色条指定颜色（拖动中不重复提示）
           if (isStart) {
-            AppSnackBar.show(context, "先点下方按钮选择颜色，再绘制");
+            AppSnackBar.show(context, "先在下方选择颜色，再绘制");
           }
           return;
         }
@@ -218,7 +228,7 @@ class _EditorPageState extends State<EditorPage> {
         final color = _currentColor;
         if (color == null) {
           if (isStart) {
-            AppSnackBar.show(context, "先点下方按钮选择颜色，再填充");
+            AppSnackBar.show(context, "先在下方选择颜色，再填充");
           }
           return;
         }
@@ -380,7 +390,7 @@ class _EditorPageState extends State<EditorPage> {
     }
     final color = _currentColor;
     if (color == null) {
-      AppSnackBar.show(context, "先点下方按钮选择颜色");
+      AppSnackBar.show(context, "先在下方选择颜色");
       return;
     }
     _pushUndo();
@@ -594,6 +604,28 @@ class _EditorPageState extends State<EditorPage> {
                       ),
                     ),
                   );
+                // 整图操作（2026-11-09 用户反馈重排：原先横滚操作条在
+                // 画布下方常驻挤占空间还看不到头，收进菜单）
+                case 'flipH':
+                  _transform(
+                    () => flipHorizontal(_model.grid, _model.width, _model.height),
+                  );
+                case 'flipV':
+                  _transform(
+                    () => flipVertical(_model.grid, _model.width, _model.height),
+                  );
+                case 'rotate':
+                  _transform(
+                    () => rotate90(_model.grid, _model.width, _model.height),
+                  );
+                case 'resize':
+                  _openResizeSheet();
+                case 'denoise':
+                  _openDenoiseSheet();
+                case 'limit':
+                  _openLimitColorsSheet();
+                case 'replace':
+                  _openReplaceColorSheet();
               }
             },
             itemBuilder: (_) => [
@@ -637,6 +669,14 @@ class _EditorPageState extends State<EditorPage> {
                   ],
                 ),
               ),
+              const PopupMenuDivider(),
+              _menuRow('flipH', Icons.flip_outlined, "左右翻转"),
+              _menuRow('flipV', Icons.flip, "上下翻转"),
+              _menuRow('rotate', Icons.rotate_right_outlined, "旋转90°"),
+              _menuRow('resize', Icons.photo_size_select_large, "改尺寸"),
+              _menuRow('denoise', Icons.auto_fix_high, "降噪"),
+              _menuRow('limit', Icons.palette_outlined, "限制色数"),
+              _menuRow('replace', Icons.swap_horiz, "全局换色"),
             ],
           ),
         ],
@@ -646,7 +686,6 @@ class _EditorPageState extends State<EditorPage> {
           _buildToolRow(),
           if (_selRectCells != null) _buildSelectionBar(),
           Expanded(child: _buildCanvas()),
-          _buildOpsRow(),
           if (_boardMode) _buildBoardBar(),
           if (_assembleMode)
             Builder(
@@ -670,7 +709,8 @@ class _EditorPageState extends State<EditorPage> {
               },
             ),
           // 拼装模式：色条兼高亮选择器（显示每色用量/剩余）；编辑模式：
-          // 点按钮展开色卡网格选绘画色（与图例"添加色号"同一选择器）
+          // 色圆行显示当前绘画色，点击弹色卡选色（与图例"添加色号"
+          // 同一选择器）
           if (_assembleMode)
             _buildColorBar(
               _boardMode
@@ -678,7 +718,25 @@ class _EditorPageState extends State<EditorPage> {
                   : _model.countByColor(),
             )
           else
-            _buildColorPickerEntry(),
+            EditorColorDotRow(
+              palette: widget.palette,
+              currentColor: _currentColor,
+              onTap: _pickPaintColor,
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 菜单行（图标 + 文字）——整图操作收进 ⋮ 菜单用
+  PopupMenuItem<String> _menuRow(String value, IconData icon, String label) {
+    return PopupMenuItem<String>(
+      value: value,
+      child: Row(
+        children: [
+          Icon(icon),
+          const SizedBox(width: 12),
+          Text(label),
         ],
       ),
     );
@@ -763,25 +821,6 @@ class _EditorPageState extends State<EditorPage> {
     );
   }
 
-  /// 整图操作行
-  Widget _buildOpsRow() {
-    return EditorOpsRow(
-      onFlipH: () => _transform(
-        () => flipHorizontal(_model.grid, _model.width, _model.height),
-      ),
-      onFlipV: () => _transform(
-        () => flipVertical(_model.grid, _model.width, _model.height),
-      ),
-      onRotate: () => _transform(
-        () => rotate90(_model.grid, _model.width, _model.height),
-      ),
-      onResize: _openResizeSheet,
-      onDenoise: _openDenoiseSheet,
-      onLimitColors: _openLimitColorsSheet,
-      onReplaceColor: _openReplaceColorSheet,
-    );
-  }
-
   /// 分板控制条：板尺寸 + 板导航 + 本板颗数
   Widget _buildBoardBar() {
     final counts = _boardCounts(_boardRectOf(_boardIndex));
@@ -797,40 +836,7 @@ class _EditorPageState extends State<EditorPage> {
     );
   }
 
-  /// 底部选色入口（编辑模式）：点开才展开全部色号网格——常驻整条色卡
-  /// 在大色卡（291 色）下又长又难找，与图例"添加色号"统一交互
-  Widget _buildColorPickerEntry() {
-    final idx = _currentColor;
-    final c = idx != null && idx < widget.palette.colors.length
-        ? widget.palette.colors[idx]
-        : null;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-      child: SizedBox(
-        width: double.infinity,
-        child: OutlinedButton.icon(
-          onPressed: _pickPaintColor,
-          icon: c == null
-              ? const Icon(Icons.palette_outlined, size: 22)
-              : Container(
-                  width: 24,
-                  height: 24,
-                  decoration: BoxDecoration(
-                    color: Color.fromARGB(255, c.r, c.g, c.b),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: Colors.black26),
-                  ),
-                ),
-          label: Text(
-            c == null ? "选择颜色" : "${c.id} ${c.name} · 点击换色",
-            overflow: TextOverflow.ellipsis,
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// 弹色卡网格选绘画色（吸管/色条同源：选完自动从橡皮切回画笔）
+  /// 弹色卡网格选绘画色（吸管/色条同源：选完自动从橡皮/查看切回画笔）
   Future<void> _pickPaintColor() async {
     final i = await showPaletteColorPicker(
       context,
@@ -842,8 +848,8 @@ class _EditorPageState extends State<EditorPage> {
     }
     setState(() {
       _currentColor = i;
-      if (_tool == EditorTool.eraser) {
-        _tool = EditorTool.brush;
+      if (_tool == EditorTool.eraser || _tool == EditorTool.view) {
+        _tool = EditorTool.brush; // 点了颜色=要画：顺手切回画笔
       }
     });
   }
