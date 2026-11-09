@@ -497,16 +497,14 @@ def art_M(mode='full'):
     """图纸纸底 + 填色格(紧贴格线) + 覆盖式格线,正常拼豆图纸的样子。
     full = 带圆角外框的整幅卡片(legacy / web 独立方图);
     bg / shapes / mono / maskable = 自适应体系:格线满铺全画布、无限延伸、无外框,
-    圆形遮罩自然裁切格线;豆苗 12 格(x 居中 0.245..0.755,y 上移 0.195..0.705)与背景格线同坐标对齐。"""
+    圆形遮罩自然裁切格线;豆苗 12 格居中放大约 58%(0.21..0.79,遮罩出血)与背景格线同坐标对齐。"""
     mono_flag = (mode == 'mono')
     # ---------- 自适应体系(圆形遮罩:格线无限延伸) ----------
     if mode in ('bg', 'shapes', 'mono', 'maskable'):
-        # 实测桌面遮罩=圆 r=0.326C(65%,小于 72% 规范):居中方形最多 46%,故用
-        # 「顶部两角为空」的几何事实——豆苗 51%:x 居中(0.245..0.755),y 整体上移
-        # 5%(0.195..0.705):叶冠距上缘 ~5px、土角/叶冠角恰好吻边(≤1px),全部
-        # 完整;72% 圆形桌面下同样完整且更宽松。
-        ax0, ax1 = 0.245, 0.755
-        ay0, ay1 = 0.195, 0.705
+        # 用户定方向:不按遮罩几何配平,直接放大豆苗本身(居中 58%),遮罩裁掉的
+        # 土角/叶冠角当作出血效果;格线调浅(0.30 -> 0.16)弱化豆苗周围的网格环。
+        ax0, ax1 = 0.21, 0.79
+        ay0, ay1 = 0.21, 0.79
         n = 12
         cell = (ax1 - ax0) / n
         paper = grad_stops([hexc('#FBFAF2'), hexc('#E9EEDC')], TDIAG)
@@ -528,7 +526,7 @@ def art_M(mode='full'):
                                          lighten(color, 0.07), darken(color, 0.05))
         if mode in ('bg', 'mono', 'maskable'):
             lat = _bleed_lattice_mask(ax0, cell, cell * 0.16, offy=ay0)
-            canvas = comp(canvas, lat * (1.0 if mono_flag else 0.30),
+            canvas = comp(canvas, lat * (1.0 if mono_flag else 0.16),
                           WHITE if mono_flag else hexc('#47523F'))
         return canvas
     # ---------- full:带外框卡片(独立方图) ----------
@@ -547,7 +545,7 @@ def art_M(mode='full'):
             canvas = sq_tile(canvas, x0, y0, cell, cell * 0.06,
                              lighten(color, 0.07), darken(color, 0.05))
     lat = _lattice_mask(a0, a1, n, cell * 0.16)
-    canvas = comp(canvas, lat * 0.30, hexc('#47523F'))
+    canvas = comp(canvas, lat * 0.16, hexc('#47523F'))
     bw = 0.022
     frame = mask_pil(lambda d: d.rounded_rectangle(
         [(a0 - bw) * S, (a0 - bw) * S, (a1 + bw) * S, (a1 + bw) * S],
