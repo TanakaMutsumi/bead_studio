@@ -2106,22 +2106,12 @@ class _RestorePageState extends State<RestorePage> {
     final wasLegend = _legendBusy; // 快照：仅终止图例识别时清清单
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text("终止当前操作？"),
-        content: const Text("已进行到一半的进度会丢弃，可随时重新发起。"),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text("继续等待"),
-          ),
-          TextButton(
-            // 确认瞬间操作可能已自然结束（识别比弹窗交互快）：只关弹窗
-            // 不作废——gen++ 会误杀刚落定的结果链
-            onPressed: () => Navigator.pop(ctx, !_stageBusy),
-            child: const Text("终止"),
-          ),
-        ],
-      ),
+      // 弹窗挂着期间操作可能自然跑完（识别比读弹窗+点按快）：弹窗内
+      // 轮询 busy 态自动关闭，确认钮返回值一律 true——「还终止吗」的
+      // 判定延到弹窗关闭后复查 _stageBusy，不做点按瞬间求值（此前
+      // pop(!_stageBusy) 在点按帧求值，撞上完成帧会静默弹窗、结果照出，
+      // 用户看着就像「选了终止却依旧在跑」）
+      builder: (ctx) => _CancelBusyDialog(isBusy: () => _stageBusy),
     );
     if (ok != true || !mounted) {
       return;
@@ -3266,5 +3256,71 @@ class _RestorePageState extends State<RestorePage> {
       _reviewColor = target == _reviewColor ? -2 : target;
       _picked.clear();
     });
+  }
+}
+
+/// 终止确认弹窗（[_RestorePageState._confirmCancelBusy] 用）
+///
+/// 挂着的期间操作可能自然跑完（识别常比「读弹窗+点按」快）：弹窗内
+/// 轮询 [isBusy]，完成后自动关闭——不留一个「已经不忙了还在问要不要
+/// 终止」的误导弹窗。确认钮返回值一律 true，还忙不忙的判定由调用方在
+/// 弹窗关闭后复查 busy 态（避免点按帧与完成帧的求值竞态）；自动关闭
+/// 与按钮双通道 pop 用 _closed 门闩防重复 pop 误伤下层路由
+class _CancelBusyDialog extends StatefulWidget {
+  const _CancelBusyDialog({required this.isBusy});
+
+  final bool Function() isBusy;
+
+  @override
+  State<_CancelBusyDialog> createState() => _CancelBusyDialogState();
+}
+
+class _CancelBusyDialogState extends State<_CancelBusyDialog> {
+  Timer? _poll;
+  var _closed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _poll = Timer.periodic(const Duration(milliseconds: 300), (_) {
+      if (!widget.isBusy()) {
+        _close(false); // 操作已自然完成：结果照常落屏，弹窗自动收起
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    super.dispose();
+  }
+
+  void _close(bool v) {
+    if (_closed || !mounted) return;
+    _closed = true;
+    Navigator.pop(context, v);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text("终止当前操作？"),
+      content: const Text("已进行到一半的进度会丢弃，可随时重新发起。"),
+      actions: [
+        TextButton(
+          onPressed: () => _close(false),
+          child: const Text("继续等待"),
+        ),
+        TextButton(
+          // 返回 true 无条件化：终止生效与否由调用方关闭后复查 busy
+          onPressed: () => _close(true),
+          style: TextButton.styleFrom(
+            foregroundColor: const Color(0xFFE53935),
+            textStyle: const TextStyle(fontWeight: FontWeight.w600),
+          ),
+          child: const Text("终止"),
+        ),
+      ],
+    );
   }
 }
