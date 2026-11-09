@@ -360,9 +360,11 @@ class _RestorePageState extends State<RestorePage> {
   ///< 全是白调且状态与结果脱节，一律锁死等完成（用户 2026-11-06 定）。
   ///< AppBar 导航不锁（返回上一步/退出已有各自守卫提示）
   bool get _stageBusy =>
-      _legendBusy || _detecting || _recognizing || _autoDetectBusy;
+      _legendBusy || _detecting || _recognizing || _autoDetectBusy ||
+      _decoding;
 
-  ///< UI 锁遮罩文案（按耗时量级排优先级：主识别最长放最前），未锁 null
+  ///< UI 锁遮罩文案（按耗时量级排优先级：主识别最长放最前），未锁 null。
+  ///< _decoding（选图页读字节+解码）只在 pick 阶段为真，与其余四锁互斥
   String? get _stageBusyLabel {
     if (_recognizing) {
       if (_recognTotal > 0) {
@@ -384,6 +386,9 @@ class _RestorePageState extends State<RestorePage> {
     }
     if (_autoDetectBusy) {
       return "正在自动框选，请稍候…";
+    }
+    if (_decoding) {
+      return "正在导入图片，请稍候…";
     }
     return null;
   }
@@ -544,7 +549,21 @@ class _RestorePageState extends State<RestorePage> {
     if (picked == null) {
       return;
     }
-    await _loadImageBytes(await picked.readAsBytes());
+    // 选定即上 UI 锁（读字节+解码期间选图页此前无任何反馈，用户会连点
+    // 重选/误开链接面板——2026-11-09 用户反馈）；_loadImageBytes 内部的
+    // 置位/清位照旧兜底，这里只把锁提前到 readAsBytes
+    setState(() => _decoding = true);
+    Uint8List bytes;
+    try {
+      bytes = await picked.readAsBytes();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _decoding = false);
+        AppSnackBar.show(context, "读取图片失败: $e");
+      }
+      return;
+    }
+    await _loadImageBytes(bytes);
   }
 
   /// 载入图片字节（相册/拍照/小红书链接共用）：解码 + 清空下游全部状态 +
@@ -1850,13 +1869,16 @@ class _RestorePageState extends State<RestorePage> {
           // 退出图纸还原（弹确认后整页出栈）。系统自动 leading Back 关掉
           // 由自己的 leading 接管，系统 back 手势仍走 PopScope 同款确认
           automaticallyImplyLeading: false,
-          leading: _stage != RestoreStage.pick
-              ? IconButton(
-                  onPressed: _confirmBack,
-                  icon: const Icon(Icons.arrow_back),
-                  tooltip: "返回上一步",
-                )
-              : null,
+          // 选图步（第一步）也常驻返回箭头：无手势条/无返回键的全面屏机
+          // 在第一步此前无路可退（2026-11-09 用户反馈）。选图步没有任何
+          // 已调内容，直接出栈不弹确认；其余步骤仍是「返回上一步」弹确认
+          leading: IconButton(
+            onPressed: _stage == RestoreStage.pick
+                ? () => Navigator.of(context).pop()
+                : _confirmBack,
+            icon: const Icon(Icons.arrow_back),
+            tooltip: _stage == RestoreStage.pick ? "返回主页" : "返回上一步",
+          ),
           title: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,

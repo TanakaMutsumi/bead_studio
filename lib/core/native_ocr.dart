@@ -1,4 +1,5 @@
 import 'dart:io' show Platform;
+import 'dart:typed_data' show Uint8List;
 import 'dart:ui' show Rect;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -25,13 +26,15 @@ bool _nativeOk = true;
 /// MainActivity.kt 头注释：插件路径在平台线程=UI 线程上构位图+推理，每次
 /// processImage 主线程 100%）；通道不可用返回 null，调用方用
 /// [ocrRgbaPlugin] 回退（保功能，会冻结）。
-Future<List<OcrTextElem>?> ocrRgba(img.Image v) async {
+/// [rgba] 为调用方在 isolate 内预备好的 RGBA 字节（gapVariant 出参），
+/// 缺省时本函数就地 getBytes（大图上是主 isolate 的 O(N) 拷贝）。
+Future<List<OcrTextElem>?> ocrRgba(img.Image v, {Uint8List? rgba}) async {
   if (!_nativeOk || kIsWeb || !Platform.isAndroid) {
     return null;
   }
   try {
     final res = await _ch.invokeMethod<List<dynamic>>('processRgba', {
-      'bytes': v.getBytes(order: img.ChannelOrder.rgba),
+      'bytes': rgba ?? v.getBytes(order: img.ChannelOrder.rgba),
       'width': v.width,
       'height': v.height,
     });

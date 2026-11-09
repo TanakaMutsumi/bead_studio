@@ -1047,6 +1047,179 @@ int? parseCountText(String raw) {
 /// 的 relabel）注入，核心函数只报计数
 typedef FixProgress = void Function(int done, int total);
 
+/// 补读小区构图参数（[buildGapVariant] 的 compute 入参）：[gap] 为主
+/// isolate 裁好的原生分辨率小区（MB 级，跨 isolate 拷贝 ~ms 级），构图
+/// 重活在 isolate 内做——放大/反色/二值化/衬底逐候选数百 ms 同步块跑
+/// 主 isolate 会把补读链的进度圈打成幻灯片（2026-11-09 用户反馈），与
+/// encodeCellOcrPng 同理
+class GapVariantArgs {
+  final img.Image gap;
+
+  ///< 原生分辨率小区
+  final double zoom;
+
+  ///< 放大倍率
+  final bool smooth;
+
+  ///< true=线性插值（平滑边）false=最近邻（锯齿边）
+  final bool invert;
+
+  ///< 反色（ocrGapVariants 构型）
+  final bool binarize;
+
+  ///< 硬二值 140（ocrGapVariants 构型，反色之后执行）
+  final bool darkBar;
+
+  ///< 深底暗字 Otsu 二值+浅色列漂白（空隙救援构型）
+  final int thrBoost;
+
+  ///< darkBar 的切点上移
+  final bool adaptive;
+
+  ///< 局部自适应二值（盲格浅字构型）
+  final double padF, padAvgH;
+
+  ///< 衬底：字高×padF×zoom 像素四周补边（0=不加）
+  final bool padDark;
+
+  ///< 衬底黑底（反色构型），否则白底
+  final bool invertToo, needGray;
+
+  ///< 附带反色副本 / 附带放大图平均灰度（深底判定）
+  const GapVariantArgs(
+    this.gap,
+    this.zoom,
+    this.smooth,
+    this.invert,
+    this.binarize,
+    this.darkBar,
+    this.thrBoost,
+    this.adaptive,
+    this.padF,
+    this.padAvgH,
+    this.padDark,
+    this.invertToo,
+    this.needGray,
+  );
+}
+
+/// [buildGapVariant] 的出参：v=构图终图；rgba=v 的 RGBA 字节（isolate
+/// 内取好，主 isolate 免一次 O(N) getBytes 大拷贝）；inverted/rgbaInverted
+/// 为 v 的反色副本（ocrGapText 第二轮用，invertToo 时才有）；meanGray
+/// 为放大图平均灰度（needGray 时才有，否则 -1）
+class GapVariantOut {
+  final img.Image v;
+  final Uint8List rgba;
+  final img.Image? inverted;
+  final Uint8List? rgbaInverted;
+  final double meanGray;
+  const GapVariantOut(
+    this.v,
+    this.rgba,
+    this.inverted,
+    this.rgbaInverted,
+    this.meanGray,
+  );
+}
+
+/// 反色副本（RGB 逐像素反转）
+img.Image _invertImage(img.Image src) {
+  final inv = img.Image.from(src);
+  for (final p in inv) {
+    p.r = 255 - p.r;
+    p.g = 255 - p.g;
+    p.b = 255 - p.b;
+  }
+  return inv;
+}
+
+/// 补读小区构图（顶层函数供 compute isolate 调用）：放大 → 反色 → 硬
+/// 二值 → 深底二值/自适应二值 → 衬底，各步骤与旧主 isolate 内联路径
+/// 逐位一致（只是换线程执行），调用方按各自构型置参
+GapVariantOut buildGapVariant(GapVariantArgs a) {
+  var v = img.copyResize(
+    a.gap,
+    width: (a.gap.width * a.zoom).round(),
+    interpolation:
+        a.smooth ? img.Interpolation.linear : img.Interpolation.nearest,
+  );
+  final gray = a.needGray ? _meanGray(v) : -1.0;
+  if (a.invert) {
+    for (final p in v) {
+      p.r = 255 - p.r;
+      p.g = 255 - p.g;
+      p.b = 255 - p.b;
+    }
+  }
+  if (a.binarize) {
+    for (final p in v) {
+      final b = (p.r + p.g + p.b) / 3 < 140 ? 0 : 255;
+      p.r = b;
+      p.g = b;
+      p.b = b;
+    }
+  }
+  if (a.darkBar) {
+    v = _binarizeDarkBarText(v, thrBoost: a.thrBoost);
+  }
+  if (a.adaptive) {
+    v = _adaptiveBinarize(v);
+  }
+  final pad = (a.padAvgH * a.padF * a.zoom).round();
+  if (pad > 0) {
+    final bg = a.padDark ? 0 : 255;
+    final p2 = img.Image(width: v.width + pad * 2, height: v.height + pad * 2);
+    img.fill(p2, color: img.ColorRgba8(bg, bg, bg, 255));
+    img.compositeImage(p2, v, dstX: pad, dstY: pad);
+    v = p2;
+  }
+  final inverted = a.invertToo ? _invertImage(v) : null;
+  return GapVariantOut(
+    v,
+    v.getBytes(order: img.ChannelOrder.rgba),
+    inverted,
+    inverted?.getBytes(order: img.ChannelOrder.rgba),
+    gray,
+  );
+}
+
+/// [buildGapVariant] 的 compute 包装（web 上 compute 同线程直跑，行为
+/// 与旧内联一致）
+Future<GapVariantOut> gapVariant(
+  img.Image gap, {
+  double zoom = 3,
+  bool smooth = false,
+  bool invert = false,
+  bool binarize = false,
+  bool darkBar = false,
+  int thrBoost = 0,
+  bool adaptive = false,
+  double padF = 0,
+  double padAvgH = 0,
+  bool padDark = false,
+  bool invertToo = false,
+  bool needGray = false,
+}) {
+  return compute(
+    buildGapVariant,
+    GapVariantArgs(
+      gap,
+      zoom,
+      smooth,
+      invert,
+      binarize,
+      darkBar,
+      thrBoost,
+      adaptive,
+      padF,
+      padAvgH,
+      padDark,
+      invertToo,
+      needGray,
+    ),
+  );
+}
+
 Future<int> fixOrphanCountCodes(
   BeadPalette palette,
   List<OcrElem> elems,
@@ -1193,36 +1366,67 @@ Future<int> fixOrphanCountCodes(
       height: (gBottom - gTop).toInt(),
     );
     // 构图梯子：经典布局 ×2 空手就换 ×3/×4（同构图重试无新信息）；
-    // 注入的 ocrGap 单构图直调
+    // 注入的 ocrGap 单构图直调。放大/反色/二值化走 compute isolate
+    //（gapVariant，构图与旧主 isolate 内联逐位一致）
     final zooms = countsBelow || ocrGap != null
         ? [countsBelow ? 3.0 : 2.0]
         : const [2.0, 3.0, 4.0];
     (String, Rect)? hit;
     var hitZoom = zooms.first;
     for (final z in zooms) {
-      final big = img.copyResize(gap, width: (gap.width * z).round());
-      hit = ocrGap != null ? await ocrGap(big) : await ocrGapText(big);
-      if (hit == null && ocrGap == null && _meanGray(big) < 130) {
+      final v0 = await gapVariant(
+        gap,
+        zoom: z,
+        invertToo: ocrGap == null,
+        needGray: ocrGap == null,
+      );
+      hit = ocrGap != null
+          ? await ocrGap(v0.v)
+          : await ocrGapText(
+              v0.v,
+              inverted: v0.inverted,
+              rgba: v0.rgba,
+              rgbaInverted: v0.rgbaInverted,
+            );
+      if (hit == null && ocrGap == null && v0.meanGray < 130) {
         // 深底暗字第三轮（浅色列漂白+深区Otsu二值）：原图/反色 ML Kit
         // 全瞎时，小区平均灰度深说明字墨与底色同暗（new1 G29 色号印深蓝
         // 条上 Δ≈20）；白底图例（wx1 型）灰度浅不触发，行为不变
+        final d3a = await gapVariant(gap, zoom: z, darkBar: true, invertToo: true);
         hit = await ocrGapText(
-          _binarizeDarkBarText(big),
+          d3a.v,
+          inverted: d3a.inverted,
+          rgba: d3a.rgba,
+          rgbaInverted: d3a.rgbaInverted,
           onDbg: dbg == null ? null : (m) => dbg.add("深3a $m"),
         );
         // 3b 轮：切点上移 10 加肥笔画（Otsu 切点常落在字墨模的核上，
         // 笔画偏瘦 ML Kit 易碎读；上移后字/底之间仍有谷带隔着）
         if (hit == null) {
+          final d3b = await gapVariant(
+            gap,
+            zoom: z,
+            darkBar: true,
+            thrBoost: 10,
+            invertToo: true,
+          );
           hit = await ocrGapText(
-            _binarizeDarkBarText(big, thrBoost: 10),
+            d3b.v,
+            inverted: d3b.inverted,
+            rgba: d3b.rgba,
+            rgbaInverted: d3b.rgbaInverted,
             onDbg: dbg == null ? null : (m) => dbg.add("深3b $m"),
           );
         }
         // 第四轮兜底（局部自适应二值化）：Otsu 双模不清（底/字灰度
         // 交叠）时按局部均值硬分
         if (hit == null) {
+          final d4 = await gapVariant(gap, zoom: z, adaptive: true, invertToo: true);
           hit = await ocrGapText(
-            _adaptiveBinarize(big),
+            d4.v,
+            inverted: d4.inverted,
+            rgba: d4.rgba,
+            rgbaInverted: d4.rgbaInverted,
             onDbg: dbg == null ? null : (m) => dbg.add("深4 $m"),
           );
         }
@@ -1397,7 +1601,7 @@ Future<int> fixOrphanCodeCounts(
       avgH * 1.7,
     );
     final hit = ocrGap != null
-        ? await ocrGap(img.copyResize(gap, width: (gap.width * zoom).round()))
+        ? await ocrGap((await gapVariant(gap, zoom: zoom.toDouble())).v)
         : await ocrGapVariants(
             gap,
             pickNear: pickNear,
@@ -1572,36 +1776,49 @@ Future<int> fixBlindGridCodes(
     );
     // 构图梯子：最近邻×3（原图/反色两轮）→ 平滑×3/×4 自适应二值（浅字
     // 淡墨全段漏读的主构型——字墨灰 ~41 被最近邻放大成块状中灰，ML Kit
-    // 内部二值化丢弃；局部均值二值还原干净笔画）
+    // 内部二值化丢弃；局部均值二值还原干净笔画）。构图走 compute
+    // isolate（gapVariant，与旧主 isolate 内联逐位一致）
     (String, Rect)? hit;
     var hitZoom = 3.0;
     if (ocrGap != null) {
-      hit = await ocrGap(img.copyResize(gap, width: gap.width * 3));
+      hit = await ocrGap((await gapVariant(gap, zoom: 3)).v);
     } else {
+      final v1 = await gapVariant(gap, zoom: 3, invertToo: true);
       hit = await ocrGapText(
-        img.copyResize(gap, width: gap.width * 3),
+        v1.v,
+        inverted: v1.inverted,
+        rgba: v1.rgba,
+        rgbaInverted: v1.rgbaInverted,
         onDbg: dbg == null ? null : (m) => dbg.add(m),
       );
       if (hit == null) {
+        final v2 = await gapVariant(
+          gap,
+          zoom: 3,
+          smooth: true,
+          adaptive: true,
+          invertToo: true,
+        );
         hit = await ocrGapText(
-          _adaptiveBinarize(
-            img.copyResize(
-              gap,
-              width: gap.width * 3,
-              interpolation: img.Interpolation.linear,
-            ),
-          ),
+          v2.v,
+          inverted: v2.inverted,
+          rgba: v2.rgba,
+          rgbaInverted: v2.rgbaInverted,
         );
       }
       if (hit == null) {
+        final v3 = await gapVariant(
+          gap,
+          zoom: 4,
+          smooth: true,
+          adaptive: true,
+          invertToo: true,
+        );
         hit = await ocrGapText(
-          _adaptiveBinarize(
-            img.copyResize(
-              gap,
-              width: gap.width * 4,
-              interpolation: img.Interpolation.linear,
-            ),
-          ),
+          v3.v,
+          inverted: v3.inverted,
+          rgba: v3.rgba,
+          rgbaInverted: v3.rgbaInverted,
         );
         hitZoom = 4.0;
       }
@@ -1992,7 +2209,7 @@ Future<int> fixRightCountsByLayout(
       gap.height.toDouble(),
     );
     final hit = ocrGap != null
-        ? await ocrGap(img.copyResize(gap, width: (gap.width * zoom).round()))
+        ? await ocrGap((await gapVariant(gap, zoom: zoom.toDouble())).v)
         : await ocrGapVariants(
             gap,
             pickNear: pickNear,
@@ -2069,42 +2286,24 @@ Future<(String, Rect)?> ocrGapVariants(
     ];
     final avgH = maxElemW / 3;
     for (final (mode, z, smooth, padF) in variants) {
-      var v = img.copyResize(
+      // 构图（放大/反色/二值/衬底）走 compute isolate——主 isolate 内联
+      // 逐构型数百 ms 同步像素块把进度圈打成幻灯片，与补读链其余环节
+      // 同批修（gapVariant 构图与旧内联逐位一致）
+      final out = await gapVariant(
         gap,
-        width: (gap.width * z).round(),
-        interpolation:
-            smooth == 1 ? img.Interpolation.linear : img.Interpolation.nearest,
+        zoom: z.toDouble(),
+        smooth: smooth == 1,
+        invert: mode == 1 || mode == 3,
+        binarize: mode == 2 || mode == 3,
+        padF: padF,
+        padAvgH: avgH,
+        padDark: mode == 1 || mode == 3,
       );
-      if (mode == 1 || mode == 3) {
-        final inv = img.Image.from(v);
-        for (final p in inv) {
-          p.r = 255 - p.r;
-          p.g = 255 - p.g;
-          p.b = 255 - p.b;
-        }
-        v = inv;
-      }
-      if (mode == 2 || mode == 3) {
-        // 二值化：压掉 JPEG 噪声/淡彩底，数字边缘干净利落
-        for (final p in v) {
-          final b = (p.r + p.g + p.b) / 3 < 140 ? 0 : 255;
-          p.r = b;
-          p.g = b;
-          p.b = b;
-        }
-      }
-      // 衬底：文字贴裁剪边是 ML Kit 丢元素的常见诱因，四周补边让文本
-      // 完整居中；反色构型补黑边保持极性一致
+      final v = out.v;
+      // 衬底像素宽（isolate 内已加衬，坐标换算还要用同值还原偏移）
       final pad = (avgH * padF * z).round();
-      if (pad > 0) {
-        final bg = (mode == 1 || mode == 3) ? 0 : 255;
-        final p2 =
-            img.Image(width: v.width + pad * 2, height: v.height + pad * 2);
-        img.fill(p2, color: img.ColorRgba8(bg, bg, bg, 255));
-        img.compositeImage(p2, v, dstX: pad, dstY: pad);
-        v = p2;
-      }
-      final els = await ocrRgba(v) ?? await ocrRgbaPlugin(recognizer, v);
+      final els = await ocrRgba(v, rgba: out.rgba) ??
+          await ocrRgbaPlugin(recognizer, v);
       final texts = <String>[];
       final cands = <String>[]; // 【临时调试】全部数字样式候选@原生中心
       (String, Rect)? best;
@@ -2756,19 +2955,21 @@ double _median(List<double> v) {
 /// 全在主 isolate，救援链逐孤儿 × 多构型 × 多轮累计把 UI 线程打成秒级连续
 /// 满载（2026-11-02 模拟器实测识别全程主线程冻结 7.6s）；像素与 PNG 逐位
 /// 一致（同为无损传输），ML Kit 侧结果不变
+///
+/// [inverted]/[rgba]/[rgbaInverted] 为调用方在 compute isolate 内预备的
+/// 反色副本与 RGBA 字节（补读链 gapVariant 出参，主 isolate 免逐轮反型
+/// 循环与 getBytes 大拷贝）；缺省时本函数就地构建，行为与旧版一致
 Future<(String, Rect)?> ocrGapText(
   img.Image gapBig, {
+  img.Image? inverted,
+  Uint8List? rgba,
+  Uint8List? rgbaInverted,
   bool preferNumber = false,
   Rect? pickNear,
   double? maxElemW,
   void Function(String)? onDbg,
 }) async {
-  final inverted = img.Image.from(gapBig);
-  for (final p in inverted) {
-    p.r = 255 - p.r;
-    p.g = 255 - p.g;
-    p.b = 255 - p.b;
-  }
+  final inv = inverted ?? _invertImage(gapBig);
   final codeLike = RegExp(r'^[A-Z]{1,2}\d{1,2}$');
   // 纯数字判定：颗数重读轮放宽到数字形近字母（5↔S、6↔G、8↔B、1↔I/L、
   // 0↔O），换算交给 parseCountText；色号救援轮保持纯数字不动
@@ -2777,19 +2978,23 @@ Future<(String, Rect)?> ocrGapText(
   final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
   try {
     for (var round = 0; round < 2; round++) {
-      final v = round == 0 ? gapBig : inverted;
+      final v = round == 0 ? gapBig : inv;
       if (round == 1 && onDbg != null) {
         // 【临时调试】反色是否真的发生：中点像素对拍 + 底层数据格式 + 字节数
         final px = gapBig.width ~/ 2, py = gapBig.height ~/ 2;
-        final a = gapBig.getPixel(px, py), b = inverted.getPixel(px, py);
+        final a = gapBig.getPixel(px, py), b = inv.getPixel(px, py);
         onDbg(
           "反色校验 原(${a.r},${a.g},${a.b}) 反(${b.r},${b.g},${b.b}) "
-          "fmt=${gapBig.format}/${inverted.format} "
-          "通道${gapBig.numChannels}/${inverted.numChannels} "
+          "fmt=${gapBig.format}/${inv.format} "
+          "通道${gapBig.numChannels}/${inv.numChannels} "
           "bytes=${v.getBytes(order: img.ChannelOrder.rgba).length}",
         );
       }
-      final els = await ocrRgba(v) ?? await ocrRgbaPlugin(recognizer, v);
+      final els = await ocrRgba(
+            v,
+            rgba: round == 0 ? rgba : rgbaInverted,
+          ) ??
+          await ocrRgbaPlugin(recognizer, v);
       (String, Rect)? numHit;
       final numCands = <(String, Rect)>[]; // pickNear 位置挑选用候选
       final texts = <String>[]; // onDbg 调试用：本轮全部元素文本
