@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../../core/adaptive_text.dart';
 import '../../core/app_snack_bar.dart';
 import '../../core/board_config.dart';
 import '../../core/draft_store.dart';
@@ -939,7 +940,8 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text(_boardName == null ? "拼豆板设置" : "拼豆板 · $_boardName"),
+          title: AdaptiveTitleText(
+              _boardName == null ? "拼豆板设置" : "拼豆板 · $_boardName"),
           actions: [
             if (_selected >= 0) ...[
               IconButton(

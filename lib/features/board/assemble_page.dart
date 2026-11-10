@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/adaptive_text.dart';
 import '../../core/app_snack_bar.dart';
 import '../../core/board_config.dart';
 import '../../core/draft_store.dart';
@@ -352,11 +353,12 @@ class _AssemblePageState extends State<AssemblePage> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text(
+          // 长作品名先缩字号再截断（AdaptiveTitleText，2026-11-10 用户
+          // 反馈标题「…」截死）
+          title: AdaptiveTitleText(
             widget.works.length == 1
                 ? "拼豆 · ${widget.works.first.entry.name}"
                 : "拼豆 · ${widget.works.length} 件作品",
-            overflow: TextOverflow.ellipsis,
           ),
           actions: [
             IconButton(

@@ -22,11 +22,48 @@ enum EditorTool {
 bool isLightColor(BeadColor c) =>
     (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) > 150;
 
+/// 橡皮擦图标：Material 图标库没有 eraser（ink_eraser 仅存在于更新的
+/// Material Symbols），自绘一枚——斜放双色橡皮（粉头+白身+描边）。
+/// 2026-11-10 用户反馈：delete_outline 垃圾桶被当成删除工具，橡皮就该
+/// 长得像橡皮
+class EraserIcon extends StatelessWidget {
+  const EraserIcon({super.key, this.size = 22});
+
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final outline = Theme.of(context).colorScheme.onSurfaceVariant;
+    final w = size * 0.58;
+    final h = size * 0.84;
+    return Transform.rotate(
+      angle: -0.72, // 约 -41°，斜放的橡皮姿态
+      child: Container(
+        width: w,
+        height: h,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(size * 0.1),
+          border: Border.all(color: outline, width: 1.4),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          children: [
+            Container(height: h * 0.4, color: const Color(0xFFEC8CA0)),
+            const Expanded(child: ColoredBox(color: Color(0xFFFAFAFA))),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// 工具行：六工具纯图标（36dp 紧凑钮，一屏放下不滚动）。
 /// 2026-11-10 用户反馈二轮：此前六段「图标+文字」的 SegmentedButton
 /// 一行放不下靠横向滚动遮丑（还要左右拖才能看到吸管/选区），完全
 /// 不合格——纯图标后 360dp 窄屏也放得下；笔刷大小挪到独立的条件条
 /// （仅画笔/橡皮态出现，见 [EditorBrushBar]），工具名走 tooltip。
+/// 三轮：查看图标改四向拖动（open_with，语义=只拖动看图不落笔）、
+/// 橡皮改 [EraserIcon]（垃圾桶易误读为删除）。
 class EditorToolRow extends StatelessWidget {
   final EditorTool tool;
   final void Function(EditorTool t) onSelectTool;
@@ -40,9 +77,9 @@ class EditorToolRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    Widget toolBtn(EditorTool t, IconData icon, String label) => IconButton(
+    Widget toolBtn(EditorTool t, Widget icon, String label) => IconButton(
           isSelected: tool == t,
-          icon: Icon(icon, size: 22),
+          icon: icon,
           tooltip: label,
           visualDensity: VisualDensity.compact,
           constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
@@ -63,12 +100,16 @@ class EditorToolRow extends StatelessWidget {
         );
     return Row(
       children: [
-        toolBtn(EditorTool.view, Icons.visibility_outlined, "查看（不落笔）"),
-        toolBtn(EditorTool.brush, Icons.brush, "画笔"),
-        toolBtn(EditorTool.eraser, Icons.delete_outline, "橡皮"),
-        toolBtn(EditorTool.bucket, Icons.format_color_fill, "油漆桶"),
-        toolBtn(EditorTool.eyedropper, Icons.colorize, "吸管"),
-        toolBtn(EditorTool.select, Icons.crop_free, "选区"),
+        toolBtn(
+            EditorTool.view, const Icon(Icons.open_with, size: 22), "查看（不落笔）"),
+        toolBtn(EditorTool.brush, const Icon(Icons.brush, size: 22), "画笔"),
+        toolBtn(EditorTool.eraser, const EraserIcon(size: 22), "橡皮"),
+        toolBtn(EditorTool.bucket, const Icon(Icons.format_color_fill, size: 22),
+            "油漆桶"),
+        toolBtn(
+            EditorTool.eyedropper, const Icon(Icons.colorize, size: 22), "吸管"),
+        toolBtn(
+            EditorTool.select, const Icon(Icons.crop_free, size: 22), "选区"),
       ],
     );
   }

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../../core/adaptive_text.dart';
 import '../../core/app_snack_bar.dart';
 import '../../core/draft_store.dart';
 import '../../core/file_saver.dart';
@@ -43,6 +44,9 @@ class EditorPage extends StatefulWidget {
   final String? sortMode;
 
   ///< 信息排序模式（作品 meta 携带，用料统计沿用；null = 默认颗数降序）
+  final String? workName;
+
+  ///< 作品名（作品库打开时传入，标题显示用；编辑中另存后回填）
 
   const EditorPage({
     super.key,
@@ -51,6 +55,7 @@ class EditorPage extends StatefulWidget {
     this.sourceFile,
     this.placed = const <int>{},
     this.sortMode,
+    this.workName,
   });
 
   @override
@@ -59,6 +64,9 @@ class EditorPage extends StatefulWidget {
 
 class _EditorPageState extends State<EditorPage> {
   late PatternModel _model;
+
+  ///< 标题显示的作品名：作品库打开=传入名，另存后=回填保存名
+  late String? _name = widget.workName;
   final _revision = ValueNotifier<int>(0);
 
   ///< 网格内容版本号，驱动画布重绘
@@ -509,6 +517,13 @@ class _EditorPageState extends State<EditorPage> {
       placed: _placed,
       sortMode: widget.sortMode,
     );
+    // 回填作品名：新建保存后标题从「未命名图案」变成实际保存名
+    if (mounted) {
+      final entry = await DraftStore.readEntry(file);
+      if (mounted && entry.name != _name) {
+        setState(() => _name = entry.name);
+      }
+    }
     if (mounted) {
       AppSnackBar.show(
         context,
@@ -550,9 +565,23 @@ class _EditorPageState extends State<EditorPage> {
     final usedColors = _model.countByColor().length;
     return Scaffold(
       appBar: AppBar(
-        title: Text("编辑 ${_model.width}×${_model.height} · $usedColors 色"),
-        // 窄屏放不下九个图标按钮（会与返回键互相遮挡）：常驻撤销/重做/
-        // 保存，其余收进 ⋮ 菜单
+        // 标题双行（同还原页模式）：上行作品名自适应缩放（长名不再
+        // 「…」截死，2026-11-10 用户反馈），下行小字尺寸/色数——此前
+        // 「编辑 55×47 · 12 色」在撤销/重做/保存/⋮ 四钮挤压下必然截断
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AdaptiveTitleText(_name ?? "未命名图案"),
+            Text(
+              "${_model.width}×${_model.height} · $usedColors 色",
+              style: const TextStyle(fontSize: 10, color: Colors.black38),
+            ),
+          ],
+        ),
+        // 窄屏放不下九个图标按钮（会与返回键互相遮挡）：常驻撤销/重做，
+        // 保存与其余收进 ⋮ 菜单（2026-11-10 三轮：保存也让位给标题——
+        // 四钮把标题挤到 ~72dp，作品名必被「…」截死）
         actions: [
           IconButton(
             onPressed: _history.canUndo ? _undo : null,
@@ -564,15 +593,12 @@ class _EditorPageState extends State<EditorPage> {
             icon: const Icon(Icons.redo),
             tooltip: "重做",
           ),
-          IconButton(
-            onPressed: _saveDraft,
-            icon: const Icon(Icons.save_outlined),
-            tooltip: "保存草稿",
-          ),
           PopupMenuButton<String>(
             tooltip: "更多",
             onSelected: (k) {
               switch (k) {
+                case 'save':
+                  _saveDraft();
                 case 'export':
                   _exportPng();
                 case 'assemble':
@@ -629,6 +655,16 @@ class _EditorPageState extends State<EditorPage> {
               }
             },
             itemBuilder: (_) => [
+              const PopupMenuItem(
+                value: 'save',
+                child: Row(
+                  children: [
+                    Icon(Icons.save_outlined),
+                    SizedBox(width: 12),
+                    Text("保存草稿"),
+                  ],
+                ),
+              ),
               const PopupMenuItem(
                 value: 'export',
                 child: Row(

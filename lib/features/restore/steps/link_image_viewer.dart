@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 
+import '../../../core/adaptive_text.dart';
 import '../../../core/app_snack_bar.dart';
 import '../../../core/decode_image.dart';
 import '../../../core/gallery_save.dart';
@@ -244,10 +245,8 @@ class _LinkImageViewerPageState extends State<LinkImageViewerPage> {
       appBar: AppBar(
         backgroundColor: Colors.black54,
         foregroundColor: Colors.white,
-        title: Text(
+        title: AdaptiveTitleText(
           w > 0 ? '${widget.title}  $w×$h' : widget.title,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontSize: 14),
         ),
         actions: [

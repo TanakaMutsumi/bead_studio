@@ -259,7 +259,9 @@ class _DouyinImportSheetState extends State<_DouyinImportSheet> {
                                     ? '选择一张图纸'
                                     : _note!.title)
                                 : '从抖音链接导入',
-                            maxLines: 1,
+                            maxLines: 2,
+
+                            ///< 笔记标题两行放完，不再一行截「…」（2026-11-10 反馈）
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(fontWeight: FontWeight.bold),
                           ),

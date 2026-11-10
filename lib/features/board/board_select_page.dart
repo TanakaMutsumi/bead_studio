@@ -338,7 +338,9 @@ class _BoardSelectPageState extends State<BoardSelectPage> {
                     children: [
                       Text(
                         vm.entry.name,
-                        maxLines: 1,
+                        maxLines: 2,
+
+                        ///< 长名两行放完，不再一行截「…」（2026-11-10 反馈）
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.bodySmall,
                       ),

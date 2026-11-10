@@ -108,6 +108,7 @@ class _WorksPageState extends State<WorksPage> {
           sourceFile: w.entry.file,
           placed: w.entry.placed,
           sortMode: w.entry.sortMode,
+          workName: w.entry.name,
         ),
       ),
     );
@@ -523,7 +524,9 @@ class _WorksPageState extends State<WorksPage> {
                     children: [
                       Text(
                         w.entry.name,
-                        maxLines: 1,
+                        maxLines: 2,
+
+                        ///< 长名两行放完，不再一行截「…」（2026-11-10 反馈）
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
