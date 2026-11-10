@@ -192,7 +192,8 @@ class EditorSelectionBar extends StatelessWidget {
 
 /// 编辑模式当前色圆（顶栏内联）：色圆 + 色号，点击弹色卡换色。
 /// 2026-11-10 用户反馈二轮：从底部整行拉上来放进顶行尾部，紧凑内联
-/// 不占行（未选色画灰圆）
+/// 不占行（未选色画灰圆）；currentColor == -1 = 空白（油漆桶清底/
+/// 画笔擦除用，描边方块+叉与色卡「空白」格同语言）
 class EditorColorChip extends StatelessWidget {
   final BeadPalette palette;
   final int? currentColor;
@@ -208,7 +209,8 @@ class EditorColorChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final idx = currentColor;
-    final c = idx != null && idx < palette.colors.length
+    final blank = idx == -1;
+    final c = idx != null && idx >= 0 && idx < palette.colors.length
         ? palette.colors[idx]
         : null;
     return InkWell(
@@ -229,7 +231,9 @@ class EditorColorChip extends StatelessWidget {
                 shape: BoxShape.circle,
                 border: Border.all(color: Colors.black26),
               ),
-              child: c == null
+              child: blank
+                  ? const Icon(Icons.close, size: 17, color: Colors.black45)
+                  : c == null
                   ? const Icon(
                       Icons.palette_outlined,
                       size: 17,
@@ -239,7 +243,7 @@ class EditorColorChip extends StatelessWidget {
             ),
             const SizedBox(width: 7),
             Text(
-              c == null ? "选色" : c.id,
+              blank ? "空白" : c == null ? "选色" : c.id,
               style: Theme.of(context).textTheme.labelLarge,
             ),
           ],

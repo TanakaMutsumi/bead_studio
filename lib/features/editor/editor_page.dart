@@ -224,7 +224,8 @@ class _EditorPageState extends State<EditorPage> {
       case EditorTool.eyedropper:
         if (isStart) {
           final v = _model.cell(x, y);
-          if (v >= 0) {
+          if (v >= -1) {
+            // -1=空白格也吸（选空白→画笔擦除/油漆桶清底同入口）
             setState(() {
               _currentColor = v;
               if (_tool != EditorTool.brush) {
@@ -398,12 +399,15 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   void _openReplaceColorSheet() {
+    // 全局换色只换实色（-1=空白不是色卡索引，越界防护）
+    final from = (_currentColor != null && _currentColor! >= 0)
+        ? _currentColor!
+        : 0;
     showReplaceColorSheet(
       context,
       palette: widget.palette,
-      initialFrom: _currentColor ?? 0,
-      initialTo: ((_currentColor ?? 0) + 1)
-          .clamp(0, widget.palette.colors.length - 1),
+      initialFrom: from,
+      initialTo: (from + 1).clamp(0, widget.palette.colors.length - 1),
       onApply: (from, to) {
         _pushUndo();
         final count = replaceColor(_model.grid, from, to);
@@ -977,14 +981,18 @@ class _EditorPageState extends State<EditorPage> {
     );
   }
 
-  /// 弹色卡网格选绘画色（吸管同源：选完自动从橡皮/查看切回画笔）
+  /// 弹色卡网格选绘画色（吸管同源：选完自动从橡皮/查看切回画笔）。
+  /// withBlank：首格「空白」返回 -1——图纸外部整片底色（如 H2 近白）
+  /// 想直接填空白的场景（2026-11-10 用户需求）：油漆桶选空白一键清底、
+  /// 画笔选空白=擦除、吸管吸空白格=选中空白
   Future<void> _pickPaintColor() async {
     final i = await showPaletteColorPicker(
       context,
       palette: widget.palette,
       title: "选择绘画颜色",
+      withBlank: true,
     );
-    if (i == null || i < 0 || !mounted) {
+    if (i == null || i < -1 || !mounted) {
       return;
     }
     setState(() {
