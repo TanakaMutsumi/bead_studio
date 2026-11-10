@@ -99,7 +99,7 @@ class EditorToolRow extends StatelessWidget {
     return Row(
       children: [
         toolBtn(
-            EditorTool.view, const Icon(Icons.open_with, size: 22), "查看（不落笔）"),
+            EditorTool.view, const Icon(Icons.open_with, size: 22), "查看（拖动看图，不落笔）"),
         toolBtn(EditorTool.brush, const Icon(Icons.brush, size: 22), "画笔"),
         toolBtn(EditorTool.eraser, const EraserIcon(size: 22), "橡皮"),
         toolBtn(EditorTool.bucket, const Icon(Icons.format_color_fill, size: 22),

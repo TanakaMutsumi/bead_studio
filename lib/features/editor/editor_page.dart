@@ -758,21 +758,42 @@ class _EditorPageState extends State<EditorPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text("有未保存的修改"),
-        content: const Text("退出前要保存吗？不保存将丢失这次编辑。"),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, "cancel"),
-            child: const Text("取消"),
+        // 三选一竖排满宽钮（此前 actions 三钮一行，窄屏 OverflowBar
+        // 换行成参差多行——2026-11-10 用户反馈「排布问题严重」）
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Padding(
+                padding: EdgeInsets.only(bottom: 14),
+                child: Text("退出前要保存吗？不保存将丢失这次编辑。"),
+              ),
+              FilledButton.icon(
+                onPressed: () => Navigator.pop(ctx, "save"),
+                icon: const Icon(Icons.save_outlined),
+                label: const Text("保存并退出"),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: () => Navigator.pop(ctx, "discard"),
+                style: ButtonStyle(
+                  foregroundColor: WidgetStatePropertyAll(
+                    Theme.of(ctx).colorScheme.error,
+                  ),
+                ),
+                icon: const Icon(Icons.logout),
+                label: const Text("不保存退出"),
+              ),
+              const SizedBox(height: 8),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, "cancel"),
+                child: const Text("取消"),
+              ),
+            ],
           ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, "discard"),
-            child: const Text("不保存退出"),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, "save"),
-            child: const Text("保存并退出"),
-          ),
-        ],
+        ),
       ),
     );
     if (!mounted) {
@@ -873,6 +894,12 @@ class _EditorPageState extends State<EditorPage> {
                     _pinchZoom(d);
                     return;
                   }
+                  // 查看工具单指拖动 = 平移画布（四箭头语义：只拖动看图）
+                  // ——放大后单指也能拖着走；编辑工具的单指仍留给落笔
+                  if (_tool == EditorTool.view) {
+                    _panCanvas(d.focalPointDelta, canvasSize);
+                    return;
+                  }
                   _lastScale = 1.0;
                   _applyAt(d.localFocalPoint, canvasSize, isStart: false);
                 },
@@ -905,13 +932,33 @@ class _EditorPageState extends State<EditorPage> {
     }
     final next = (cur * d.scale / _lastScale).clamp(1.0, 10.0);
     final focal = d.localFocalPoint;
+    // focalPointDelta 是子坐标（含 IV 逆变换），×cur 折算父空间才跟手
     final m = Matrix4.identity()
-      ..translate(d.focalPointDelta.dx, d.focalPointDelta.dy)
+      ..translate(d.focalPointDelta.dx * cur, d.focalPointDelta.dy * cur)
       ..translate(focal.dx, focal.dy)
       ..scale(next / cur)
       ..translate(-focal.dx, -focal.dy);
     _viewerCtrl.value = m * _viewerCtrl.value;
     _lastScale = d.scale;
+  }
+
+  /// 查看工具单指平移画布（放大后拖看）。[delta] 是子坐标系位移，
+  /// ×当前 scale 折算父空间；平移必须**前乘**（`T×M`，父空间）——
+  /// 后乘 `M×T` 平移落在子空间会被 scale 再放大一次（2× 缩放时
+  /// 实际平移 scale² 倍，实测 300px 手势把画布拖飞出屏）。
+  /// clamp ±画布尺寸防拖飞
+  void _panCanvas(Offset delta, Size canvasSize) {
+    if (delta == Offset.zero) {
+      return;
+    }
+    final scale = _viewerCtrl.value.getMaxScaleOnAxis();
+    final m = Matrix4.identity()
+      ..translate(delta.dx * scale, delta.dy * scale)
+      ..multiply(_viewerCtrl.value);
+    final s = m.storage;
+    s[12] = s[12].clamp(-canvasSize.width, canvasSize.width).toDouble();
+    s[13] = s[13].clamp(-canvasSize.height, canvasSize.height).toDouble();
+    _viewerCtrl.value = m;
   }
 
   /// 格子选区 -> 画布像素矩形
