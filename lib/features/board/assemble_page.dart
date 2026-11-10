@@ -214,7 +214,8 @@ class _AssemblePageState extends State<AssemblePage> {
         final m = widget.works[i].model;
         for (var c = 0; c < m.grid.length; c++) {
           final v = m.grid[c];
-          final cid = v >= 0 && v < m.paletteIds.length ? m.paletteIds[v] : null;
+          final cid =
+              v >= 0 && v < m.paletteIds.length ? m.paletteIds[v] : null;
           if (cid != id) {
             continue;
           }
@@ -372,86 +373,93 @@ class _AssemblePageState extends State<AssemblePage> {
           children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
-              child: Row(
+              // 信息与控件分两行（2026-11-10 用户反馈：一行塞 1 段信息 +
+              // 5 个控件，信息只剩 ~200px 被截成省略号）；信息独占一行
+              // 永不截断，控件行 ~340dp 窄屏也放得下
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Expanded(
-                    child: Text(
-                      "板 ${widget.board.w}×${widget.board.h} · "
-                      "每${widget.board.interval}格加粗 · 已放 $done/$total",
-                      style: Theme.of(context).textTheme.bodySmall,
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                  Text(
+                    "板 ${widget.board.w}×${widget.board.h} · "
+                    "每${widget.board.interval}格加粗 · 已放 $done/$total",
+                    style: Theme.of(context).textTheme.bodySmall,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                  // 粗框线颜色（与板设置页同款色板；本会话内即时生效）
-                  Tooltip(
-                    message: "粗框线颜色",
-                    child: InkWell(
-                      onTap: _pickMajorColor,
-                      borderRadius: BorderRadius.circular(14),
-                      child: Container(
-                        width: 28,
-                        height: 28,
-                        decoration: BoxDecoration(
-                          color: Color(
-                            _majorColor ?? BoardConfig.defaultMajorColor,
+                  Row(
+                    children: [
+                      // 粗框线颜色（与板设置页同款色板；本会话内即时生效）
+                      Tooltip(
+                        message: "粗框线颜色",
+                        child: InkWell(
+                          onTap: _pickMajorColor,
+                          borderRadius: BorderRadius.circular(14),
+                          child: Container(
+                            width: 28,
+                            height: 28,
+                            decoration: BoxDecoration(
+                              color: Color(
+                                _majorColor ?? BoardConfig.defaultMajorColor,
+                              ),
+                              shape: BoxShape.circle,
+                              border: Border.all(color: Colors.black38),
+                            ),
                           ),
-                          shape: BoxShape.circle,
-                          border: Border.all(color: Colors.black38),
                         ),
                       ),
-                    ),
+                      // 未选中色号文本开关（常显——高亮降噪/无高亮净板视图）
+                      IconButton(
+                        onPressed: () =>
+                            setState(() => _showOtherIds = !_showOtherIds),
+                        icon: Icon(
+                          _showOtherIds
+                              ? Icons.visibility_outlined
+                              : Icons.visibility_off_outlined,
+                          size: 18,
+                        ),
+                        tooltip: _showOtherIds ? "隐藏未选中色号文本" : "显示未选中色号文本",
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      // 文字层模式切换（常显：编号模式须先选色才有效果，但入口
+                      // 不必藏着——用户可能先设模式再选色）
+                      TextButton.icon(
+                        onPressed: () => setState(() {
+                          _labelMode = switch (_labelMode) {
+                            LabelMode.id => LabelMode.rowNumber,
+                            LabelMode.rowNumber => LabelMode.colNumber,
+                            LabelMode.colNumber => LabelMode.id,
+                          };
+                        }),
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                        ),
+                        icon: Icon(
+                          switch (_labelMode) {
+                            LabelMode.rowNumber => Icons.swap_horiz,
+                            LabelMode.colNumber => Icons.swap_vert,
+                            LabelMode.id => Icons.text_fields,
+                          },
+                          size: 16,
+                        ),
+                        label: Text(
+                          switch (_labelMode) {
+                            LabelMode.rowNumber => "横向排列",
+                            LabelMode.colNumber => "竖向排列",
+                            LabelMode.id => "只显示色号",
+                          },
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                      // 色条排序（与图例核对步同款四模式单选菜单）：完成色
+                      //（剩余 0）恒垫后由排序函数保证，这里只管段内次序
+                      _sortPopup(),
+                      // 字色模式（三档单选）：自适应=浅色豆黑字/深色豆白字
+                      //（默认）；全黑/全白强制一色——个别豆色自适应选的字色
+                      // 看不清时（如纯白豆配浅灰字）手动兜底
+                      _labelColorPopup(),
+                    ],
                   ),
-                  // 未选中色号文本开关（常显——高亮降噪/无高亮净板视图）
-                  IconButton(
-                    onPressed: () =>
-                        setState(() => _showOtherIds = !_showOtherIds),
-                    icon: Icon(
-                      _showOtherIds
-                          ? Icons.visibility_outlined
-                          : Icons.visibility_off_outlined,
-                      size: 18,
-                    ),
-                    tooltip: _showOtherIds ? "隐藏未选中色号文本" : "显示未选中色号文本",
-                    visualDensity: VisualDensity.compact,
-                  ),
-                  // 文字层模式切换（常显：编号模式须先选色才有效果，但入口
-                  // 不必藏着——用户可能先设模式再选色）
-                  TextButton.icon(
-                    onPressed: () => setState(() {
-                      _labelMode = switch (_labelMode) {
-                        LabelMode.id => LabelMode.rowNumber,
-                        LabelMode.rowNumber => LabelMode.colNumber,
-                        LabelMode.colNumber => LabelMode.id,
-                      };
-                    }),
-                    style: TextButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                    ),
-                    icon: Icon(
-                      switch (_labelMode) {
-                        LabelMode.rowNumber => Icons.swap_horiz,
-                        LabelMode.colNumber => Icons.swap_vert,
-                        LabelMode.id => Icons.text_fields,
-                      },
-                      size: 16,
-                    ),
-                    label: Text(
-                      switch (_labelMode) {
-                        LabelMode.rowNumber => "横向排列",
-                        LabelMode.colNumber => "竖向排列",
-                        LabelMode.id => "只显示色号",
-                      },
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ),
-                  // 色条排序（与图例核对步同款四模式单选菜单）：完成色
-                  //（剩余 0）恒垫后由排序函数保证，这里只管段内次序
-                  _sortPopup(),
-                  // 字色模式（三档单选）：自适应=浅色豆黑字/深色豆白字
-                  //（默认）；全黑/全白强制一色——个别豆色自适应选的字色
-                  // 看不清时（如纯白豆配浅灰字）手动兜底
-                  _labelColorPopup(),
                 ],
               ),
             ),
@@ -651,7 +659,8 @@ class _AssemblePageState extends State<AssemblePage> {
                 Icon(
                   Icons.check,
                   size: 16,
-                  color: m == _labelColorMode ? Colors.blue : Colors.transparent,
+                  color:
+                      m == _labelColorMode ? Colors.blue : Colors.transparent,
                 ),
                 const SizedBox(width: 4),
                 Text(switch (m) {
@@ -751,8 +760,10 @@ class _AssemblePageState extends State<AssemblePage> {
               : (count > 0 && left == 0)
                   ? const Color(0xFF2E7D32)
                   : Colors.black26;
+          // 黑白字判定与画布同款（beadLabelDark：WCAG 对比度取高），
+          // 旧亮度阈值把 M2 类浅灰米色判深出白字
           final light =
-              c != null && (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) > 150;
+              c != null && beadLabelDark(Color.fromARGB(255, c.r, c.g, c.b));
           return GestureDetector(
             // 单击选色（注册了双击后单击会延迟一拍，属预期）
             onTap: () => setState(() {

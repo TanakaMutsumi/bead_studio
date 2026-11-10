@@ -132,8 +132,8 @@ class BoardPainter extends CustomPainter {
     this.labelColorMode = LabelColorMode.adaptive,
     this.viewScale = 1.0,
     TransformationController? ctrl,
-  }) : ctrl = ctrl,
-       super(repaint: ctrl);
+  })  : ctrl = ctrl,
+        super(repaint: ctrl);
 
   /// 线宽补偿用视图缩放：ctrl 实时值优先，无 ctrl 回落构建时的
   /// viewScale（配置页路径）
@@ -206,12 +206,18 @@ class BoardPainter extends CustomPainter {
     return numbers;
   }
 
-  /// 画格子文字（色号/编号），TextPainter 按内容+字号+颜色缓存
+  /// 画格子文字（色号/编号），TextPainter 按内容+有效字号+颜色缓存
   ///
   /// 字号跟随格子尺寸（无下限）：小格子字小，画布放大后矢量渲染依然清晰。
   /// [light] 豆底亮度判浅（自适应模式选黑白字用）；[dimmed] = 高亮中
-  /// 未选中色的格：字色向共同基色混 0.5（豆底压得更深是 0.75，字留多
-  /// 一分亮度保可读），文字跟着退后不抢焦
+  /// 未选中色的格：字色向共同基色轻混 0.15 退后一点（早期 0.5 会把字
+  /// 洗成与压暗底只差 ~1.9:1 的灰白——2026-11-10 用户反馈「H2 白字
+  /// 根本看不见」的实锤，0.15 后对比 ~4:1 仍可读）。
+  ///
+  /// 锐度：画布处于视图缩放变换下，直接按格子字号画会被先栅格化再经
+  /// 变换拉伸——放大后是一团均匀色带（实测 5.4× 下黑字没有任何深色
+  /// 核心）。以格中心为锚先 scale(1/s) 回屏幕分辨率、按有效字号
+  /// effPx=px*s 栅格化，视觉尺寸不变、任意缩放下锐利。
   void _drawLabel(
     Canvas canvas,
     String text,
@@ -229,23 +235,32 @@ class BoardPainter extends CustomPainter {
       LabelColorMode.white => Colors.white,
     };
     if (dimmed) {
-      color = Color.lerp(color, _dimGray, 0.5)!;
+      color = Color.lerp(color, _dimGray, 0.15)!;
     }
-    final key = "$text|$px|${color.value}";
+    final s = _scale;
+    final effPx = (px * s * 2).roundToDouble() / 2;
+    final key = "$text|$effPx|${color.toARGB32()}";
+    if (_labelCache.length > 600) {
+      _labelCache.clear(); // 捏合连续缩放会生成大量中间档，防缓存无界
+    }
     var tp = _labelCache[key];
     if (tp == null) {
       tp = TextPainter(
         text: TextSpan(
           text: text,
           style: TextStyle(
-              fontSize: px, color: color, fontWeight: FontWeight.w600),
+              fontSize: effPx, color: color, fontWeight: FontWeight.w600),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
       _labelCache[key] = tp;
     }
-    tp.paint(canvas,
-        Offset(rect.center.dx - tp.width / 2, rect.center.dy - tp.height / 2));
+    final center = rect.center;
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.scale(1 / s);
+    tp.paint(canvas, Offset(-tp.width / 2, -tp.height / 2));
+    canvas.restore();
   }
 
   @override
@@ -376,7 +391,10 @@ class BoardPainter extends CustomPainter {
             final text =
                 (isHi && numbers.containsKey(key)) ? "${numbers[key]}" : c.id;
             // 压暗格字色按混合后的实际底色判深浅（与豆底同款 0.75 混合
-            // 幅度；混后原色深浅大体保留，深字浅底/浅字深底仍然成立）
+            // 幅度；混后原色深浅大体保留，深字浅底/浅字深底仍然成立）。
+            // 判法改 WCAG 黑白对比度取高（beadLabelDark）：旧亮度阈值
+            // >150 把 M2 类浅灰米色判深出白字，浅底白字看不见
+            //（2026-11-10 用户反馈自适应没生效）
             final base = dimmedCells.contains(key)
                 ? Color.lerp(
                     Color.fromARGB(255, c.r, c.g, c.b),
@@ -384,8 +402,7 @@ class BoardPainter extends CustomPainter {
                     0.75,
                   )!
                 : Color.fromARGB(255, c.r, c.g, c.b);
-            final light =
-                base.r * 0.299 + base.g * 0.587 + base.b * 0.114 > 150;
+            final light = beadLabelDark(base);
             _drawLabel(
               canvas,
               text,
