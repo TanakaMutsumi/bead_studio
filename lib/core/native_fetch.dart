@@ -17,7 +17,22 @@ class NativeFetchResult {
   final String body;
 }
 
-/// 用 Android HttpURLConnection 抓取；通道不存在/失败返回 null（回退 Dart http）
+/// 通道存在但请求失败（DNS/超时/TLS 等网络层异常）。
+/// 与「通道不存在」区分开：Android 上 Dart http 回退对按 TLS 指纹分流的
+/// 站点必死（v.douyin.com 对 dart:io ClientHello 直接 400，2026-11-10
+/// 实测），调用方应直接报网络错误而不是再等一轮 20s 超时。
+class NativeFetchFailure implements Exception {
+  final String detail;
+  const NativeFetchFailure(this.detail);
+
+  @override
+  String toString() => 'NativeFetchFailure: $detail';
+}
+
+/// 用 Android HttpURLConnection 抓取。
+/// 通道不存在（非 Android 平台）返回 null，由调用方回退 Dart http；
+/// 通道存在但请求失败抛 [NativeFetchFailure]——回退无意义，调用方直接
+/// 给用户网络错误提示。
 Future<NativeFetchResult?> nativeHttpGet(
   String url, {
   String? userAgent,
@@ -37,8 +52,8 @@ Future<NativeFetchResult?> nativeHttpGet(
       status: (res['status'] as num?)?.toInt() ?? 0,
       body: res['body']?.toString() ?? '',
     );
-  } on PlatformException {
-    return null;
+  } on PlatformException catch (e) {
+    throw NativeFetchFailure('${e.code}${e.message != null ? ': ${e.message}' : ''}');
   } on MissingPluginException {
     return null;
   }

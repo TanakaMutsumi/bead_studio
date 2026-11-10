@@ -1,9 +1,12 @@
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:bead_studio/core/douyin_link.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('extractDouyinLink', () {
     test('从分享文案提取短链（前后贴中文/emoji/数字）', () {
       const text = '7.92 复制打开抖音，看看【你困不困啊的图文作品】耍起！'
@@ -55,6 +58,33 @@ void main() {
       for (final img in note.images) {
         expect(img.url.contains('p14lwwcsbr'), isFalse);
       }
+    });
+  });
+
+  group('fetchDouyinNote 原生通道失败', () {
+    // 2026-11-10 实测：模拟器断网时原生通道抛异常，旧逻辑回退 Dart http
+    // 再白等 20s 超时，用户看到的是误导性的 TimeoutException。现在原生
+    // 失败应立即给出网络错误，且完全不发起 Dart 侧请求。
+    test('原生请求异常 → 立即抛网络错误（不走 Dart 回退）', () async {
+      const channel = MethodChannel('bead_native_fetch');
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+        throw PlatformException(code: 'fetchError', message: 'UnknownHost');
+      });
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null),
+      );
+      await expectLater(
+        fetchDouyinNote('https://v.douyin.com/DI9Be6Jk7qE/'),
+        throwsA(
+          isA<DouyinLinkException>().having(
+            (e) => e.message,
+            'message',
+            contains('网络连接失败'),
+          ),
+        ),
+      );
     });
   });
 }

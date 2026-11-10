@@ -98,6 +98,15 @@ String? extractDouyinLink(String text) {
   return (m.group(1)!, m.group(2)!);
 }
 
+/// 原生通道包一层：请求失败 → 面向用户的网络错误（Dart 回退见上）
+Future<NativeFetchResult?> _nativeGet(String url) async {
+  try {
+    return await nativeHttpGet(url, userAgent: _spider);
+  } on NativeFetchFailure {
+    throw const DouyinLinkException('网络连接失败，请检查网络后重试');
+  }
+}
+
 /// 解析分享文本 → 作品（标题 + 全部正文图）
 ///
 /// 抛 [DouyinLinkException]（消息面向用户），网络等底层异常原样上抛。
@@ -118,8 +127,11 @@ Future<DouyinNote> fetchDouyinNote(String shareText, {http.Client? client}) asyn
   try {
     var status = 0;
     var body = '';
-    // Android 优先原生通道：跨主机跳转逐跳手动跟随且全程保爬虫 UA
-    final native = await nativeHttpGet(pageUrl, userAgent: _spider);
+    // Android 优先原生通道：跨主机跳转逐跳手动跟随且全程保爬虫 UA。
+    // 原生请求失败（DNS/超时/TLS）直接报网络错误——Dart http 回退对
+    // v.douyin.com 必死（其边缘按 TLS 指纹对 dart:io 极简 ClientHello
+    // 回 400，2026-11-10 实测），再等 20s 超时只会拖慢报错
+    final native = await _nativeGet(pageUrl);
     if (native != null) {
       status = native.status;
       body = native.body;

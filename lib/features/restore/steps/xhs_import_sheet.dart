@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard;
 
@@ -104,7 +105,10 @@ class _XhsImportSheetState extends State<_XhsImportSheet> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _error = '获取失败：$e\n（网页版受浏览器跨域限制，请用 App）';
+          // 跨域提示只在 web 有意义；App 端写出来会误导排查方向
+          _error = kIsWeb
+              ? '获取失败：$e\n（网页版受浏览器跨域限制，请用 App）'
+              : '获取失败：$e';
           _phase = _Phase.input;
         });
       }

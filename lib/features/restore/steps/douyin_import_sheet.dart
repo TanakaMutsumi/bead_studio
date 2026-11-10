@@ -116,7 +116,11 @@ class _DouyinImportSheetState extends State<_DouyinImportSheet> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _error = '获取失败：$e\n（网页版受浏览器跨域限制，请用 App）';
+          // 跨域提示只在 web 有意义；App 端写出来会误导排查方向
+          // （2026-11-10：抖音导入网络故障被误导向“网页版限制”）
+          _error = kIsWeb
+              ? '获取失败：$e\n（网页版受浏览器跨域限制，请用 App）'
+              : '获取失败：$e';
           _phase = _Phase.input;
         });
       }

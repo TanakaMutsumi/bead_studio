@@ -98,6 +98,20 @@ String? extractXhsLink(String text) {
   return null;
 }
 
+/// 原生通道包一层：请求失败 → 面向用户的网络错误（Dart 回退对小红书
+/// 只能拿到无数据壳页，必死，不再白等）
+Future<NativeFetchResult?> _nativeGet(String url) async {
+  try {
+    return await nativeHttpGet(
+      url,
+      userAgent: _ua,
+      referer: 'https://www.xiaohongshu.com/',
+    );
+  } on NativeFetchFailure {
+    throw const XhsLinkException('网络连接失败，请检查网络后重试');
+  }
+}
+
 /// 解析分享文本 → 笔记（标题 + 全部图片的缩略图/原图地址）
 ///
 /// 抛 [XhsLinkException]（消息面向用户），网络等底层异常原样上抛。
@@ -111,14 +125,11 @@ Future<XhsNote> fetchXhsNote(String shareText, {http.Client? client}) async {
   try {
     // 笔记页按 TLS 指纹分流：Android 优先走原生 HttpURLConnection
     // （Conscrypt，拿全量 SSR 页）；Dart http（BoringSSL）只拿得到无数据
-    // 壳页，作为非 Android 回退（web 上会被 CORS 拦）
+    // 壳页，作为非 Android 回退（web 上会被 CORS 拦）。原生请求失败
+    // （DNS/超时/TLS）直接报网络错误，不再走必死的 Dart 回退白等 20s
     var status = 0;
     var body = '';
-    final native = await nativeHttpGet(
-      url.toString(),
-      userAgent: _ua,
-      referer: 'https://www.xiaohongshu.com/',
-    );
+    final native = await _nativeGet(url.toString());
     if (native != null) {
       status = native.status;
       body = native.body;
