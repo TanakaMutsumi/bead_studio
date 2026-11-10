@@ -26,14 +26,14 @@ class PixelEngine {
   /// 图片字节 -> 拼豆图案
   ///
   /// [boardSize] 板边长（如 26/29/52/78）
-  /// [kernel] 抖动核（none = 每像素独立最近色）
+  /// [style] 转换风格（blocks = 色块统一，detail = 保留细节）
   /// [sourceRect] 可选裁剪区域（像素坐标，null = 取中心最大正方形）
   ///
   /// 解码走 decodeImageRobust（Skia 优先 + image 包回退，像素口径=libjpeg-turbo）
   Future<PatternModel> convert({
     required Uint8List bytes,
     required int boardSize,
-    DitherKernel kernel = DitherKernel.none,
+    ConvertStyle style = ConvertStyle.blocks,
     SourceRect? sourceRect,
   }) async {
     final decoded = await decodeImageRobust(bytes);
@@ -48,12 +48,13 @@ class PixelEngine {
       height: rect.height,
     );
 
-    // 2. 最近邻缩放到板尺寸（避免双线性糊边）
+    // 2. 盒式均值缩放到板尺寸：每格取源区域平均色，从源头抑制
+    // 采样噪声（最近邻采样在大比例缩小时把单像素噪声直接带进网格）
     final resized = img.copyResize(
       cropped,
       width: boardSize,
       height: boardSize,
-      interpolation: img.Interpolation.nearest,
+      interpolation: img.Interpolation.average,
     );
 
     // 3. 拆通道
@@ -78,7 +79,7 @@ class PixelEngine {
       pixelsB: pb,
       width: boardSize,
       height: boardSize,
-      kernel: kernel,
+      style: style,
     );
 
     return PatternModel(

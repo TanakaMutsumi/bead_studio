@@ -34,7 +34,7 @@ class _ImportPageState extends State<ImportPage> {
 
   ///< 解码/重编码中（预览区转圈，避免"白屏不知发生什么"）
   var _boardSize = 52;
-  var _kernel = DitherKernel.none;
+  var _style = ConvertStyle.blocks;
   var _converting = false;
 
   // 色卡（初始空占位，initState 异步换为用户选中的色卡）
@@ -120,7 +120,7 @@ class _ImportPageState extends State<ImportPage> {
     try {
       final bytes = _pickedBytes!;
       final model = await PixelEngine(_palette)
-          .convert(bytes: bytes, boardSize: _boardSize, kernel: _kernel);
+          .convert(bytes: bytes, boardSize: _boardSize, style: _style);
       if (!mounted) {
         return;
       }
@@ -255,34 +255,21 @@ class _ImportPageState extends State<ImportPage> {
           ),
           const SizedBox(height: 12),
 
-          // 抖动核选择
-          const Text("抖动算法", style: TextStyle(fontWeight: FontWeight.bold)),
+          // 转换风格选择
+          const Text("转换风格", style: TextStyle(fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: SegmentedButton<DitherKernel>(
-              segments: const [
-                ButtonSegment(value: DitherKernel.none, label: Text("无")),
-                ButtonSegment(
-                  value: DitherKernel.floydSteinberg,
-                  label: Text("FS"),
-                ),
-                ButtonSegment(
-                  value: DitherKernel.atkinson,
-                  label: Text("Atkinson"),
-                ),
-                ButtonSegment(value: DitherKernel.ordered, label: Text("有序")),
-              ],
-              selected: {_kernel},
-              onSelectionChanged: (sel) => setState(() => _kernel = sel.first),
-            ),
+          SegmentedButton<ConvertStyle>(
+            segments: const [
+              ButtonSegment(value: ConvertStyle.blocks, label: Text("色块")),
+              ButtonSegment(value: ConvertStyle.detail, label: Text("细节")),
+            ],
+            selected: {_style},
+            onSelectionChanged: (sel) => setState(() => _style = sel.first),
           ),
           const SizedBox(height: 4),
-          Text(switch (_kernel) {
-            DitherKernel.none => "色块干净，渐变断层明显",
-            DitherKernel.floydSteinberg => "误差扩散，渐变过渡自然",
-            DitherKernel.atkinson => "扩散更强，整体更亮更均匀",
-            DitherKernel.ordered => "网点风格，无误差累积",
+          Text(switch (_style) {
+            ConvertStyle.blocks => "近似色自动合并成整块，消除孤立色点，照片/插画首选",
+            ConvertStyle.detail => "保留更多色彩层次与微小细节，适合线稿/像素画",
           }, style: Theme.of(context).textTheme.bodySmall),
           const SizedBox(height: 20),
 

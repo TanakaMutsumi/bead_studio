@@ -7,9 +7,9 @@
 | 模块 | 说明 |
 |------|------|
 | 图片导入 | 相册 / 拍照，自动取中心正方形 |
-| 像素化 | 最近邻缩放到板尺寸（26×26 / 29×29 / 52×52 / 78×78） |
+| 像素化 | 盒式均值缩放到板尺寸（26×26 / 29×29 / 52×52 / 78×78），源头抑制采样噪声 |
 | 调色板量化 | Lab 空间最近邻匹配（感知均匀，优于 RGB 距离） |
-| 抖动 | Floyd–Steinberg 误差扩散，渐变过渡更自然（可开关） |
+| 转换风格 | 色块（默认：保边平滑 + 近似色统一 + 孤立点清除，相近色融合成整块）/ 细节（保留微小色差，适合线稿） |
 | 画布编辑 | 画笔 / 橡皮 / 油漆桶（连通域填充）/ 撤销（50 步） |
 | 本地草稿 | JSON 自动保存/恢复 |
 | 用料统计 | 每种颜色颗数 + 总数 |
@@ -72,14 +72,14 @@ lib/
 ├── main.dart                    入口 + 主题
 ├── core/
 │   ├── palette.dart             BeadColor / BeadPalette 调色板模型
-│   ├── quantizer.dart           Lab 转换 + 最近邻 + Floyd–Steinberg 抖动
+│   ├── quantizer.dart           Lab 转换 + 最近邻 + 色块统一（保边平滑/近似色合并/孤立点清除）
 │   ├── pixel_engine.dart        解码→裁剪→缩放→量化 完整管线
 │   ├── pattern_model.dart       图案网格 + 油漆桶 + 统计 + 序列化 + PNG 导出
 │   └── draft_store.dart         草稿 JSON 存取
 ├── data/
 │   └── demo_palette.dart        演示 40 色（自拟值，正式版换实测色卡）
 └── features/
-    ├── import/import_page.dart  导入页（选图/尺寸/抖动/草稿）
+    ├── import/import_page.dart  导入页（选图/尺寸/转换风格）
     ├── editor/
     │   ├── editor_page.dart     编辑器（工具/颜色条/撤销/保存/导出/统计入口）
     │   └── grid_painter.dart    CustomPainter 网格渲染
