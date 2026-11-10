@@ -22,89 +22,94 @@ enum EditorTool {
 bool isLightColor(BeadColor c) =>
     (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) > 150;
 
-/// 工具行：五工具 + 笔刷大小（画笔/橡皮时显示）
+/// 工具行：六工具纯图标（36dp 紧凑钮，一屏放下不滚动）。
+/// 2026-11-10 用户反馈二轮：此前六段「图标+文字」的 SegmentedButton
+/// 一行放不下靠横向滚动遮丑（还要左右拖才能看到吸管/选区），完全
+/// 不合格——纯图标后 360dp 窄屏也放得下；笔刷大小挪到独立的条件条
+/// （仅画笔/橡皮态出现，见 [EditorBrushBar]），工具名走 tooltip。
 class EditorToolRow extends StatelessWidget {
-  static const brushSizes = [1, 2, 3, 5];
-
   final EditorTool tool;
-  final int brushSize;
   final void Function(EditorTool t) onSelectTool;
-
-  ///< 切工具（页面负责非选区工具时清选区）
-  final void Function(int size) onSelectBrushSize;
 
   const EditorToolRow({
     super.key,
     required this.tool,
-    required this.brushSize,
     required this.onSelectTool,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    Widget toolBtn(EditorTool t, IconData icon, String label) => IconButton(
+          isSelected: tool == t,
+          icon: Icon(icon, size: 22),
+          tooltip: label,
+          visualDensity: VisualDensity.compact,
+          constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+          padding: EdgeInsets.zero,
+          style: ButtonStyle(
+            backgroundColor: WidgetStateProperty.resolveWith(
+              (s) => s.contains(WidgetState.selected)
+                  ? cs.secondaryContainer
+                  : null,
+            ),
+            foregroundColor: WidgetStateProperty.resolveWith(
+              (s) => s.contains(WidgetState.selected)
+                  ? cs.onSecondaryContainer
+                  : null,
+            ),
+          ),
+          onPressed: () => onSelectTool(t),
+        );
+    return Row(
+      children: [
+        toolBtn(EditorTool.view, Icons.visibility_outlined, "查看（不落笔）"),
+        toolBtn(EditorTool.brush, Icons.brush, "画笔"),
+        toolBtn(EditorTool.eraser, Icons.delete_outline, "橡皮"),
+        toolBtn(EditorTool.bucket, Icons.format_color_fill, "油漆桶"),
+        toolBtn(EditorTool.eyedropper, Icons.colorize, "吸管"),
+        toolBtn(EditorTool.select, Icons.crop_free, "选区"),
+      ],
+    );
+  }
+}
+
+/// 笔刷条：仅画笔/橡皮工具时出现（工具行放不下笔刷段选——360dp 窄屏
+/// 六图标+段选+色圆必然溢出，附属参数独立成条件行，与选区条同模式）
+class EditorBrushBar extends StatelessWidget {
+  static const brushSizes = [1, 2, 3, 5];
+
+  final int brushSize;
+  final void Function(int size) onSelectBrushSize;
+
+  const EditorBrushBar({
+    super.key,
+    required this.brushSize,
     required this.onSelectBrushSize,
   });
 
   @override
   Widget build(BuildContext context) {
-    // 工具条与笔刷粗细并入同一条横向滚动：先前 Row+Expanded 把工具条
-    // 压到粗细条底下（窄屏两者互相遮挡），同一条里各自按固有宽度排、
-    // 放不下整体滚动，互不挤压
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            SegmentedButton<EditorTool>(
-              segments: const [
-                ButtonSegment(
-                  value: EditorTool.view,
-                  icon: Icon(Icons.visibility_outlined),
-                  label: Text("查看"),
-                ),
-                ButtonSegment(
-                  value: EditorTool.brush,
-                  icon: Icon(Icons.brush),
-                  label: Text("画笔"),
-                ),
-                ButtonSegment(
-                  value: EditorTool.eraser,
-                  icon: Icon(Icons.delete_outline),
-                  label: Text("橡皮"),
-                ),
-                ButtonSegment(
-                  value: EditorTool.bucket,
-                  icon: Icon(Icons.format_color_fill),
-                  label: Text("油漆桶"),
-                ),
-                ButtonSegment(
-                  value: EditorTool.eyedropper,
-                  icon: Icon(Icons.colorize),
-                  label: Text("吸管"),
-                ),
-                ButtonSegment(
-                  value: EditorTool.select,
-                  icon: Icon(Icons.crop_free),
-                  label: Text("选区"),
-                ),
-              ],
-              selected: {tool},
-              onSelectionChanged: (sel) => onSelectTool(sel.first),
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+      child: Row(
+        children: [
+          Text("笔刷",
+              style: Theme.of(context).textTheme.labelMedium),
+          const SizedBox(width: 8),
+          SegmentedButton<int>(
+            showSelectedIcon: false,
+            style: const ButtonStyle(
+              visualDensity: VisualDensity.compact,
             ),
-            if (tool == EditorTool.brush || tool == EditorTool.eraser) ...[
-              const SizedBox(width: 8),
-              SegmentedButton<int>(
-                showSelectedIcon: false,
-                style: const ButtonStyle(
-                  visualDensity: VisualDensity.compact,
-                ),
-                segments: [
-                  for (final s in brushSizes)
-                    ButtonSegment(value: s, label: Text("$s")),
-                ],
-                selected: {brushSize},
-                onSelectionChanged: (sel) => onSelectBrushSize(sel.first),
-              ),
+            segments: [
+              for (final s in brushSizes)
+                ButtonSegment(value: s, label: Text("$s")),
             ],
-          ],
-        ),
+            selected: {brushSize},
+            onSelectionChanged: (sel) => onSelectBrushSize(sel.first),
+          ),
+        ],
       ),
     );
   }
@@ -146,15 +151,15 @@ class EditorSelectionBar extends StatelessWidget {
   }
 }
 
-/// 编辑模式底部颜色行：当前色圆 + 色号/色名，点整行弹色卡换色
-/// （2026-11-09 用户反馈重排：原全宽「选择颜色」按钮改为色圆形态，
-/// 一眼看到当前画的是什么色；未选色画灰圆占位）
-class EditorColorDotRow extends StatelessWidget {
+/// 编辑模式当前色圆（顶栏内联）：色圆 + 色号，点击弹色卡换色。
+/// 2026-11-10 用户反馈二轮：从底部整行拉上来放进顶行尾部，紧凑内联
+/// 不占行（未选色画灰圆）
+class EditorColorChip extends StatelessWidget {
   final BeadPalette palette;
   final int? currentColor;
   final VoidCallback onTap;
 
-  const EditorColorDotRow({
+  const EditorColorChip({
     super.key,
     required this.palette,
     required this.currentColor,
@@ -167,45 +172,38 @@ class EditorColorDotRow extends StatelessWidget {
     final c = idx != null && idx < palette.colors.length
         ? palette.colors[idx]
         : null;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 6, 16, 10),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(10),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-          child: Row(
-            children: [
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: c == null
-                      ? null
-                      : Color.fromARGB(255, c.r, c.g, c.b),
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: Colors.black26),
-                ),
-                child: c == null
-                    ? const Icon(
-                        Icons.palette_outlined,
-                        size: 20,
-                        color: Colors.black38,
-                      )
-                    : null,
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(19),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 30,
+              height: 30,
+              decoration: BoxDecoration(
+                color: c == null
+                    ? null
+                    : Color.fromARGB(255, c.r, c.g, c.b),
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.black26),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  c == null
-                      ? "未选色 · 点击选择绘画颜色"
-                      : "${c.id} ${c.name} · 点击换色",
-                  style: Theme.of(context).textTheme.bodyMedium,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
+              child: c == null
+                  ? const Icon(
+                      Icons.palette_outlined,
+                      size: 17,
+                      color: Colors.black38,
+                    )
+                  : null,
+            ),
+            const SizedBox(width: 7),
+            Text(
+              c == null ? "选色" : c.id,
+              style: Theme.of(context).textTheme.labelLarge,
+            ),
+          ],
         ),
       ),
     );

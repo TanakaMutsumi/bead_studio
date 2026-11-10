@@ -213,7 +213,7 @@ class _EditorPageState extends State<EditorPage> {
         if (_tool == EditorTool.brush && color == null) {
           // 未选色不落笔：先在颜色条指定颜色（拖动中不重复提示）
           if (isStart) {
-            AppSnackBar.show(context, "先在下方选择颜色，再绘制");
+            AppSnackBar.show(context, "先在上方选择颜色，再绘制");
           }
           return;
         }
@@ -228,7 +228,7 @@ class _EditorPageState extends State<EditorPage> {
         final color = _currentColor;
         if (color == null) {
           if (isStart) {
-            AppSnackBar.show(context, "先在下方选择颜色，再填充");
+            AppSnackBar.show(context, "先在上方选择颜色，再填充");
           }
           return;
         }
@@ -390,7 +390,7 @@ class _EditorPageState extends State<EditorPage> {
     }
     final color = _currentColor;
     if (color == null) {
-      AppSnackBar.show(context, "先在下方选择颜色");
+      AppSnackBar.show(context, "先在上方选择颜色");
       return;
     }
     _pushUndo();
@@ -683,8 +683,29 @@ class _EditorPageState extends State<EditorPage> {
       ),
       body: Column(
         children: [
-          _buildToolRow(),
+          // 顶行 = 工具图标组 + 当前色圆（2026-11-10 用户反馈二轮：
+          // 颜色选择拉上来与工具同栏，底部完全让给画布）。拼装模式
+          // 绘画被旁路，色圆让位给底部的用量色条
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 6, 8, 0),
+            child: Row(
+              children: [
+                Expanded(child: _buildToolRow()),
+                if (!_assembleMode)
+                  EditorColorChip(
+                    palette: widget.palette,
+                    currentColor: _currentColor,
+                    onTap: _pickPaintColor,
+                  ),
+              ],
+            ),
+          ),
           if (_selRectCells != null) _buildSelectionBar(),
+          if (_tool == EditorTool.brush || _tool == EditorTool.eraser)
+            EditorBrushBar(
+              brushSize: _brushSize,
+              onSelectBrushSize: (s) => setState(() => _brushSize = s),
+            ),
           Expanded(child: _buildCanvas()),
           if (_boardMode) _buildBoardBar(),
           if (_assembleMode)
@@ -716,12 +737,6 @@ class _EditorPageState extends State<EditorPage> {
               _boardMode
                   ? _boardCounts(_boardRectOf(_boardIndex))
                   : _model.countByColor(),
-            )
-          else
-            EditorColorDotRow(
-              palette: widget.palette,
-              currentColor: _currentColor,
-              onTap: _pickPaintColor,
             ),
         ],
       ),
@@ -742,18 +757,16 @@ class _EditorPageState extends State<EditorPage> {
     );
   }
 
-  /// 工具行：五工具 + 笔刷大小
+  /// 工具行：六工具图标（笔刷/选区附属条由 body 条件插入）
   Widget _buildToolRow() {
     return EditorToolRow(
       tool: _tool,
-      brushSize: _brushSize,
       onSelectTool: (t) => setState(() {
         _tool = t;
         if (t != EditorTool.select) {
           _clearSelection();
         }
       }),
-      onSelectBrushSize: (s) => setState(() => _brushSize = s),
     );
   }
 
