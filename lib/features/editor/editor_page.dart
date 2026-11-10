@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -12,10 +13,10 @@ import '../../core/grid_ops.dart';
 import '../../core/palette.dart';
 import '../../core/pattern_model.dart';
 import '../../core/quantizer.dart';
+import '../../core/zoom_controls.dart';
 import '../palette_picker.dart';
 import '../preview/preview_page.dart';
 import '../stats/stats_page.dart';
-import 'board_split.dart';
 import 'editor_bars.dart';
 import 'editor_undo.dart';
 import 'grid_painter.dart';
@@ -81,49 +82,23 @@ class _EditorPageState extends State<EditorPage> {
   ///< 当前绘画色（null = 未选色：画笔/油漆桶/选区填充一律不落笔，
   ///< 必须点下方选色按钮或用吸管取色指定）
 
-  // 拼装模式：点颜色条 = 高亮该色全部格子（其余色降饱和），辅助对照实物拼豆；
-  // 点画布格子 = 标记已放（半透明白罩+对勾，剩余颗数递减），进度随作品保存
-  var _assembleMode = false;
-  int? _highlightIndex;
-  late final Set<int> _placed = {...widget.placed};
+  // 画布缩放（2026-11-10 用户反馈：编辑器缺其他视图共有的缩放按钮；
+  ///< 双指捏合照板设置页同款自实现，单指留给绘画）
+  final _viewerCtrl = TransformationController();
+  var _lastScale = 1.0;
 
-  // 分板模式：按底板边长把图案切块导航，板外格子淡出，颜色条显示本板用量
-  var _boardMode = false;
-  var _boardSize = 29;
-  var _boardIndex = 0;
+  ///< 捏合缩放的相对基准（onScaleStart 重置为 1）
+  Size _lastCanvasSize = Size.zero;
 
-  ///< 当前板序号（行优先）
+  ///< 画布内容尺寸速记（LayoutBuilder 赋值，ZoomControls 边界计算用）
+  var _dirty = false;
+
+  ///< 有未保存的内容修改（返回时确认；保存后清零）——拼装/分板模式
+  ///< 已移除（2026-11-10 用户定稿：那是「开始拼豆」的功能，编辑器
+  ///< 只管改图案），进度数据经 widget.placed 原样带回保存
 
   // 矩形选区（格子坐标，拖拽中实时更新）
   int? _selX0, _selY0, _selX1, _selY1;
-
-  // ==================== 分板 ====================
-
-  int get _boardsAcross => (_model.width / _boardSize).ceil();
-
-  int get _boardsDown => (_model.height / _boardSize).ceil();
-
-  int get _boardCount => _boardsAcross * _boardsDown;
-
-  /// 第 [index] 块板的格子范围（clamp 到图案边界）
-  Rect _boardRectOf(int index) => boardRectOf(_model, _boardSize, index);
-
-  /// 本板用料统计
-  Map<int, int> _boardCounts(Rect r) => boardCounts(_model, r);
-
-  /// 切换板尺寸：索引 clamp 到新板数
-  void _setBoardSize(int size) {
-    setState(() {
-      _boardSize = size;
-      _boardIndex = _boardIndex.clamp(0, _boardCount - 1);
-    });
-  }
-
-  void _stepBoard(int delta) {
-    setState(() {
-      _boardIndex = (_boardIndex + delta).clamp(0, _boardCount - 1);
-    });
-  }
 
   @override
   void initState() {
@@ -134,6 +109,7 @@ class _EditorPageState extends State<EditorPage> {
   @override
   void dispose() {
     _revision.dispose();
+    _viewerCtrl.dispose();
     super.dispose();
   }
 
@@ -142,7 +118,11 @@ class _EditorPageState extends State<EditorPage> {
   _Snapshot _snapshot() =>
       _Snapshot(_model.copyGrid(), _model.width, _model.height);
 
-  void _pushUndo() => _history.push(_snapshot());
+  /// 记录一次编辑前的快照；一切内容修改都先经此（dirty 也在这置位）
+  void _pushUndo() {
+    _history.push(_snapshot());
+    _dirty = true;
+  }
 
   void _restore(_Snapshot s) {
     if (s.width != _model.width || s.height != _model.height) {
@@ -198,15 +178,6 @@ class _EditorPageState extends State<EditorPage> {
     final x = _cellX(local, canvasSize.width);
     final y = _cellY(local, canvasSize.height);
 
-    // 拼装模式画布只做标记：点格=放/取消一颗（拖动不连标，防误触），
-    // 绘制工具全部旁路——拼装中途不可能误改图案
-    if (_assembleMode) {
-      if (isStart) {
-        _togglePlaced(x, y);
-      }
-      return;
-    }
-
     // 查看工具：点/拖画布零副作用（默认工具，防打开作品误触绘制）
     if (_tool == EditorTool.view) {
       return;
@@ -229,7 +200,10 @@ class _EditorPageState extends State<EditorPage> {
           _pushUndo();
         }
         _paintSquare(x, y, _tool == EditorTool.brush ? color! : -1);
-        _revision.value++;
+        // setState：除了重绘，还要刷新 AppBar 撤销/重做按钮的可用态
+        // （2026-11-10 用户反馈编辑后撤销钮还是灰的点不动——此前只
+        // _revision++ 驱动重绘，按钮 canUndo 不重建）
+        setState(() => _revision.value++);
         break;
 
       case EditorTool.bucket:
@@ -243,7 +217,7 @@ class _EditorPageState extends State<EditorPage> {
         if (isStart) {
           _pushUndo();
           _model.floodFill(x, y, color);
-          _revision.value++;
+          setState(() => _revision.value++);
         }
         break;
 
@@ -282,63 +256,6 @@ class _EditorPageState extends State<EditorPage> {
         _model.setCell(x + dx, y + dy, value);
       }
     }
-  }
-
-  /// 拼装标记：只允许标记当前高亮色（先选色再放豆），再点取消
-  void _togglePlaced(int x, int y) {
-    final i = y * _model.width + x;
-    final hi = _highlightIndex;
-    if (hi == null) {
-      AppSnackBar.show(context, "先点下方颜色选择要拼的色，再点格子标记已放");
-      return;
-    }
-    if (_model.grid[i] != hi) {
-      return; // 非高亮色格子不响应（防串色误标）
-    }
-    setState(() {
-      _placed.contains(i) ? _placed.remove(i) : _placed.add(i);
-    });
-  }
-
-  /// 该色剩余颗数（总 - 已放）
-  int _remainOf(int colorIndex, Map<int, int> counts) {
-    final total = counts[colorIndex] ?? 0;
-    var placedCount = 0;
-    for (final i in _placed) {
-      if (i >= 0 && i < _model.grid.length && _model.grid[i] == colorIndex) {
-        placedCount++;
-      }
-    }
-    return total - placedCount;
-  }
-
-  /// 拼装进度（已放/总数；分板模式按本板统计）
-  (int, int) _assembleProgress() {
-    var total = 0;
-    var done = 0;
-    if (_boardMode) {
-      final r = _boardRectOf(_boardIndex);
-      for (var y = r.top.toInt(); y < r.bottom.toInt(); y++) {
-        for (var x = r.left.toInt(); x < r.right.toInt(); x++) {
-          if (_model.cell(x, y) >= 0) {
-            total++;
-            if (_placed.contains(y * _model.width + x)) {
-              done++;
-            }
-          }
-        }
-      }
-    } else {
-      for (var i = 0; i < _model.grid.length; i++) {
-        if (_model.grid[i] >= 0) {
-          total++;
-          if (_placed.contains(i)) {
-            done++;
-          }
-        }
-      }
-    }
-    return (done, total);
   }
 
   /// 归一化选区（格子坐标，x0<=x1 / y0<=y1），无选区返回 null
@@ -416,9 +333,6 @@ class _EditorPageState extends State<EditorPage> {
   /// 用 GridResult 替换当前图案（变换/改尺寸后）
   void _replaceModel(GridResult r) {
     setState(() {
-      if (r.width * r.height != _model.grid.length) {
-        _placed.clear(); // 网格长度变了，扁平索引全部失效
-      }
       _model = PatternModel(
         width: r.width,
         height: r.height,
@@ -510,13 +424,14 @@ class _EditorPageState extends State<EditorPage> {
       return;
     }
     // 从作品库打开的：覆写原文件（保留名字/分组），否则另存新作品；
-    // 拼装进度一并保存（覆写时显式传当前进度，防止回退成旧进度）
+    // 拼装进度原样带回（编辑器已不改动进度——拼装/分板移去「开始拼豆」）
     final file = await DraftStore.saveWork(
       _model,
       overwrite: widget.sourceFile,
-      placed: _placed,
+      placed: widget.placed,
       sortMode: widget.sortMode,
     );
+    _dirty = false;
     // 回填作品名：新建保存后标题从「未命名图案」变成实际保存名
     if (mounted) {
       final entry = await DraftStore.readEntry(file);
@@ -558,11 +473,47 @@ class _EditorPageState extends State<EditorPage> {
     }
   }
 
+  /// 导出软件图案文件（.beadpattern）：JSON 自描述格式，可在「我的
+  /// 作品 → 导入」原样导回（2026-11-10 用户需求：软件豆图格式的
+  /// 导出与导入——跨设备搬家/备份/分享给同好用）
+  Future<void> _exportPatternFile() async {
+    final name = (_name ?? "pattern").replaceAll(RegExp(r'[\\/:*?"<>|]'), "_");
+    final payload = {
+      "app": "beadstudio",
+      "type": "bead-pattern",
+      "version": 1,
+      "name": _name ?? "未命名图案",
+      // 调色板不用单独声明：pattern.paletteIds 自描述，导入端
+      // PaletteRegistry.resolveForModel 按色号解析渲染色卡
+      "pattern": _model.toJson(),
+    };
+    final bytes = utf8.encode(const JsonEncoder().convert(payload));
+    if (kIsWeb) {
+      await downloadBytes(bytes, "$name.beadpattern");
+      if (mounted) {
+        AppSnackBar.show(context, "已触发浏览器下载（$name.beadpattern）");
+      }
+      return;
+    }
+    final root = await getApplicationDocumentsDirectory();
+    final dir = Directory("${root.path}${Platform.pathSeparator}bead_exports")
+      ..createSync(recursive: true);
+    final file = File(
+      "${dir.path}${Platform.pathSeparator}$name.beadpattern",
+    );
+    await file.writeAsBytes(bytes);
+    if (mounted) {
+      AppSnackBar.show(context, "已导出：${file.path}");
+    }
+  }
+
   // ==================== UI ====================
 
   @override
   Widget build(BuildContext context) {
-    final usedColors = _model.countByColor().length;
+    final counts = _model.countByColor();
+    final usedColors = counts.length;
+    final totalBeads = counts.values.fold(0, (a, b) => a + b);
     return Scaffold(
       appBar: AppBar(
         // 标题双行（同还原页模式）：上行作品名自适应缩放（长名不再
@@ -574,7 +525,8 @@ class _EditorPageState extends State<EditorPage> {
           children: [
             AdaptiveTitleText(_name ?? "未命名图案"),
             Text(
-              "${_model.width}×${_model.height} · $usedColors 色",
+              // 总豆数上标题（2026-11-10 用户反馈）：随编辑实时刷新
+              "${_model.width}×${_model.height} · $totalBeads 颗 · $usedColors 色",
               style: const TextStyle(fontSize: 10, color: Colors.black38),
             ),
           ],
@@ -601,18 +553,10 @@ class _EditorPageState extends State<EditorPage> {
                   _saveDraft();
                 case 'export':
                   _exportPng();
-                case 'assemble':
-                  setState(() {
-                    _assembleMode = !_assembleMode;
-                    _highlightIndex = null;
-                  });
-                case 'board':
-                  setState(() {
-                    _boardMode = !_boardMode;
-                    if (_boardMode) {
-                      _boardIndex = _boardIndex.clamp(0, _boardCount - 1);
-                    }
-                  });
+                case 'exportFile':
+
+                  ///< 导出软件图案文件（.beadpattern，可再导入）
+                  _exportPatternFile();
                 case 'preview':
                   Navigator.of(context).push(
                     MaterialPageRoute(
@@ -675,15 +619,17 @@ class _EditorPageState extends State<EditorPage> {
                   ],
                 ),
               ),
-              CheckedPopupMenuItem(
-                value: 'assemble',
-                checked: _assembleMode,
-                child: const Text("拼装模式"),
-              ),
-              CheckedPopupMenuItem(
-                value: 'board',
-                checked: _boardMode,
-                child: const Text("分板拼装"),
+              // 拼装模式/分板拼装已移除（2026-11-10 用户定稿：那是
+              // 「开始拼豆」链路的功能，编辑器专注改图案）
+              const PopupMenuItem(
+                value: 'exportFile',
+                child: Row(
+                  children: [
+                    Icon(Icons.file_present_outlined),
+                    SizedBox(width: 12),
+                    Text("导出图案文件"),
+                  ],
+                ),
               ),
               const PopupMenuItem(
                 value: 'preview',
@@ -717,66 +663,129 @@ class _EditorPageState extends State<EditorPage> {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          // 顶行 = 工具图标组 + 当前色圆（2026-11-10 用户反馈二轮：
-          // 颜色选择拉上来与工具同栏，底部完全让给画布）。拼装模式
-          // 绘画被旁路，色圆让位给底部的用量色条
-          Padding(
-            padding: const EdgeInsets.fromLTRB(8, 6, 8, 0),
-            child: Row(
-              children: [
-                Expanded(child: _buildToolRow()),
-                if (!_assembleMode)
+      // 返回守卫（2026-11-10 用户反馈：有未保存修改直接返回丢改动）：
+      // 系统返回手势与 AppBar 返回箭头都走 _confirmExit；无修改直接退
+      body: PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) {
+            _confirmExit();
+          }
+        },
+        child: Column(
+          children: [
+            // 顶行 = 工具图标组 + 当前色圆（2026-11-10 用户反馈二轮：
+            // 颜色选择拉上来与工具同栏，底部完全让给画布）
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 6, 8, 0),
+              child: Row(
+                children: [
+                  Expanded(child: _buildToolRow()),
                   EditorColorChip(
                     palette: widget.palette,
                     currentColor: _currentColor,
                     onTap: _pickPaintColor,
                   ),
-              ],
+                ],
+              ),
             ),
+            // 画布区：笔刷条/选区条改为**悬浮卡**叠在画布上（2026-11-10
+            // 用户反馈：条件插入行会挤压画布让豆图位移，不允许）；
+            // 缩放条常驻画布下方（其他视图共有的缩放按钮，本页补齐）
+            Expanded(
+              child: Stack(
+                children: [
+                  Positioned.fill(child: _buildCanvas()),
+                  if (_tool == EditorTool.brush || _tool == EditorTool.eraser)
+                    Positioned(
+                      top: 6,
+                      right: 10,
+                      child: _floatCard(
+                        EditorBrushBar(
+                          brushSize: _brushSize,
+                          onSelectBrushSize: (s) =>
+                              setState(() => _brushSize = s),
+                        ),
+                      ),
+                    ),
+                  if (_selRectCells != null)
+                    Positioned(
+                      top: 6,
+                      left: 10,
+                      right: 10,
+                      child: _floatCard(_buildSelectionBar()),
+                    ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 2, 16, 4),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: ZoomControls(
+                  controller: _viewerCtrl,
+                  contentSize: () => _lastCanvasSize,
+                  viewportSize: () => _lastCanvasSize,
+                  maxScale: 10,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 悬浮操作卡：叠在画布上的小面板（不占布局高度，画布零位移）
+  Widget _floatCard(Widget child) {
+    return Material(
+      elevation: 4,
+      borderRadius: BorderRadius.circular(10),
+      color: Theme.of(context).colorScheme.surface,
+      child: child,
+    );
+  }
+
+  /// 有未保存修改时的退出确认：保存并退出 / 不保存退出 / 取消
+  Future<void> _confirmExit() async {
+    if (!_dirty) {
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
+      return;
+    }
+    final act = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("有未保存的修改"),
+        content: const Text("退出前要保存吗？不保存将丢失这次编辑。"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, "cancel"),
+            child: const Text("取消"),
           ),
-          if (_selRectCells != null) _buildSelectionBar(),
-          if (_tool == EditorTool.brush || _tool == EditorTool.eraser)
-            EditorBrushBar(
-              brushSize: _brushSize,
-              onSelectBrushSize: (s) => setState(() => _brushSize = s),
-            ),
-          Expanded(child: _buildCanvas()),
-          if (_boardMode) _buildBoardBar(),
-          if (_assembleMode)
-            Builder(
-              builder: (ctx) {
-                final (done, total) = _assembleProgress();
-                final hi = _highlightIndex;
-                final remainTxt = hi == null
-                    ? "先点下方颜色选择要拼的色"
-                    : () {
-                        final counts = _boardMode
-                            ? _boardCounts(_boardRectOf(_boardIndex))
-                            : _model.countByColor();
-                        final remain = _remainOf(hi, counts);
-                        return "${widget.palette.colors[hi].id} 剩 $remain/${counts[hi] ?? 0} 颗";
-                      }();
-                return EditorAssembleProgress(
-                  done: done,
-                  total: total,
-                  remainText: remainTxt,
-                );
-              },
-            ),
-          // 拼装模式：色条兼高亮选择器（显示每色用量/剩余）；编辑模式：
-          // 色圆行显示当前绘画色，点击弹色卡选色（与图例"添加色号"
-          // 同一选择器）
-          if (_assembleMode)
-            _buildColorBar(
-              _boardMode
-                  ? _boardCounts(_boardRectOf(_boardIndex))
-                  : _model.countByColor(),
-            ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, "discard"),
+            child: const Text("不保存退出"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, "save"),
+            child: const Text("保存并退出"),
+          ),
         ],
       ),
     );
+    if (!mounted) {
+      return;
+    }
+    if (act == "save") {
+      await _saveDraft();
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
+    } else if (act == "discard") {
+      Navigator.of(context).pop();
+    }
   }
 
   /// 菜单行（图标 + 文字）——整图操作收进 ⋮ 菜单用
@@ -830,28 +839,79 @@ class _EditorPageState extends State<EditorPage> {
           final canvasSize = area.aspectRatio > aspect
               ? Size(area.height * aspect, area.height)
               : Size(area.width, area.width / aspect);
-          return GestureDetector(
-            onPanDown: (d) =>
-                _applyAt(d.localPosition, canvasSize, isStart: true),
-            onPanUpdate: (d) =>
-                _applyAt(d.localPosition, canvasSize, isStart: false),
-            child: CustomPaint(
-              size: canvasSize,
-              painter: GridPainter(
-                model: _model,
-                palette: widget.palette,
-                selectedColorIndex: _currentColor,
-                repaint: _revision,
-                selectionRect: _selectionPixels(canvasSize),
-                highlightIndex: _assembleMode ? _highlightIndex : null,
-                boardRect: _boardMode ? _boardRectOf(_boardIndex) : null,
-                placedCells: _assembleMode ? _placed : null,
+          // 速记画布尺寸（无 setState，build 期间赋值）——ZoomControls
+          // 缩放边界计算用（闭包跨出本 builder）
+          _lastCanvasSize = canvasSize;
+          // 缩放/绘画手势分发（板设置页同款）：单指=当前工具作用；双指=
+          // 捏合缩放+平移（手动驱动控制器）。IV 的 hit test 带逆变换，
+          // localFocalPoint 天然是画布坐标——放大后点格依旧准
+          return SizedBox(
+            width: canvasSize.width,
+            height: canvasSize.height,
+            child: InteractiveViewer(
+              transformationController: _viewerCtrl,
+              maxScale: 10,
+              panEnabled: false,
+              scaleEnabled: false,
+              boundaryMargin: const EdgeInsets.all(300),
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                // 快速点按（无位移）scale 识别器不 accept，竞技场被 sweep
+                // 给 tap——油漆桶/吸管这类「点一下」的工具走 onTapUp 通道
+                // （板设置页同款双通道：点=onTapUp、拖/捏=onScale*；
+                // 拖动时 tap 识别器被拒不会触发 onTapUp，无双重分发）
+                onTapUp: (d) => _applyAt(d.localPosition, canvasSize,
+                    isStart: true),
+                onScaleStart: (d) {
+                  _lastScale = 1.0;
+                  if (d.pointerCount == 1) {
+                    _applyAt(d.localFocalPoint, canvasSize, isStart: true);
+                  }
+                },
+                onScaleUpdate: (d) {
+                  if (d.pointerCount >= 2) {
+                    _pinchZoom(d);
+                    return;
+                  }
+                  _lastScale = 1.0;
+                  _applyAt(d.localFocalPoint, canvasSize, isStart: false);
+                },
+                child: CustomPaint(
+                  size: canvasSize,
+                  painter: GridPainter(
+                    model: _model,
+                    palette: widget.palette,
+                    selectedColorIndex: _currentColor,
+                    repaint: _revision,
+                    selectionRect: _selectionPixels(canvasSize),
+                  ),
+                ),
               ),
             ),
           );
         },
       ),
     );
+  }
+
+  /// 双指捏合缩放+平移：绕焦点缩放（[ScaleUpdateDetails.scale] 相对
+  /// [_lastScale] 的增量）+ 焦点位移作平移；clamp [1, 10]。
+  /// 自实现（IV 自带 scale 关闭）：单指要留给绘画，手势须在手势区
+  /// 分发而不是让 IV 抢走（板设置页同款方案）
+  void _pinchZoom(ScaleUpdateDetails d) {
+    final cur = _viewerCtrl.value.getMaxScaleOnAxis();
+    if (_lastScale <= 0 || d.scale <= 0) {
+      return;
+    }
+    final next = (cur * d.scale / _lastScale).clamp(1.0, 10.0);
+    final focal = d.localFocalPoint;
+    final m = Matrix4.identity()
+      ..translate(d.focalPointDelta.dx, d.focalPointDelta.dy)
+      ..translate(focal.dx, focal.dy)
+      ..scale(next / cur)
+      ..translate(-focal.dx, -focal.dy);
+    _viewerCtrl.value = m * _viewerCtrl.value;
+    _lastScale = d.scale;
   }
 
   /// 格子选区 -> 画布像素矩形
@@ -870,22 +930,7 @@ class _EditorPageState extends State<EditorPage> {
     );
   }
 
-  /// 分板控制条：板尺寸 + 板导航 + 本板颗数
-  Widget _buildBoardBar() {
-    final counts = _boardCounts(_boardRectOf(_boardIndex));
-    final total = counts.values.fold(0, (a, b) => a + b);
-    return EditorBoardBar(
-      boardSize: _boardSize,
-      boardIndex: _boardIndex,
-      boardCount: _boardCount,
-      boardsAcross: _boardsAcross,
-      totalBeads: total,
-      onSelectSize: _setBoardSize,
-      onStep: _stepBoard,
-    );
-  }
-
-  /// 弹色卡网格选绘画色（吸管/色条同源：选完自动从橡皮/查看切回画笔）
+  /// 弹色卡网格选绘画色（吸管同源：选完自动从橡皮/查看切回画笔）
   Future<void> _pickPaintColor() async {
     final i = await showPaletteColorPicker(
       context,
@@ -901,28 +946,5 @@ class _EditorPageState extends State<EditorPage> {
         _tool = EditorTool.brush; // 点了颜色=要画：顺手切回画笔
       }
     });
-  }
-
-  /// 底部颜色选择条（拼装模式下兼作高亮选择器，显示每色用量）
-  Widget _buildColorBar(Map<int, int> counts) {
-    return EditorColorBar(
-      palette: widget.palette,
-      counts: counts,
-      assembleMode: _assembleMode,
-      highlightIndex: _highlightIndex,
-      currentColor: _currentColor,
-      remainOf: _remainOf,
-      onTap: (i) => setState(() {
-        if (_assembleMode) {
-          // 拼装模式：切换高亮（再点同色取消），不改绘画色
-          _highlightIndex = _highlightIndex == i ? null : i;
-          return;
-        }
-        _currentColor = i;
-        if (_tool == EditorTool.eraser) {
-          _tool = EditorTool.brush;
-        }
-      }),
-    );
   }
 }

@@ -1,10 +1,14 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
+import '../../core/app_snack_bar.dart';
 import '../../core/draft_store.dart';
 import '../../core/palette.dart';
 import '../../core/palette_registry.dart';
+import '../../core/pattern_model.dart';
 import '../editor/editor_page.dart';
 import '../editor/grid_painter.dart';
 
@@ -44,6 +48,51 @@ class _WorksPageState extends State<WorksPage> {
   void initState() {
     super.initState();
     _reload();
+  }
+
+  /// 导入 .beadpattern 图案文件（编辑器「导出图案文件」的对端）：
+  /// 选文件 → 校验格式 → 存作品库 → 刷新列表
+  Future<void> _importPatternFile() async {
+    final result = await FilePickerPlatform.instance.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ["beadpattern"],
+    );
+    if (result.isEmpty) {
+      return; // 用户取消
+    }
+    final picked = result.single;
+    final bytes = await picked.readAsBytes();
+    try {
+      final data = jsonDecode(utf8.decode(bytes));
+      if (data is! Map<String, dynamic> || data["type"] != "bead-pattern") {
+        throw const FormatException("不是豆田图案文件");
+      }
+      final model = PatternModel.fromJson(data["pattern"]);
+      if (model.width <= 0 ||
+          model.height <= 0 ||
+          model.grid.length != model.width * model.height) {
+        throw const FormatException("图案数据不完整");
+      }
+      final name = (data["name"] as String?)?.trim();
+      final file = await DraftStore.saveWork(
+        model,
+        name: (name == null || name.isEmpty) ? null : name,
+      );
+      await _reload();
+      if (mounted) {
+        AppSnackBar.show(
+          context,
+          "已导入：${file.path.split(Platform.pathSeparator).last}",
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        AppSnackBar.show(
+          context,
+          "导入失败：${picked.name}（不是有效的 .beadpattern 文件）",
+        );
+      }
+    }
   }
 
   Future<void> _reload() async {
@@ -100,7 +149,9 @@ class _WorksPageState extends State<WorksPage> {
   // ==================== 操作 ====================
 
   void _open(_WorkVM w) {
-    Navigator.of(context).pushReplacement(
+    // push（非 pushReplacement）：编辑器返回时回作品库列表而不是主页
+    // （2026-11-10 用户反馈：退出编辑应回上一层的「我的作品」）
+    Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => EditorPage(
           model: w.entry.model,
@@ -274,7 +325,14 @@ class _WorksPageState extends State<WorksPage> {
               icon: const Icon(Icons.close),
               tooltip: "退出多选",
             )
-          else
+          else ...[
+            // 导入 .beadpattern 图案文件（编辑器「导出图案文件」的对端，
+            // 2026-11-10 用户需求：软件豆图格式导出与导入）
+            IconButton(
+              onPressed: _importPatternFile,
+              icon: const Icon(Icons.file_open_outlined),
+              tooltip: "导入图案文件",
+            ),
             IconButton(
               onPressed: () async {
                 final name = await _inputDialog(
@@ -290,6 +348,7 @@ class _WorksPageState extends State<WorksPage> {
               icon: const Icon(Icons.create_new_folder_outlined),
               tooltip: "新建分组",
             ),
+          ],
         ],
       ),
       body: _loading

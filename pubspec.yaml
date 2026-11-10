@@ -21,6 +21,7 @@ dependencies:
   # 抖音无损原图通道：隐藏 WebView 加载 PC 笔记页，从 hydrate DOM
   # 提取 q75.jpeg 签名 URL（=作者原图字节；见 docs/douyin_lossless_channel.md）
   webview_flutter: ^4.14.1
+  file_picker: ^13.3.2
 
 dev_dependencies:
   flutter_test:

@@ -17,13 +17,7 @@ class GridPainter extends CustomPainter {
   ///< 矩形选区（画布坐标，null = 无）
   final int? highlightIndex;
 
-  ///< 拼装模式高亮色索引（null = 关闭；其余色降饱和显示）
-  final Rect? boardRect;
-
-  ///< 分板模式当前底板的格子范围（null = 关闭；板外格子大幅降透明）
-  final Set<int>? placedCells;
-
-  ///< 拼装已放格子（null = 关闭；半透明白罩 + 绿对勾）
+  ///< 高亮色索引（复核页复核色同款：null = 关闭；其余色降饱和显示）
 
   GridPainter({
     required this.model,
@@ -31,8 +25,6 @@ class GridPainter extends CustomPainter {
     required this.selectedColorIndex,
     this.selectionRect,
     this.highlightIndex,
-    this.boardRect,
-    this.placedCells,
     super.repaint,
   });
 
@@ -63,20 +55,13 @@ class GridPainter extends CustomPainter {
           continue;
         }
         var color = Color.fromARGB(255, c.r, c.g, c.b);
-        // 拼装模式：非高亮色混入深灰降饱和，让目标色一眼可见
+        // 高亮聚焦：非高亮色混入深灰降饱和，让目标色一眼可见
         if (highlightIndex != null && v != highlightIndex) {
           color = Color.lerp(
             color,
             const Color.fromARGB(255, 0x30, 0x30, 0x30),
             0.65,
           )!;
-        }
-        // 分板模式：当前底板外的格子大幅降透明
-        final br = boardRect;
-        final outsideBoard = br != null &&
-            (x < br.left || x >= br.right || y < br.top || y >= br.bottom);
-        if (outsideBoard) {
-          color = color.withValues(alpha: 0.18);
         }
         gridPaint.color = color;
         canvas.drawRect(
@@ -104,38 +89,6 @@ class GridPainter extends CustomPainter {
       );
     }
 
-    // 拼装已放格：半透明白罩（拼过的格视觉"消掉"）+ 绿对勾
-    final placed = placedCells;
-    if (placed != null && placed.isNotEmpty) {
-      final veil = Paint()
-        ..color = Colors.white.withValues(alpha: 0.5)
-        ..style = PaintingStyle.fill;
-      final check = Paint()
-        ..color = const Color(0xFF2E7D32)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.8
-        ..strokeCap = StrokeCap.round;
-      for (final i in placed) {
-        if (i < 0 || i >= model.grid.length || model.grid[i] < 0) {
-          continue; // 编辑后失效的进度索引跳过
-        }
-        final x = i % model.width, y = i ~/ model.width;
-        final rect = Rect.fromLTWH(x * cellW, y * cellH, cellW, cellH);
-        canvas.drawRect(rect, veil);
-        final cx = rect.center.dx, cy = rect.center.dy;
-        canvas.drawLine(
-          Offset(cx - cellW * 0.22, cy),
-          Offset(cx - cellW * 0.05, cy + cellH * 0.2),
-          check,
-        );
-        canvas.drawLine(
-          Offset(cx - cellW * 0.05, cy + cellH * 0.2),
-          Offset(cx + cellW * 0.28, cy - cellH * 0.2),
-          check,
-        );
-      }
-    }
-
     // 矩形选区高亮
     final sel = selectionRect;
     if (sel != null) {
@@ -157,8 +110,6 @@ class GridPainter extends CustomPainter {
         oldDelegate.selectedColorIndex != selectedColorIndex ||
         oldDelegate.palette != palette ||
         oldDelegate.selectionRect != selectionRect ||
-        oldDelegate.highlightIndex != highlightIndex ||
-        oldDelegate.boardRect != boardRect ||
-        oldDelegate.placedCells != placedCells;
+        oldDelegate.highlightIndex != highlightIndex;
   }
 }
