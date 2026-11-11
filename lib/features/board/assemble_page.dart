@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/adaptive_text.dart';
@@ -7,23 +9,30 @@ import '../../core/draft_store.dart';
 import '../../core/palette.dart';
 import '../../core/zoom_controls.dart';
 import '../restore/restore_types.dart';
+import 'board_dialogs.dart';
 import 'board_painter.dart';
 import 'major_color_picker.dart';
 import 'placed_work.dart';
 
 /// 拼豆界面：豆板画布（多作品按各自偏移叠加）+ 点色高亮 + 点格标记已放 +
-/// 进度/剩余颗数 + 返回自动保存进度
+/// 进度/剩余颗数 + 进度记忆（返回确认 / 5 分钟自动保存 + 顶栏上次保存时间）
 ///
 /// 高亮方案两档：按全部作品（同色号跨作品一起高亮/统计）/ 按单件作品
 ///（色条与高亮只算所选作品，点格也只标记它；选中色后范围外作品整体
 /// 压灰为"未选中"观感）；双击色号 = 范围内该色一次性全部标记已放
 ///（再双击撤销）。placed 按作品分账，保存时写回各自作品文件
 ///
+/// 批量完成（2026-11-11）：选中色后长按 0.5 秒滑动圈选该色豆格——单格
+/// 模式划过哪格选哪格，区块模式按粗框线分块整块圈选；松手待确认格蓝框
+/// 高亮（与已完成的白罩绿勾、未完成的原色形成三态对比），弹确认框后
+/// 才落账
+///
+/// 进度持久化：手动保存钮 / 返回时确认（有未保存改动才问）/ 每 5 分钟
+/// 自动保存（防后台被杀全丢），上次保存时间显示在标题下方小字
+///
 /// 色条排序（orderAssembleColors）：完成的色（范围内剩余 0）整段垫后
 /// 摆，段内按所选模式排（图例核对步同款四模式，初始沿用作品
 /// meta.sortMode，本会话内可切不回写）
-///
-/// 后续拼豆辅助操作（本页为基座）在此基础上扩展
 class AssemblePage extends StatefulWidget {
   final List<PlacedWork> works;
 
@@ -38,6 +47,9 @@ class AssemblePage extends StatefulWidget {
 
 class _AssemblePageState extends State<AssemblePage> {
   final _viewerCtrl = TransformationController();
+  final _barCtrl = ScrollController();
+
+  ///< 底部色条滚动控制（点画布选色后把色条滚到该色）
   late final List<Set<int>> _placed = [
     for (final w in widget.works) {...w.placed},
   ];
@@ -49,14 +61,9 @@ class _AssemblePageState extends State<AssemblePage> {
   int? _scopeWork;
 
   ///< 单件作品方案的当前作品索引（多件作品时由分段选择激活）
-
   var _labelMode = LabelMode.id;
 
   ///< 格子文字层模式（选中色号后可切横向/竖向编号；默认只色号）
-  var _labelColorMode = LabelColorMode.adaptive;
-
-  ///< 格子文字颜色模式（自适应/全黑/全白，默认自适应：浅豆黑字深豆
-  ///< 白字；个别豆色自适应判浅判深不合口味时强制黑白）
   var _showOtherIds = true;
 
   ///< 是否显示未选中色号的文本（高亮中关掉只留选中色编号降噪；
@@ -78,6 +85,30 @@ class _AssemblePageState extends State<AssemblePage> {
 
   ///< 色号 -> 调色板自然序索引（A1→A2→…→B1…，色号序用；先到的作品
   ///< 优先——同注册表下各作品一致，跨注册表混摆属退化场景取首个）
+  List<String> _barOrder = [];
+
+  ///< 色条当前排布（build 期速记，点画布选色后滚动定位用）
+  var _dirty = false;
+
+  ///< 有未保存的进度改动（返回时据此弹保存确认；保存后清零）
+  DateTime? _lastSavedAt;
+
+  ///< 上次保存时间（标题下小字显示；null = 本次会话还没存过）
+  Timer? _autoTimer;
+
+  ///< 5 分钟自动保存（仅 _dirty 时落盘，静默无提示）
+  final Map<int, Set<int>> _pending = {};
+
+  ///< 批量完成待确认格：作品索引 -> 该作品格扁平索引集（松手确认前
+  ///< 画布上蓝框高亮，确认才并入 _placed）
+  var _batchRegion = false;
+
+  ///< 批量圈选模式：false = 单格（划过哪格选哪格）；true = 区块
+  ///<（按粗框线分块，划到哪块整块的选中色未放格入圈）
+  var _popAllowed = false;
+
+  ///< 返回确认已通过（放行本次 pop，防 PopScope 拦截自己发起的 pop）
+
   LegendSort _initColorSort() {
     for (final w in widget.works) {
       final m = legendSortFromName(w.entry.sortMode);
@@ -103,10 +134,18 @@ class _AssemblePageState extends State<AssemblePage> {
   void initState() {
     super.initState();
     _majorColor = widget.board.majorColor;
+    _autoTimer = Timer.periodic(const Duration(minutes: 5), (_) {
+      // 后台被杀防丢：有未保存改动才静默落盘（无改动不动文件也不刷时间）
+      if (_dirty) {
+        _saveAll();
+      }
+    });
   }
 
   @override
   void dispose() {
+    _autoTimer?.cancel();
+    _barCtrl.dispose();
     _viewerCtrl.dispose();
     super.dispose();
   }
@@ -129,7 +168,7 @@ class _AssemblePageState extends State<AssemblePage> {
   }
 
   /// 画布点按：未选色时点某颗豆 = 选中该豆的颜色（单件方案顺手切到该豆
-  /// 的作品）；已选色时点该色格子标记/取消已放
+  /// 的作品，色条滚到该色）；已选色时点该色格子标记/取消已放
   void _toggleAt(Offset local, double canvasW, double canvasH) {
     final b = widget.board;
     final bx = (local.dx / (canvasW / b.w)).floor();
@@ -162,6 +201,10 @@ class _AssemblePageState extends State<AssemblePage> {
           _scopeWork = idx;
         }
       });
+
+      ///< 色条滚到该色（2026-11-11 需求：点画布选色后别让用户在手排
+      ///< 色条里找半天）——等本帧排布速记更新后定位
+      _revealChip(id);
       return;
     }
     if (!_scopeAll) {
@@ -180,6 +223,29 @@ class _AssemblePageState extends State<AssemblePage> {
     }
     setState(() {
       _placed[idx].contains(i) ? _placed[idx].remove(i) : _placed[idx].add(i);
+      _dirty = true;
+    });
+  }
+
+  /// 色条滚动定位到 [id]（居中视口；不在色条里则不动）
+  void _revealChip(String id) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_barCtrl.hasClients) {
+        return;
+      }
+      final idx = _barOrder.indexOf(id);
+      if (idx < 0) {
+        return;
+      }
+      // 芯片 48 宽 + 左右 margin 4×2 = 56/格；目标 = 让该芯居中
+      final target =
+          (idx * 56.0 - (_barCtrl.position.viewportDimension / 2 - 28))
+              .clamp(0.0, _barCtrl.position.maxScrollExtent);
+      _barCtrl.animateTo(
+        target,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOutCubic,
+      );
     });
   }
 
@@ -225,11 +291,135 @@ class _AssemblePageState extends State<AssemblePage> {
           }
         }
       }
+      if (changed > 0) {
+        _dirty = true;
+      }
     });
     AppSnackBar.show(
       context,
       undo ? "已撤销 $id 已放标记 $changed 颗" : "已标记 $id 完成 $changed 颗",
     );
+  }
+
+  // ==================== 批量圈选（长按滑动） ====================
+
+  /// 长按 0.5 秒起手：选中色模式下开始批量圈选（无选中色不响应——
+  /// 长按手势已消费点按，等于无操作）
+  void _batchStart(Offset local, double canvasW, double canvasH) =>
+      _batchApply(local, canvasW, canvasH);
+
+  void _batchMove(Offset local, double canvasW, double canvasH) =>
+      _batchApply(local, canvasW, canvasH);
+
+  /// 圈选落点 -> 待确认格：单格模式选指下的那一格；区块模式选指下
+  /// 粗框线块内全部选中色未放格（范围随高亮方案，跨作品同色一起）
+  void _batchApply(Offset local, double canvasW, double canvasH) {
+    final hi = _highlightId;
+    if (hi == null) {
+      return;
+    }
+    final b = widget.board;
+    final bx = (local.dx / (canvasW / b.w)).floor();
+    final by = (local.dy / (canvasH / b.h)).floor();
+    if (bx < 0 || bx >= b.w || by < 0 || by >= b.h) {
+      return;
+    }
+    final scope = _scope;
+    var changed = false;
+    if (!_batchRegion) {
+      // 单格：顶层命中作品的一格（须为选中色且未放未圈）
+      final idx = _hitWorkIndex(bx, by);
+      if (idx < 0 || (scope != null && idx != scope)) {
+        return;
+      }
+      final w = widget.works[idx];
+      final m = w.model;
+      final i = (by - w.oy) * m.width + (bx - w.ox);
+      final v = m.grid[i];
+      if (v < 0 || v >= m.paletteIds.length || m.paletteIds[v] != hi) {
+        return;
+      }
+      if (_placed[idx].contains(i)) {
+        return;
+      }
+      final cells = _pending.putIfAbsent(idx, () => {});
+      if (cells.add(i)) {
+        changed = true;
+      }
+    } else {
+      // 区块：粗框线分块（线在 (x+phaseX)%interval==0 处 -> 列块号 =
+      //(x+phaseX)~/interval），指到的块内选中色未放格全部入圈
+      final bkx = (bx + b.phaseX) ~/ b.interval;
+      final bky = (by + b.phaseY) ~/ b.interval;
+      for (var idx = 0; idx < widget.works.length; idx++) {
+        if (scope != null && idx != scope) {
+          continue;
+        }
+        final w = widget.works[idx];
+        final m = w.model;
+        final cells = _pending.putIfAbsent(idx, () => {});
+        for (var c = 0; c < m.grid.length; c++) {
+          final v = m.grid[c];
+          if (v < 0 || v >= m.paletteIds.length || m.paletteIds[v] != hi) {
+            continue;
+          }
+          if (_placed[idx].contains(c) || cells.contains(c)) {
+            continue;
+          }
+          if ((w.ox + c % m.width + b.phaseX) ~/ b.interval == bkx &&
+              (w.oy + c ~/ m.width + b.phaseY) ~/ b.interval == bky) {
+            cells.add(c);
+            changed = true;
+          }
+        }
+      }
+    }
+    if (changed) {
+      setState(() {}); // 只为重画待确认高亮
+    }
+  }
+
+  /// 松手：有待确认格则弹确认（蓝框保持高亮，与旧已完成形成对比），
+  /// 确认并入 _placed；取消/点外部清空圈选
+  Future<void> _batchEnd() async {
+    var n = 0;
+    for (final s in _pending.values) {
+      n += s.length;
+    }
+    if (n == 0) {
+      return;
+    }
+    final hi = _highlightId;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: const Text("批量标记已完成"),
+        content: Text(
+          "将以上圈选的 $n 颗${hi == null ? "" : "「$hi」"}豆格设为已完成？"
+          "（蓝框高亮处）",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: const Text("取消"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dctx, true),
+            child: const Text("设为已完成"),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      if (ok == true) {
+        _pending.forEach((idx, cells) => _placed[idx].addAll(cells));
+        _dirty = true;
+      }
+      _pending.clear();
+    });
   }
 
   // ==================== 统计 ====================
@@ -275,10 +465,15 @@ class _AssemblePageState extends State<AssemblePage> {
     return (totals[id] ?? 0) - placedCount;
   }
 
-  (int, int) _progress() {
+  /// 拼豆进度（随高亮范围：全部作品合并 / 只算单件所选作品——与底部
+  /// 色条同口径，2026-11-11 需求）
+  (int, int) _progress([int? scope]) {
     var total = 0;
     var done = 0;
     for (var i = 0; i < widget.works.length; i++) {
+      if (scope != null && i != scope) {
+        continue;
+      }
       final m = widget.works[i].model;
       for (var c = 0; c < m.grid.length; c++) {
         if (m.grid[c] >= 0) {
@@ -313,7 +508,7 @@ class _AssemblePageState extends State<AssemblePage> {
     });
   }
 
-  // ==================== 保存 ====================
+  // ==================== 保存 / 返回 ====================
 
   Future<void> _saveAll() async {
     for (var i = 0; i < widget.works.length; i++) {
@@ -325,6 +520,11 @@ class _AssemblePageState extends State<AssemblePage> {
         placed: widget.works[i].toOriginalCells(_placed[i]),
       );
     }
+    _lastSavedAt = DateTime.now();
+    _dirty = false;
+    if (mounted) {
+      setState(() {}); // 刷新标题下的上次保存时间
+    }
   }
 
   Future<void> _saveProgress() async {
@@ -334,9 +534,36 @@ class _AssemblePageState extends State<AssemblePage> {
     }
   }
 
-  Future<void> _onWillPop() async {
-    // 返回即自动保存（点保存按钮也存，幂等）
-    await _saveAll();
+  /// 返回确认：有未保存改动才问（是=保存后返回 / 否=不保存返回 /
+  /// 取消=留下）；无改动直接返回
+  Future<void> _confirmBack() async {
+    final save = await confirmDialog(
+      context,
+      "保存拼豆进度？",
+      "「是」保存本次进度后返回；「否」不保存直接返回；「取消」留在本页",
+      cancelLabel: "取消",
+    );
+    if (save == null || !mounted) {
+      return;
+    }
+    if (save == true) {
+      await _saveAll();
+      if (!mounted) {
+        return;
+      }
+    }
+    _doExit();
+  }
+
+  /// 放行并执行返回（先置 _popAllowed 再等重建完成后 pop，否则会被
+  /// PopScope 再次拦截）
+  void _doExit() {
+    setState(() => _popAllowed = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
+    });
   }
 
   // ==================== UI ====================
@@ -345,21 +572,42 @@ class _AssemblePageState extends State<AssemblePage> {
   Widget build(BuildContext context) {
     final scope = _scope;
     final totals = _totalStats(scope);
-    final (done, total) = _progress();
+    final (done, total) = _progress(scope);
+    final pct = total > 0 ? (done * 100 / total).round() : 0;
     return PopScope(
+      // 有未保存改动先拦下来问；无改动（含刚保存过）直接返回
+      canPop: _popAllowed || !_dirty,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) {
-          _onWillPop();
+          return;
         }
+        _confirmBack();
       },
       child: Scaffold(
         appBar: AppBar(
           // 长作品名先缩字号再截断（AdaptiveTitleText，2026-11-10 用户
-          // 反馈标题「…」截死）
-          title: AdaptiveTitleText(
-            widget.works.length == 1
-                ? "拼豆 · ${widget.works.first.entry.name}"
-                : "拼豆 · ${widget.works.length} 件作品",
+          // 反馈标题「…」截死）；标题下小字显示上次保存时间
+          //（2026-11-11 需求：自动保存/手动保存后可对账）
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AdaptiveTitleText(
+                widget.works.length == 1
+                    ? "拼豆 · ${widget.works.first.entry.name}"
+                    : "拼豆 · ${widget.works.length} 件作品",
+              ),
+              if (_lastSavedAt != null)
+                Text(
+                  "上次保存 ${_two(_lastSavedAt!.hour)}:${_two(_lastSavedAt!.minute)}",
+                  style: Theme.of(context)
+                      .textTheme
+                      .labelSmall
+                      ?.copyWith(color: Colors.black45),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+            ],
           ),
           actions: [
             IconButton(
@@ -375,13 +623,14 @@ class _AssemblePageState extends State<AssemblePage> {
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
               // 信息与控件分两行（2026-11-10 用户反馈：一行塞 1 段信息 +
               // 5 个控件，信息只剩 ~200px 被截成省略号）；信息独占一行
-              // 永不截断，控件行 ~340dp 窄屏也放得下
+              // 永不截断，控件行窄屏也放得下（字色三档选择器已随统一
+              // 自适应撤下，2026-11-11）
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     "板 ${widget.board.w}×${widget.board.h} · "
-                    "每${widget.board.interval}格加粗 · 已放 $done/$total",
+                    "每${widget.board.interval}格加粗",
                     style: Theme.of(context).textTheme.bodySmall,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -407,21 +656,33 @@ class _AssemblePageState extends State<AssemblePage> {
                           ),
                         ),
                       ),
-                      // 未选中色号文本开关（常显——高亮降噪/无高亮净板视图）
-                      IconButton(
+
+                      ///< 未选中色号文本开关（常显——高亮降噪/无高亮净板
+                      ///< 视图）。带文字标签（2026-11-11 用户反馈纯眼睛
+                      ///< 图标不好懂），文案恒定不跳动
+                      TextButton.icon(
                         onPressed: () =>
                             setState(() => _showOtherIds = !_showOtherIds),
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(horizontal: 6),
+                        ),
                         icon: Icon(
                           _showOtherIds
                               ? Icons.visibility_outlined
                               : Icons.visibility_off_outlined,
-                          size: 18,
+                          size: 16,
                         ),
-                        tooltip: _showOtherIds ? "隐藏未选中色号文本" : "显示未选中色号文本",
-                        visualDensity: VisualDensity.compact,
+                        label: Text(
+                          "其他色号",
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
                       ),
-                      // 文字层模式切换（常显：编号模式须先选色才有效果，但入口
-                      // 不必藏着——用户可能先设模式再选色）
+
+                      ///< 文字层模式切换（常显：编号模式须先选色才有效
+                      ///< 果，但入口不必藏着——用户可能先设模式再选色）。
+                      ///< 文案按候选最宽定宽（2026-11-11 用户反馈：三种
+                      ///< 文案长短不一，切换时挤动旁边控件位置）
                       TextButton.icon(
                         onPressed: () => setState(() {
                           _labelMode = switch (_labelMode) {
@@ -442,37 +703,56 @@ class _AssemblePageState extends State<AssemblePage> {
                           },
                           size: 16,
                         ),
-                        label: Text(
+                        label: _stableText(
                           switch (_labelMode) {
                             LabelMode.rowNumber => "横向排列",
                             LabelMode.colNumber => "竖向排列",
                             LabelMode.id => "只显示色号",
                           },
-                          style: Theme.of(context).textTheme.bodySmall,
+                          const ["只显示色号", "横向排列", "竖向排列"],
+                          Theme.of(context).textTheme.bodySmall!,
                         ),
                       ),
-                      // 色条排序（与图例核对步同款四模式单选菜单）：完成色
-                      //（剩余 0）恒垫后由排序函数保证，这里只管段内次序
+
+                      ///< 色条排序（与图例核对步同款四模式单选菜单）：
+                      ///< 完成色（剩余 0）恒垫后由排序函数保证，这里只
+                      ///< 管段内次序。文案同样定宽防跳
                       _sortPopup(),
-                      // 字色模式（三档单选）：自适应=浅色豆黑字/深色豆白字
-                      //（默认）；全黑/全白强制一色——个别豆色自适应选的字色
-                      // 看不清时（如纯白豆配浅灰字）手动兜底
-                      _labelColorPopup(),
                     ],
                   ),
                 ],
               ),
             ),
             const SizedBox(height: 4),
-            LinearProgressIndicator(
-              value: total > 0 ? done / total : 0,
-              minHeight: 4,
-              borderRadius: BorderRadius.circular(2),
+
+            ///< 进度条 + 数值（2026-11-11 需求：完成数/总数/百分比都要
+            ///< 看得见；数值随高亮范围——单件作品只算那件，与色条同口径）
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: LinearProgressIndicator(
+                      value: total > 0 ? done / total : 0,
+                      minHeight: 4,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    "已放 $done/$total · $pct%",
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodySmall?.copyWith(color: Colors.black54),
+                  ),
+                ],
+              ),
             ),
             Expanded(child: _buildCanvas()),
-            // 缩放控制组（外置条，紧贴画布底缘——放 AppBar 顶部离图太远
-            // 够不着）：放大/缩小（以画面中心为锚）+ 还原全幅。Center 内
-            // constrained IV 的视口=画布盒（与内容同尺寸）显式传
+
+            ///< 缩放控制组（外置条，紧贴画布底缘——放 AppBar 顶部离图太远
+            ///< 够不着）：放大/缩小（以画面中心为锚）+ 还原全幅。Center 内
+            ///< constrained IV 的视口=画布盒（与内容同尺寸）显式传
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 2, 16, 2),
               child: Align(
@@ -486,9 +766,37 @@ class _AssemblePageState extends State<AssemblePage> {
               ),
             ),
             _buildScopeRow(),
+            _buildBatchRow(),
             _buildColorBar(totals, scope),
           ],
         ),
+      ),
+    );
+  }
+
+  /// 变文案按钮的定宽文本：按 [variants] 里最宽的文案定宽、当前文案
+  /// 居中——按钮状态切换宽度恒定，不挤动同行其他控件
+  ///（2026-11-11 用户反馈：排列模式/排序钮文案长短不一，切换时旁边的
+  ///< 控件整体跳位）
+  Widget _stableText(String current, List<String> variants, TextStyle style) {
+    var w = 0.0;
+    for (final t in variants) {
+      final tp = TextPainter(
+        text: TextSpan(text: t, style: style),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      if (tp.width > w) {
+        w = tp.width;
+      }
+    }
+    return SizedBox(
+      width: w,
+      child: Text(
+        current,
+        style: style,
+        textAlign: TextAlign.center,
+        maxLines: 1,
+        overflow: TextOverflow.clip,
       ),
     );
   }
@@ -503,7 +811,8 @@ class _AssemblePageState extends State<AssemblePage> {
           maxScale: 12,
           panEnabled: true,
 
-          ///< 本页无画布手势，平移缩放都给查看器
+          ///< 平移缩放都给查看器；长按圈选起手后手势归圈选（长按识别
+          ///< 器先赢，拖动不再平移画布）
           child: AspectRatio(
             aspectRatio: widget.board.w / widget.board.h,
             child: LayoutBuilder(
@@ -521,6 +830,26 @@ class _AssemblePageState extends State<AssemblePage> {
                     constraints.maxWidth,
                     constraints.maxHeight,
                   ),
+
+                  ///< 批量圈选（2026-11-11 需求 10）：选中色模式下长按
+                  ///< 0.5 秒（系统 LongPress 默认时限）起手，滑动圈选，
+                  ///< 松手弹确认。无选中色时静默忽略
+                  onLongPressStart: (d) => _batchStart(
+                    d.localPosition,
+                    constraints.maxWidth,
+                    constraints.maxHeight,
+                  ),
+                  onLongPressMoveUpdate: (d) => _batchMove(
+                    d.localPosition,
+                    constraints.maxWidth,
+                    constraints.maxHeight,
+                  ),
+                  onLongPressEnd: (_) => _batchEnd(),
+                  onLongPressCancel: () {
+                    if (_pending.isNotEmpty) {
+                      setState(() => _pending.clear());
+                    }
+                  },
                   child: CustomPaint(
                     size: Size.infinite,
                     painter: BoardPainter(
@@ -529,11 +858,11 @@ class _AssemblePageState extends State<AssemblePage> {
                       // 粗线颜色随板配置 + 本页色钮会话内覆盖
                       board: widget.board.copyWith(majorColor: _majorColor),
                       labelMode: _labelMode,
-                      labelColorMode: _labelColorMode,
                       showLabels: true,
                       showNonHiLabels: _showOtherIds,
-                      // ctrl：格线/对勾线宽随缩放实时补偿（painter 挂
-                      // repaint 监听，捏合/缩放条不 setState 也跟着重画）
+
+                      ///< ctrl：格线/对勾线宽随缩放实时补偿（painter 挂
+                      ///< repaint 监听，捏合/缩放条不 setState 也跟着重画）
                       ctrl: _viewerCtrl,
                       items: [
                         for (var i = 0; i < widget.works.length; i++)
@@ -554,6 +883,7 @@ class _AssemblePageState extends State<AssemblePage> {
                                 i != _scope &&
                                 _highlightId != null,
                             placedCells: _placed[i],
+                            pendingCells: _pending[i],
                           ),
                       ],
                     ),
@@ -642,51 +972,63 @@ class _AssemblePageState extends State<AssemblePage> {
     );
   }
 
-  /// 字色模式下拉（顶行尾部，图标钮省宽度）：三模式单选，当前带勾。
-  /// 自适应按豆色亮度选黑白字（画布文字层的默认行为），全黑/全白为
-  /// 强制档（BoardPainter.labelColorMode）
-  Widget _labelColorPopup() {
-    return PopupMenuButton<LabelColorMode>(
-      tooltip: "字色模式（自适应/全黑/全白）",
-      initialValue: _labelColorMode,
-      onSelected: (m) => setState(() => _labelColorMode = m),
-      itemBuilder: (_) => [
-        for (final m in LabelColorMode.values)
-          PopupMenuItem(
-            value: m,
-            child: Row(
-              children: [
-                Icon(
-                  Icons.check,
-                  size: 16,
-                  color:
-                      m == _labelColorMode ? Colors.blue : Colors.transparent,
-                ),
-                const SizedBox(width: 4),
-                Text(switch (m) {
-                  LabelColorMode.adaptive => "字色自适应",
-                  LabelColorMode.black => "字色全黑",
-                  LabelColorMode.white => "字色全白",
-                }),
+  /// 选中色操作行（选中色号才出现）：批量圈选模式（单格 / 区块）+
+  /// 取消选色（2026-11-11 需求 8/10——色条滚远后没有就地取消入口；
+  ///< 长按滑动批量完成没有可见入口）
+  Widget _buildBatchRow() {
+    if (_highlightId == null) {
+      return const SizedBox.shrink();
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 2),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 2,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Text(
+            "长按滑动圈选：",
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: Colors.black38),
+          ),
+          Tooltip(
+            message: "选中色时长按 0.5 秒滑动圈选豆格，松手确认后批量标记"
+                "已完成；区块模式按粗框线整块圈选",
+            child: SegmentedButton<bool>(
+              showSelectedIcon: false,
+              style: const ButtonStyle(visualDensity: VisualDensity.compact),
+              segments: const [
+                ButtonSegment(value: false, label: Text("单格")),
+                ButtonSegment(value: true, label: Text("区块")),
               ],
+              selected: {_batchRegion},
+              onSelectionChanged: (s) => setState(() => _batchRegion = s.first),
             ),
           ),
-      ],
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
-        decoration: BoxDecoration(
-          border: Border.all(color: Colors.black26),
-          borderRadius: BorderRadius.circular(14),
-        ),
-        child: const Icon(Icons.contrast, size: 15, color: Colors.black54),
+          OutlinedButton.icon(
+            onPressed: () => setState(() => _highlightId = null),
+            style: OutlinedButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              minimumSize: const Size(0, 32),
+            ),
+            icon: const Icon(Icons.close, size: 14),
+            label: Text(
+              "取消选色",
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+        ],
       ),
     );
   }
 
   /// 色条排序下拉（摘要行内，图例核对步 _sortPopup 同款样式）：四模式
   /// 单选，当前模式带勾。完成色垫后不归它管（恒生效），见
-  /// orderAssembleColors
+  /// orderAssembleColors。文案按四模式最宽定宽（防切换跳位）
   Widget _sortPopup() {
+    final style = Theme.of(context).textTheme.bodySmall!;
     return PopupMenuButton<LegendSort>(
       tooltip: "色条排序",
       initialValue: _colorSort,
@@ -718,9 +1060,10 @@ class _AssemblePageState extends State<AssemblePage> {
           children: [
             const Icon(Icons.sort, size: 14, color: Colors.black54),
             const SizedBox(width: 2),
-            Text(
+            _stableText(
               legendSortLabels[_colorSort]!,
-              style: const TextStyle(fontSize: 12, color: Colors.black87),
+              legendSortLabels.values.toList(),
+              style,
             ),
             const Icon(Icons.arrow_drop_down, size: 16, color: Colors.black54),
           ],
@@ -743,9 +1086,11 @@ class _AssemblePageState extends State<AssemblePage> {
       _colorSort,
       (id) => _codeOrder[id] ?? 1 << 30,
     );
+    _barOrder = used; // build 期速记，_revealChip 滚动定位用
     return SizedBox(
       height: 76,
       child: ListView.builder(
+        controller: _barCtrl,
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         itemCount: used.length,
@@ -814,6 +1159,8 @@ class _AssemblePageState extends State<AssemblePage> {
     );
   }
 }
+
+String _two(int v) => v.toString().padLeft(2, "0");
 
 /// 色条排序：完成的色（[remain] 为 0）整段垫后——拼豆进行中没拼完的
 /// 色留在手边，翻到尾才是拼完的；段内按 [sort]（图例核对步同款四

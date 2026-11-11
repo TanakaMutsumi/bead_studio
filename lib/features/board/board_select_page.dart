@@ -1,13 +1,17 @@
 /// 豆板选择页：主页「开始拼豆」的第一跳——已保存豆板列表（缩略图 +
-/// 名称，形态同「我的作品」），点选进入板设置继续编辑/拼豆；也可新建
-/// 空板。缩略图直接复用 BoardPainter 静态渲染（板底格 + 各作品按摆位
-/// 叠加），与板设置页所见一致。
+/// 名称，形态同「我的作品」）。点选豆板：有拼豆进度先问「继续上次进度
+///（直接回拼豆页）/ 重新编辑豆板（清空该板进度后进板设置重摆）」
+///（2026-11-11 需求：进度记在作品文件里，回来要能接着拼）；没进度直接
+/// 进板设置。也可新建空板。缩略图直接复用 BoardPainter 静态渲染
+///（板底格 + 各作品按摆位叠加），与板设置页所见一致。
 library;
 
 import 'package:flutter/material.dart';
 
 import '../../core/draft_store.dart';
 import '../../core/palette_registry.dart';
+import '../../main.dart';
+import 'assemble_page.dart';
 import 'board_dialogs.dart';
 import 'board_painter.dart';
 import 'board_setup_page.dart';
@@ -30,7 +34,7 @@ class BoardSelectPage extends StatefulWidget {
   State<BoardSelectPage> createState() => _BoardSelectPageState();
 }
 
-class _BoardSelectPageState extends State<BoardSelectPage> {
+class _BoardSelectPageState extends State<BoardSelectPage> with RouteAware {
   List<_BoardVM> _boards = [];
   var _loading = true;
   Object? _loadError;
@@ -44,6 +48,26 @@ class _BoardSelectPageState extends State<BoardSelectPage> {
     super.initState();
     _reload();
   }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 板设置/拼豆页都 push 在本页之上，返回时列表可能已变（改名/删除/
+    // 进度推进），RouteAware 在露面时刷新（2026-11-11 需求 4/5 配套）
+    final route = ModalRoute.of(context);
+    if (route is PageRoute) {
+      routeObserver.subscribe(this, route);
+    }
+  }
+
+  @override
+  void dispose() {
+    routeObserver.unsubscribe(this);
+    super.dispose();
+  }
+
+  @override
+  void didPopNext() => _reload();
 
   Future<void> _reload() async {
     setState(() {
@@ -108,20 +132,88 @@ class _BoardSelectPageState extends State<BoardSelectPage> {
 
   // ==================== 操作 ====================
 
-  /// 进入板设置（选中板带入 / 空板）。pushReplacement：板设置退出回主页，
-  /// 与「我的作品 → 编辑器」同款导航栈形态
-  void _open(_BoardVM? vm) {
-    Navigator.of(context).pushReplacement(
+  /// 点选豆板：有拼豆进度先问「继续上次进度 / 重新编辑豆板」——继续则
+  /// 直达拼豆页（作品自带 placed 进度）；重新编辑豆板**清空该板进度**后
+  /// 进板设置从摆板重新开始（2026-11-11 用户定稿：重新编辑不保留进度）。
+  /// 均为 push：返回时层层退回本页，本页 didPopNext 自动刷新
+  Future<void> _open(_BoardVM vm) async {
+    final hasProgress = vm.works.any((w) => w.placed.isNotEmpty);
+    if (hasProgress) {
+      final resume = await _askResume(vm);
+      if (resume == null) {
+        return; // 点外部/取消：留在本页
+      }
+      if (mounted && resume) {
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) =>
+                AssemblePage(works: vm.works, board: vm.session.board),
+          ),
+        );
+        return;
+      }
+      // 重新编辑豆板：进度清零（写回各作品文件），从摆板重新开始
+      for (final w in vm.works) {
+        await DraftStore.saveWork(
+          w.entry.model,
+          overwrite: w.entry.file,
+          placed: const <int>{},
+        );
+      }
+    }
+    if (!mounted) {
+      return;
+    }
+    Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => vm == null
-            ? const BoardSetupPage()
-            : BoardSetupPage(initialBoard: vm.entry),
+        builder: (_) => BoardSetupPage(initialBoard: vm.entry),
       ),
     );
   }
 
-  /// 新建空板（无确认：本页没有可丢的编辑状态）
-  void _newBoard() => _open(null);
+  /// 继续进度确认框：true = 继续上次进度；false = 重新编辑豆板（清进度）；
+  /// null = 取消（点外部）
+  Future<bool?> _askResume(_BoardVM vm) {
+    var done = 0;
+    var total = 0;
+    for (final w in vm.works) {
+      done += w.placed.length;
+      for (final v in w.model.grid) {
+        if (v >= 0) {
+          total++;
+        }
+      }
+    }
+    final pct = total > 0 ? (done * 100 / total).round() : 0;
+    return showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: const Text("继续上次拼豆？"),
+        content: Text(
+          "「${vm.entry.name}」有未完成的拼豆进度：已放 $done/$total 颗"
+          "（$pct%）。\n继续上次进度直接回到拼豆页接着拼；重新编辑豆板将"
+          "清空该板进度，从摆板重新开始。",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: const Text("重新编辑豆板"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dctx, true),
+            child: const Text("继续上次进度"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 新建空板（无确认：本页没有可丢的编辑状态）。push：返回时退回本页
+  void _newBoard() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const BoardSetupPage()),
+    );
+  }
 
   /// 重命名：同名覆盖语义——新名存一份，旧名文件删除
   Future<void> _rename(_BoardVM vm) async {

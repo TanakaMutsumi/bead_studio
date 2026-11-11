@@ -917,7 +917,10 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     if (!mounted) {
       return;
     }
-    Navigator.of(context).push(
+    // pushReplacement：拼豆页返回时退到「选择豆板」页而不是本页
+    //（2026-11-11 需求：拼豆是本链路终点，回去的下一站是换板/换作品；
+    // 要重新摆板从选择页再进即可，进度随作品文件保留）
+    Navigator.of(context).pushReplacement(
       MaterialPageRoute(
         builder: (_) => AssemblePage(works: List.of(_works), board: board),
       ),

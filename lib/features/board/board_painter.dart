@@ -24,18 +24,6 @@ enum LabelMode {
   colNumber,
 }
 
-/// 拼豆页格子文字颜色模式
-enum LabelColorMode {
-  /// 自适应（默认）：浅色豆黑字、深色豆白字（按豆色亮度判深浅）
-  adaptive,
-
-  /// 全黑：所有格黑字（自适应判色不合口味/个别豆上看不清时强制）
-  black,
-
-  /// 全白：所有格白字
-  white,
-}
-
 /// 画布上的一件渲染项（配置页/拼豆页共用）
 class BoardPaintItem {
   final PatternModel model;
@@ -60,6 +48,10 @@ class BoardPaintItem {
   final Set<int>? placedCells;
 
   ///< 拼装已放格（本作品格扁平索引；null = 关闭）
+  final Set<int>? pendingCells;
+
+  ///< 批量完成待确认格（长按滑动圈选，松手确认前以高亮框显示；
+  ///< 本作品格扁平索引；null/空 = 无）
   final bool showBorder;
 
   ///< 画作品边框（配置页开 / 拼豆页关）
@@ -78,6 +70,7 @@ class BoardPaintItem {
     this.highlightId,
     this.dimAll = false,
     this.placedCells,
+    this.pendingCells,
     this.showBorder = false,
     this.selected = false,
     this.showClose = false,
@@ -101,9 +94,6 @@ class BoardPainter extends CustomPainter {
 
   ///< 是否绘制未选中（非高亮）格的色号文本：高亮中可关掉只留选中色
   ///< 的编号降噪；无高亮时关掉 = 纯色块净板视图
-  final LabelColorMode labelColorMode;
-
-  ///< 文字颜色模式（自适应/全黑/全白，见 LabelColorMode；默认自适应）
   final double viewScale;
 
   ///< 当前视图缩放倍数（无 ctrl 时的静态取值：格线/对勾线宽补偿用）
@@ -154,7 +144,6 @@ class BoardPainter extends CustomPainter {
     this.labelMode = LabelMode.id,
     this.showLabels = false,
     this.showNonHiLabels = true,
-    this.labelColorMode = LabelColorMode.adaptive,
     this.viewScale = 1.0,
     TransformationController? ctrl,
   })  : ctrl = ctrl,
@@ -255,11 +244,9 @@ class BoardPainter extends CustomPainter {
     if (text.isEmpty) {
       return;
     }
-    var color = switch (labelColorMode) {
-      LabelColorMode.adaptive => light ? Colors.black87 : Colors.white,
-      LabelColorMode.black => Colors.black,
-      LabelColorMode.white => Colors.white,
-    };
+    // 字色统一自适应（2026-11-11 用户定稿：全黑/全白档移除，三档选择器
+    // 从拼豆页撤下）——浅豆黑字/深豆白字，对比度法判深浅（beadLabelDark）
+    var color = light ? Colors.black87 : Colors.white;
     if (dimmed) {
       color = Color.lerp(color, _dimGray, 0.15)!;
     }
@@ -471,13 +458,17 @@ class BoardPainter extends CustomPainter {
       }
     }
 
-    // 拼装已放格：半透明白罩 + 绿对勾（EditorPage 拼装标记同款观感）
+    // 拼装已放格：绿对勾常显；「变浅」白罩只在选中该豆色时施加于该色
+    // 的已放格——未选色时全部已放格保持原豆色+对勾（2026-11-11 用户
+    // 反馈：已放格一律变浅后区分度太低；变浅是「选中色核对已放」的
+    // 专属效果）。选其他色时，非选中色的已放格随整体压暗即可
     for (final item in items) {
       final placed = item.placedCells;
       final m = item.model;
       if (placed == null || placed.isEmpty) {
         continue;
       }
+      final hi = item.highlightId;
       final veil = Paint()
         ..color = Colors.white.withValues(alpha: 0.5)
         ..style = PaintingStyle.fill;
@@ -497,7 +488,14 @@ class BoardPainter extends CustomPainter {
           cellW,
           cellH,
         );
-        canvas.drawRect(rect, veil);
+        // 白罩仅：有选中色 且 该格豆色 == 选中色（调色板索引越界不算）
+        final v = m.grid[i];
+        if (hi != null &&
+            v >= 0 &&
+            v < m.paletteIds.length &&
+            m.paletteIds[v] == hi) {
+          canvas.drawRect(rect, veil);
+        }
         final cx = rect.center.dx, cy = rect.center.dy;
         canvas.drawLine(
           Offset(cx - cellW * 0.22, cy),
@@ -509,6 +507,37 @@ class BoardPainter extends CustomPainter {
           Offset(cx + cellW * 0.28, cy - cellH * 0.2),
           check,
         );
+      }
+    }
+
+    // 批量完成待确认格（长按滑动圈选，松手弹确认前）：蓝色高亮框 +
+    // 半透明蓝罩——与已放的「白罩+绿勾」和未放的纯豆色都拉开对比，
+    // 松手后「将变为已完成」与「旧已完成」一眼可辨（2026-11-11 需求）
+    for (final item in items) {
+      final pending = item.pendingCells;
+      final m = item.model;
+      if (pending == null || pending.isEmpty) {
+        continue;
+      }
+      final fill = Paint()
+        ..color = const Color(0xFF1976D2).withValues(alpha: 0.38)
+        ..style = PaintingStyle.fill;
+      final ring = Paint()
+        ..color = const Color(0xFF1565C0)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0 / scale;
+      for (final i in pending) {
+        if (i < 0 || i >= m.grid.length || m.grid[i] < 0) {
+          continue;
+        }
+        final rect = Rect.fromLTWH(
+          (item.ox + i % m.width) * cellW,
+          (item.oy + i ~/ m.width) * cellH,
+          cellW,
+          cellH,
+        );
+        canvas.drawRect(rect, fill);
+        canvas.drawRect(rect.deflate(0.8 / scale), ring);
       }
     }
 
@@ -601,7 +630,6 @@ class BoardPainter extends CustomPainter {
   bool shouldRepaint(covariant BoardPainter oldDelegate) {
     return oldDelegate.board != board ||
         oldDelegate.labelMode != labelMode ||
-        oldDelegate.labelColorMode != labelColorMode ||
         oldDelegate.showLabels != showLabels ||
         oldDelegate.showNonHiLabels != showNonHiLabels ||
         oldDelegate.viewScale != viewScale ||

@@ -2,6 +2,11 @@ import 'package:flutter/material.dart';
 
 import 'features/home/home_page.dart';
 
+/// 路由观察者：页面间 push/pop 的可见性通知（豆板选择页靠 didPopNext
+/// 在从板设置/拼豆页返回时刷新列表——2026-11-11 拼豆进度记忆链路）
+final RouteObserver<PageRoute<dynamic>> routeObserver =
+    RouteObserver<PageRoute<dynamic>>();
+
 void main() {
   runApp(const BeadStudioApp());
 }
@@ -14,6 +19,7 @@ class BeadStudioApp extends StatelessWidget {
     return MaterialApp(
       title: "豆田",
       debugShowCheckedModeBanner: false,
+      navigatorObservers: [routeObserver],
       theme: ThemeData(
         colorSchemeSeed: const Color(0xFF4FA8E8),
         useMaterial3: true,
