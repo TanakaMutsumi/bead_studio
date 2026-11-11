@@ -9,9 +9,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// 已放格白罩（2026-11-11 需求 9）：白罩只施加于「选中色的已放格」——
-/// 其余情况（未选色 / 非选中色的已放格）已放格保持原豆色 + 绿对勾。
-/// 画布 CustomPaint 不进语义树，用 RepaintBoundary 出图逐格验色
+/// 已放格白罩（2026-11-11 需求 9）+ 未放豆退后（2026-11-12 后续）：
+/// 白罩只施加于「选中色的已放格」；未选色但有进度时，已放格保持原豆色+
+/// 绿对勾、**未放豆向中性灰 _idleGray 混 0.4 退后**——已放/未放的对比靠
+/// 「未放退后」表达（小格上光靠对勾分不清）。画布 CustomPaint 不进语义树，
+/// 用 RepaintBoundary 出图逐格验色
 void main() {
   const e11 = Color(0xFFF7DAD4);
 
@@ -97,9 +99,16 @@ void main() {
       }).then<Color>((c) => c!);
     }
 
-    // —— 无选中：已放格与未放格同为原色（白罩不生效）
+    // —— 无选中（有进度）：已放格原色+对勾；未放豆向中性灰退后
+    //（2026-11-12：对比靠未放退后，白罩不生效）
     expect(await cellColor(100, 100), e11); // 已放 E11：原色
-    expect(await cellColor(300, 100), e11); // 未放 E11：原色
+    final e11Dim = await cellColor(300, 100); // 未放 E11：退后
+    expect(e11Dim, isNot(e11));
+    expect(e11Dim.red, lessThan(e11.red)); // 浅色向中灰下沉
+    expect(e11Dim.blue, lessThan(e11.blue));
+    final c16Dim = await cellColor(300, 300); // 未放 C16（格 4）：退后
+    expect(c16Dim, isNot(c16));
+    expect(c16Dim.red, greaterThan(c16.red)); // 深色向中灰抬升
     expect(await cellColor(100, 300), c16); // 已放 C16：原色
 
     // —— 选中 E11：已放 E11 变浅（白罩），未放 E11 仍原色；

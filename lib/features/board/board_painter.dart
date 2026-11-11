@@ -138,6 +138,14 @@ class BoardPainter extends CustomPainter {
   ///< 差异一眼可辨；文字仍按 0.5 幅度混保持可读
   static const _dimGray = Color(0xFF374151);
 
+  ///< 未选色（高亮关）且该作品有拼豆进度时，未放豆的退后基色：中性冷灰
+  ///<（比 _dimGray 亮一档）。豆色按 0.4 向它混、已放豆保持原色+绿对勾
+  ///<——完成区鲜艳跳出、待拼区整体退后，进度一眼可辨（2026-11-12 用户
+  ///< 反馈：未选色时已放/未放只差一个对勾，小格上看不出对比）。取中性
+  ///< 中灰而非 _dimGray：向深灰混对深色豆（H7 纯黑）几乎拉不开差，中灰
+  ///< 对深浅两个方向都有明显差；0.4 幅度比高亮的 0.75 温和，色相仍可辨
+  static const _idleGray = Color(0xFF8A93A3);
+
   BoardPainter({
     required this.board,
     required this.items,
@@ -299,6 +307,12 @@ class BoardPainter extends CustomPainter {
     // 各作品格（板外部分画布自裁；越界索引/调色板缺失跳过）
     final gridPaint = Paint()..style = PaintingStyle.fill;
     final dimmedCells = <int>{};
+
+    ///< 压暗/退后格集合（文字层随之退后）
+    final cellBase = <int, Color>{};
+
+    ///< 每格实际底色（含各种压暗混合），文字层判黑白字直接查表，
+    ///<不再按「是否压暗」重新推一遍混合公式
     for (var itemIdx = 0; itemIdx < items.length; itemIdx++) {
       final item = items[itemIdx];
       final m = item.model;
@@ -310,13 +324,25 @@ class BoardPainter extends CustomPainter {
           }
           final c = item.palette.colors[v];
           var color = Color.fromARGB(255, c.r, c.g, c.b);
+          final key = itemIdx * 10000000 + y * m.width + x;
+          final placed = item.placedCells;
           if (item.dimAll ||
               item.highlightId != null && c.id != item.highlightId) {
             // 未选中豆大比例向深灰混（0.75：整体沉到深灰区衬托选中色，
             // 残留 25% 色相隐约可辨；早期 lerp 黑 0.78 连色相带层次全灭）
             color = Color.lerp(color, _dimGray, 0.75)!;
-            dimmedCells.add(itemIdx * 10000000 + y * m.width + x);
+            dimmedCells.add(key);
+          } else if (item.highlightId == null &&
+              placed != null &&
+              placed.isNotEmpty &&
+              !placed.contains(y * m.width + x)) {
+            // 未选色且有进度：未放豆向中性灰轻混退后，已放豆保持原色+
+            // 绿对勾跳出（见 _idleGray 注释；placedCells 为空=无进度可
+            //对比，全板原色——板设置页/缩略图不传 placed 不受影响）
+            color = Color.lerp(color, _idleGray, 0.4)!;
+            dimmedCells.add(key);
           }
+          cellBase[key] = color;
           gridPaint.color = color;
           final rect = Rect.fromLTWH(
             (item.ox + x) * cellW,
@@ -427,18 +453,11 @@ class BoardPainter extends CustomPainter {
             final key = itemIdx * 10000000 + y * m.width + x;
             final text =
                 (isHi && numbers.containsKey(key)) ? "${numbers[key]}" : c.id;
-            // 压暗格字色按混合后的实际底色判深浅（与豆底同款 0.75 混合
-            // 幅度；混后原色深浅大体保留，深字浅底/浅字深底仍然成立）。
-            // 判法改 WCAG 黑白对比度取高（beadLabelDark）：旧亮度阈值
-            // >150 把 M2 类浅灰米色判深出白字，浅底白字看不见
-            //（2026-11-10 用户反馈自适应没生效）
-            final base = dimmedCells.contains(key)
-                ? Color.lerp(
-                    Color.fromARGB(255, c.r, c.g, c.b),
-                    _dimGray,
-                    0.75,
-                  )!
-                : Color.fromARGB(255, c.r, c.g, c.b);
+            // 字色深浅按混合后的实际底色判（cellBase 已含 0.75 压暗与
+            // 0.4 退后两种混合；混后原色深浅大体保留）。判法 WCAG 黑白
+            // 对比度取高（beadLabelDark）：旧亮度阈值 >150 把 M2 类浅灰
+            // 米色判深出白字，浅底白字看不见（2026-11-10 用户反馈）
+            final base = cellBase[key] ?? Color.fromARGB(255, c.r, c.g, c.b);
             final light = beadLabelDark(base);
             _drawLabel(
               canvas,
@@ -459,9 +478,10 @@ class BoardPainter extends CustomPainter {
     }
 
     // 拼装已放格：绿对勾常显；「变浅」白罩只在选中该豆色时施加于该色
-    // 的已放格——未选色时全部已放格保持原豆色+对勾（2026-11-11 用户
-    // 反馈：已放格一律变浅后区分度太低；变浅是「选中色核对已放」的
-    // 专属效果）。选其他色时，非选中色的已放格随整体压暗即可
+    // 的已放格（变浅是「选中色核对已放」的专属效果）。未选色时已放格
+    // 原色+对勾、未放豆已在上面向 _idleGray 退后——突出关系靠「未放
+    // 退后」表达而非「已放变浅」（2026-11-11 与 2026-11-12 两轮用户
+    // 反馈的合并定稿）。选其他色时，非选中色的已放格随整体压暗即可
     for (final item in items) {
       final placed = item.placedCells;
       final m = item.model;

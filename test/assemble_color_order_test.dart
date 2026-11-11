@@ -220,7 +220,7 @@ void main() {
       expect(find.text("取消选色"), findsNothing);
     });
 
-    testWidgets('长按滑动圈选 -> 确认后批量完成（单格模式）', (tester) async {
+    testWidgets('长按滑动圈选 -> 核对态（屏蔽他操作+画布点按无效）-> 确认落账', (tester) async {
       await pumpPage(tester);
       // 选色：A2 只在格 2（板坐标 2,0）
       await tester.tap(find.text("A2"));
@@ -236,25 +236,39 @@ void main() {
       }
 
       // 长按 0.5s 起手（系统长按时限），滑过别的格（非选中色不加圈），
-      // 松手弹确认
+      // 松手进入核对态：确认条就位、不再弹窗（2026-11-12 需求）
       final g = await tester.startGesture(cellCenter(2, 0));
       await tester.pump(const Duration(milliseconds: 600));
       await g.moveBy(const Offset(0, 140)); // 滑到 (2,1) = A10，不入圈
       await tester.pump();
       await g.up();
       await tester.pumpAndSettle();
-      expect(find.text("批量标记已完成"), findsOneWidget);
-      expect(find.textContaining("1 颗"), findsOneWidget);
+      // snackbar 也含「已圈选 1 颗」，确认条用「」限定、消失断言用其独有文案
+      expect(find.textContaining("已圈选 1 颗「"), findsOneWidget);
+      expect(find.text("设为已完成"), findsOneWidget);
+      expect(find.byType(AlertDialog), findsNothing); // 弹窗已废
+
+      // 核对态屏蔽：点画布格子（放豆入口）不落账、圈选保留
+      await tester.tapAt(cellCenter(1, 0)); // A1 格
+      await tester.pumpAndSettle();
+      expect(find.text("已放 0/6 · 0%"), findsOneWidget);
+      expect(find.textContaining("已圈选 1 颗「"), findsOneWidget);
+      // 核对态屏蔽：点色条换色不生效（仍处 A2 核对态）
+      await tester.tap(find.text("A1"));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+      expect(find.textContaining("已圈选 1 颗「"), findsOneWidget);
 
       await tester.tap(find.text("设为已完成"));
       await tester.pumpAndSettle();
       expect(find.text("已放 1/6 · 17%"), findsOneWidget);
+      expect(find.textContaining("可拖动缩放核对"), findsNothing); // 确认条撤下
 
-      // 双击触发的提示等 Timer 收尾（挂起 Timer 判失败）
+      // 手势/snackbar 等 Timer 收尾（挂起 Timer 判失败）
       AppSnackBar.dismiss();
     });
 
-    testWidgets('圈选确认框点取消 -> 不落账（进度不动）', (tester) async {
+    testWidgets('圈选核对态点取消 -> 不落账（进度不动）', (tester) async {
       await pumpPage(tester);
       await tester.tap(find.text("A2"));
       await tester.pump(const Duration(milliseconds: 400));
@@ -267,9 +281,12 @@ void main() {
       await tester.pump(const Duration(milliseconds: 600));
       await g.up();
       await tester.pumpAndSettle();
+      expect(find.textContaining("已圈选 1 颗「"), findsOneWidget);
       await tester.tap(find.text("取消").last);
       await tester.pumpAndSettle();
       expect(find.text("已放 0/6 · 0%"), findsOneWidget);
+      expect(find.textContaining("可拖动缩放核对"), findsNothing);
+      AppSnackBar.dismiss();
     });
   });
 

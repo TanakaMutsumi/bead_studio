@@ -93,14 +93,18 @@ class _AssemblePageState extends State<AssemblePage> {
   ///< 有未保存的进度改动（返回时据此弹保存确认；保存后清零）
   DateTime? _lastSavedAt;
 
-  ///< 上次保存时间（标题下小字显示；null = 本次会话还没存过）
+  ///< 5 分钟自动保存定时器（仅 _dirty 时落盘，静默无提示）
   Timer? _autoTimer;
 
-  ///< 5 分钟自动保存（仅 _dirty 时落盘，静默无提示）
   final Map<int, Set<int>> _pending = {};
 
   ///< 批量完成待确认格：作品索引 -> 该作品格扁平索引集（松手确认前
-  ///< 画布上蓝框高亮，确认才并入 _placed）
+  ///< 画布上蓝框高亮，确认才并入 _placed；核对态期间常驻，见 _batchActive）
+  var _batchActive = false;
+
+  ///< 本次手势是否真长按起手过：quick tap/拖动也会触发
+  ///< onLongPressCancel（识别器被 reject），只有 _batchActive 时 cancel
+  ///< 才清圈选，否则核对态下点画布核对会误清（2026-11-12）
   var _batchRegion = false;
 
   ///< 批量圈选模式：false = 单格（划过哪格选哪格）；true = 区块
@@ -108,7 +112,6 @@ class _AssemblePageState extends State<AssemblePage> {
   var _popAllowed = false;
 
   ///< 返回确认已通过（放行本次 pop，防 PopScope 拦截自己发起的 pop）
-
   LegendSort _initColorSort() {
     for (final w in widget.works) {
       final m = legendSortFromName(w.entry.sortMode);
@@ -170,6 +173,11 @@ class _AssemblePageState extends State<AssemblePage> {
   /// 画布点按：未选色时点某颗豆 = 选中该豆的颜色（单件方案顺手切到该豆
   /// 的作品，色条滚到该色）；已选色时点该色格子标记/取消已放
   void _toggleAt(Offset local, double canvasW, double canvasH) {
+    if (_pending.isNotEmpty) {
+      // 圈选核对中：屏蔽放豆（画布只留给拖动/缩放核对，2026-11-12）
+      AppSnackBar.show(context, "圈选核对中——先「设为已完成」或「取消」");
+      return;
+    }
     final b = widget.board;
     final bx = (local.dx / (canvasW / b.w)).floor();
     final by = (local.dy / (canvasH / b.h)).floor();
@@ -253,6 +261,9 @@ class _AssemblePageState extends State<AssemblePage> {
   ///（整批放错重来的出口）。范围随高亮方案：全部作品 = 每件都标，
   /// 单件作品 = 只标所选作品
   void _completeColor(String id) {
+    if (_pending.isNotEmpty) {
+      return; // 圈选核对中：屏蔽整色完成（防误操作）
+    }
     final scope = _scope;
     // 先判方向：范围内还有该色未标格 -> 补齐；否则撤销全部标记
     var undo = true;
@@ -304,9 +315,15 @@ class _AssemblePageState extends State<AssemblePage> {
   // ==================== 批量圈选（长按滑动） ====================
 
   /// 长按 0.5 秒起手：选中色模式下开始批量圈选（无选中色不响应——
-  /// 长按手势已消费点按，等于无操作）
-  void _batchStart(Offset local, double canvasW, double canvasH) =>
-      _batchApply(local, canvasW, canvasH);
+  /// 长按手势已消费点按，等于无操作）。圈选待确认（_pending 非空）期间
+  /// 屏蔽再次起手（2026-11-12 需求：核对态防误操作）
+  void _batchStart(Offset local, double canvasW, double canvasH) {
+    if (_pending.isNotEmpty) {
+      return;
+    }
+    _batchActive = true; // 本次手势真起手过，onLongPressCancel 才作数
+    _batchApply(local, canvasW, canvasH);
+  }
 
   void _batchMove(Offset local, double canvasW, double canvasH) =>
       _batchApply(local, canvasW, canvasH);
@@ -379,47 +396,45 @@ class _AssemblePageState extends State<AssemblePage> {
     }
   }
 
-  /// 松手：有待确认格则弹确认（蓝框保持高亮，与旧已完成形成对比），
-  /// 确认并入 _placed；取消/点外部清空圈选
-  Future<void> _batchEnd() async {
+  /// 松手：圈选进入待确认态（蓝框保留）——不弹窗：弹窗挡画布，且确认
+  /// 前用户往往想拖动/缩放核对圈得对不对（2026-11-12 用户需求）。底部
+  /// 批量行原位换成「设为已完成/取消」确认条，画布保持可拖可缩，其余
+  /// 放豆/选色/圈选/口径切换入口全部屏蔽（各 handler 的 _pending 守卫）
+  void _batchEnd() {
+    _batchActive = false; // 手势正常收尾，pending 转入核对态常驻
+    if (_pending.isEmpty) {
+      return;
+    }
     var n = 0;
     for (final s in _pending.values) {
       n += s.length;
     }
-    if (n == 0) {
+    AppSnackBar.show(context, "已圈选 $n 颗——拖动/缩放核对后再确认");
+  }
+
+  /// 确认圈选：并入已放（置脏）并退出核对态
+  void _confirmPending() {
+    if (_pending.isEmpty) {
       return;
     }
-    final hi = _highlightId;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (dctx) => AlertDialog(
-        title: const Text("批量标记已完成"),
-        content: Text(
-          "将以上圈选的 $n 颗${hi == null ? "" : "「$hi」"}豆格设为已完成？"
-          "（蓝框高亮处）",
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dctx, false),
-            child: const Text("取消"),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dctx, true),
-            child: const Text("设为已完成"),
-          ),
-        ],
-      ),
-    );
-    if (!mounted) {
-      return;
-    }
+    var n = 0;
     setState(() {
-      if (ok == true) {
-        _pending.forEach((idx, cells) => _placed[idx].addAll(cells));
-        _dirty = true;
-      }
+      _pending.forEach((idx, cells) {
+        _placed[idx].addAll(cells);
+        n += cells.length;
+      });
+      _dirty = true;
       _pending.clear();
     });
+    AppSnackBar.show(context, "已批量标记 $n 颗已完成");
+  }
+
+  /// 取消圈选：不落账，回到正常态（圈选从未进 _placed，取消无损失）
+  void _cancelPending() {
+    if (_pending.isEmpty) {
+      return;
+    }
+    setState(() => _pending.clear());
   }
 
   // ==================== 统计 ====================
@@ -845,8 +860,13 @@ class _AssemblePageState extends State<AssemblePage> {
                     constraints.maxHeight,
                   ),
                   onLongPressEnd: (_) => _batchEnd(),
+
+                  ///< quick tap/拖动画布也会触发 cancel（长按识别器被
+                  ///< reject 是常态），只清算「真长按起手过又被打断」的
+                  ///< 那次；核对态常驻的 pending 不受点按/拖动影响
                   onLongPressCancel: () {
-                    if (_pending.isNotEmpty) {
+                    if (_batchActive && _pending.isNotEmpty) {
+                      _batchActive = false;
                       setState(() => _pending.clear());
                     }
                   },
@@ -916,15 +936,20 @@ class _AssemblePageState extends State<AssemblePage> {
               ButtonSegment(value: false, label: Text("单件作品")),
             ],
             selected: {_scopeAll},
-            onSelectionChanged: (s) => setState(() {
-              _scopeAll = s.first;
-              if (!_scopeAll) {
-                _scopeWork = (_scopeWork ?? 0).clamp(
-                  0,
-                  widget.works.length - 1,
-                );
+            onSelectionChanged: (s) {
+              if (_pending.isNotEmpty) {
+                return; // 圈选核对中：屏蔽口径切换
               }
-            }),
+              setState(() {
+                _scopeAll = s.first;
+                if (!_scopeAll) {
+                  _scopeWork = (_scopeWork ?? 0).clamp(
+                    0,
+                    widget.works.length - 1,
+                  );
+                }
+              });
+            },
           ),
           if (!_scopeAll) ...[
             const SizedBox(width: 8),
@@ -932,7 +957,12 @@ class _AssemblePageState extends State<AssemblePage> {
               child: PopupMenuButton<int>(
                 tooltip: "选择作品",
                 initialValue: sw,
-                onSelected: (i) => setState(() => _scopeWork = i),
+                onSelected: (i) {
+                  if (_pending.isNotEmpty) {
+                    return; // 圈选核对中：屏蔽换作品
+                  }
+                  setState(() => _scopeWork = i);
+                },
                 itemBuilder: (_) => [
                   for (var i = 0; i < widget.works.length; i++)
                     PopupMenuItem(
@@ -974,8 +1004,55 @@ class _AssemblePageState extends State<AssemblePage> {
 
   /// 选中色操作行（选中色号才出现）：批量圈选模式（单格 / 区块）+
   /// 取消选色（2026-11-11 需求 8/10——色条滚远后没有就地取消入口；
-  ///< 长按滑动批量完成没有可见入口）
+  ///< 长按滑动批量完成没有可见入口）。
+  /// 圈选待确认（_pending 非空）时整行换成确认条：设为已完成/取消——
+  /// 弹窗确认已废弃（2026-11-12 用户需求：确认前要能拖动/缩放画布核对
+  /// 圈选内容，弹窗挡画布；确认条就位期间其余入口全部屏蔽）
   Widget _buildBatchRow() {
+    if (_pending.isNotEmpty) {
+      var n = 0;
+      for (final s in _pending.values) {
+        n += s.length;
+      }
+      final btnStyle = ButtonStyle(
+        visualDensity: VisualDensity.compact,
+        padding: const MaterialStatePropertyAll(
+          EdgeInsets.symmetric(horizontal: 10),
+        ),
+        minimumSize: const MaterialStatePropertyAll(Size(0, 32)),
+      );
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 2),
+        child: Row(
+          children: [
+            const Icon(Icons.rule, size: 16, color: Color(0xFF1565C0)),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                "已圈选 $n 颗「$_highlightId」· 可拖动缩放核对",
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: const Color(0xFF1565C0)),
+              ),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton(
+              onPressed: _cancelPending,
+              style: btnStyle,
+              child: const Text("取消"),
+            ),
+            const SizedBox(width: 8),
+            FilledButton(
+              onPressed: _confirmPending,
+              style: btnStyle,
+              child: const Text("设为已完成"),
+            ),
+          ],
+        ),
+      );
+    }
     if (_highlightId == null) {
       return const SizedBox.shrink();
     }
@@ -993,8 +1070,8 @@ class _AssemblePageState extends State<AssemblePage> {
             ).textTheme.bodySmall?.copyWith(color: Colors.black38),
           ),
           Tooltip(
-            message: "选中色时长按 0.5 秒滑动圈选豆格，松手确认后批量标记"
-                "已完成；区块模式按粗框线整块圈选",
+            message: "选中色时长按 0.5 秒滑动圈选豆格，松手核对（可拖动"
+                "缩放）后确认；区块模式按粗框线整块圈选",
             child: SegmentedButton<bool>(
               showSelectedIcon: false,
               style: const ButtonStyle(visualDensity: VisualDensity.compact),
@@ -1007,7 +1084,10 @@ class _AssemblePageState extends State<AssemblePage> {
             ),
           ),
           OutlinedButton.icon(
-            onPressed: () => setState(() => _highlightId = null),
+            // 圈选核对中禁用（核对态只有确认条两个按钮可用）
+            onPressed: _pending.isEmpty
+                ? () => setState(() => _highlightId = null)
+                : null,
             style: OutlinedButton.styleFrom(
               visualDensity: VisualDensity.compact,
               padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -1110,10 +1190,16 @@ class _AssemblePageState extends State<AssemblePage> {
           final light =
               c != null && beadLabelDark(Color.fromARGB(255, c.r, c.g, c.b));
           return GestureDetector(
-            // 单击选色（注册了双击后单击会延迟一拍，属预期）
-            onTap: () => setState(() {
-              _highlightId = _highlightId == id ? null : id;
-            }),
+            // 单击选色（注册了双击后单击会延迟一拍，属预期）；圈选
+            // 核对中屏蔽换色（防误操作，2026-11-12）
+            onTap: () {
+              if (_pending.isNotEmpty) {
+                return;
+              }
+              setState(() {
+                _highlightId = _highlightId == id ? null : id;
+              });
+            },
 
             ///< 双击 = 范围内该色全部标记已放（已全完则撤销）
             onDoubleTap: () => _completeColor(id),
