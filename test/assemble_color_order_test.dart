@@ -188,24 +188,25 @@ void main() {
       expect(chipOrder(tester), ["A1", "A2", "A10"]);
     });
 
-    testWidgets('切换排列模式文案定宽，不挤动排序钮位置（2026-11-11）', (tester) async {
+    testWidgets('切换排列模式文案定宽，按钮自身宽度不变（2026-11-11）', (tester) async {
       await pumpPage(tester);
-      final sortDx0 = tester.getTopLeft(find.text("多→少")).dx;
+      final dx0 = tester.getTopLeft(find.text("只显示色号")).dx;
 
       ///< 「只显示色号」(5字) -> 「横向排列」(4字)：按钮内文本按最宽候选
-      ///< 定宽居中，按钮自身宽度不变 -> 排序钮 dx 不动
+      ///< 定宽居中，按钮自身宽度不变 -> 左缘 dx 不动（2026-11-12 色号序
+      ///< 已移到底部色条行，顶部只剩分组后的两个文字钮）
       await tester.tap(find.text("只显示色号"));
       await tester.pumpAndSettle();
       expect(find.text("横向排列"), findsOneWidget);
-      expect(tester.getTopLeft(find.text("多→少")).dx, sortDx0);
+      expect(tester.getTopLeft(find.text("横向排列")).dx, dx0);
 
       await tester.tap(find.text("横向排列"));
       await tester.pumpAndSettle();
       expect(find.text("竖向排列"), findsOneWidget);
-      expect(tester.getTopLeft(find.text("多→少")).dx, sortDx0);
+      expect(tester.getTopLeft(find.text("竖向排列")).dx, dx0);
     });
 
-    testWidgets('选中色号出现取消选色钮，点击清空选中（行随之收起）', (tester) async {
+    testWidgets('选中色号出现取消选色钮，点击清空选中（批量行槽位恒占，画布不动）', (tester) async {
       await pumpPage(tester);
       expect(find.text("取消选色"), findsNothing);
 
@@ -220,10 +221,48 @@ void main() {
       expect(find.text("取消选色"), findsNothing);
     });
 
-    testWidgets('长按滑动圈选 -> 核对态（屏蔽他操作+画布点按无效）-> 确认落账', (tester) async {
+    ///< 批量行槽位恒占位（2026-11-12 用户反馈：选色后批量行出现把画布
+    ///< 顶起 ~40px 突然缩移）：空槽 <-> 批量行 <-> 确认条三态切换，
+    ///< 画布（InteractiveViewer）矩形全程不变
+    testWidgets('批量行出现/消失/换确认条，画布尺寸全程不变（2026-11-12）', (tester) async {
       await pumpPage(tester);
-      // 选色：A2 只在格 2（板坐标 2,0）
-      await tester.tap(find.text("A2"));
+      final r0 = tester.getRect(find.byType(InteractiveViewer).first);
+
+      // 选色 -> 批量行出现
+      await tester.tap(find.text("A10"));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+      expect(find.text("取消选色"), findsOneWidget);
+      expect(tester.getRect(find.byType(InteractiveViewer).first), r0);
+
+      // 长按圈选 -> 确认条替换批量行
+      final rect = r0;
+      final g = await tester.startGesture(
+        Offset(rect.left + 0.5 * rect.width / 3,
+            rect.top + 1.5 * rect.height / 2),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await g.up();
+      await tester.pumpAndSettle();
+      expect(find.textContaining("已圈选 1 颗「"), findsOneWidget);
+      expect(tester.getRect(find.byType(InteractiveViewer).first), r0);
+
+      // 确认 -> 批量行回来；取消选色 -> 空槽
+      await tester.tap(find.text("设为已完成"));
+      await tester.pumpAndSettle();
+      expect(tester.getRect(find.byType(InteractiveViewer).first), r0);
+      await tester.tap(find.text("取消选色"));
+      await tester.pumpAndSettle();
+      expect(tester.getRect(find.byType(InteractiveViewer).first), r0);
+
+      // snackbar 3 秒自动消失 Timer 收尾（挂起 Timer 判失败）
+      AppSnackBar.dismiss();
+    });
+
+    testWidgets('圈选核对态：单击/长按可追加圈选，再点已圈格移出（2026-11-12）', (tester) async {
+      await pumpPage(tester);
+      // 选 A10（格 (0,1)(1,1)(2,1) 共 3 颗）
+      await tester.tap(find.text("A10"));
       await tester.pump(const Duration(milliseconds: 400));
       await tester.pumpAndSettle();
 
@@ -235,53 +274,75 @@ void main() {
         );
       }
 
-      // 长按 0.5s 起手（系统长按时限），滑过别的格（非选中色不加圈），
-      // 松手进入核对态：确认条就位、不再弹窗（2026-11-12 需求）
-      final g = await tester.startGesture(cellCenter(2, 0));
+      // 长按 0.5s（系统长按时限）原地起手松手，进入核对态：确认条就位、
+      ///< 不再弹窗（2026-11-12 需求）。（不滑动——对角线路径可能路过
+      ///< (1,1) 的 A10 格使计数不确定，追加路径由后面的单击/长按覆盖）
+      final g = await tester.startGesture(cellCenter(0, 1));
       await tester.pump(const Duration(milliseconds: 600));
-      await g.moveBy(const Offset(0, 140)); // 滑到 (2,1) = A10，不入圈
-      await tester.pump();
       await g.up();
       await tester.pumpAndSettle();
       // snackbar 也含「已圈选 1 颗」，确认条用「」限定、消失断言用其独有文案
-      expect(find.textContaining("已圈选 1 颗「"), findsOneWidget);
+      expect(find.textContaining("已圈选 1 颗「A10」"), findsOneWidget);
       expect(find.text("设为已完成"), findsOneWidget);
       expect(find.byType(AlertDialog), findsNothing); // 弹窗已废
 
-      // 核对态屏蔽：点画布格子（放豆入口）不落账、圈选保留
-      await tester.tapAt(cellCenter(1, 0)); // A1 格
+      // 核对态单击追加：点 (1,1) A10 未放格 -> 圈选 2 颗
+      await tester.tapAt(cellCenter(1, 1));
       await tester.pumpAndSettle();
-      expect(find.text("已放 0/6 · 0%"), findsOneWidget);
-      expect(find.textContaining("已圈选 1 颗「"), findsOneWidget);
-      // 核对态屏蔽：点色条换色不生效（仍处 A2 核对态）
+      expect(find.textContaining("已圈选 2 颗「A10」"), findsOneWidget);
+      expect(find.text("已放 0/6 · 0%"), findsOneWidget); // 不落已放
+
+      // 核对态长按追加：长按 (2,1) 松手 -> 3 颗
+      final g2 = await tester.startGesture(cellCenter(2, 1));
+      await tester.pump(const Duration(milliseconds: 600));
+      await g2.up();
+      await tester.pumpAndSettle();
+      expect(find.textContaining("已圈选 3 颗「A10」"), findsOneWidget);
+
+      // 单击已圈格 -> 移出（3 -> 2）
+      await tester.tapAt(cellCenter(2, 1));
+      await tester.pumpAndSettle();
+      expect(find.textContaining("已圈选 2 颗「A10」"), findsOneWidget);
+
+      // 点非选中色格（A1）不追加也不移出
+      await tester.tapAt(cellCenter(0, 0));
+      await tester.pumpAndSettle();
+      expect(find.textContaining("已圈选 2 颗「A10」"), findsOneWidget);
+
+      // 核对态屏蔽换色：点色条不生效（仍处 A10 核对态）
       await tester.tap(find.text("A1"));
       await tester.pump(const Duration(milliseconds: 400));
       await tester.pumpAndSettle();
-      expect(find.textContaining("已圈选 1 颗「"), findsOneWidget);
+      expect(find.textContaining("已圈选 2 颗「A10」"), findsOneWidget);
 
       await tester.tap(find.text("设为已完成"));
       await tester.pumpAndSettle();
-      expect(find.text("已放 1/6 · 17%"), findsOneWidget);
+      expect(find.text("已放 2/6 · 33%"), findsOneWidget);
       expect(find.textContaining("可拖动缩放核对"), findsNothing); // 确认条撤下
 
       // 手势/snackbar 等 Timer 收尾（挂起 Timer 判失败）
       AppSnackBar.dismiss();
     });
 
-    testWidgets('圈选核对态点取消 -> 不落账（进度不动）', (tester) async {
+    testWidgets('圈选核对态点取消 -> 追加的也一并清空、不落账（进度不动）', (tester) async {
       await pumpPage(tester);
-      await tester.tap(find.text("A2"));
+      await tester.tap(find.text("A10"));
       await tester.pump(const Duration(milliseconds: 400));
       await tester.pumpAndSettle();
       final rect = tester.getRect(find.byType(InteractiveViewer).first);
       final g = await tester.startGesture(
-        Offset(
-            rect.left + 2.5 * rect.width / 3, rect.top + 0.5 * rect.height / 2),
+        Offset(rect.left + 0.5 * rect.width / 3,
+            rect.top + 1.5 * rect.height / 2),
       );
       await tester.pump(const Duration(milliseconds: 600));
       await g.up();
       await tester.pumpAndSettle();
-      expect(find.textContaining("已圈选 1 颗「"), findsOneWidget);
+      expect(find.textContaining("已圈选 1 颗「A10」"), findsOneWidget);
+      // 单击追加第二颗再取消：全清
+      await tester.tapAt(Offset(
+          rect.left + 1.5 * rect.width / 3, rect.top + 1.5 * rect.height / 2));
+      await tester.pumpAndSettle();
+      expect(find.textContaining("已圈选 2 颗「A10」"), findsOneWidget);
       await tester.tap(find.text("取消").last);
       await tester.pumpAndSettle();
       expect(find.text("已放 0/6 · 0%"), findsOneWidget);
@@ -368,6 +429,43 @@ void main() {
       await tester.tap(find.text("全部作品"));
       await tester.pumpAndSettle();
       expect(find.text("已放 1/8 · 13%"), findsOneWidget);
+      AppSnackBar.dismiss();
+    });
+
+    testWidgets('圈选核对态：作品切换下拉整钮禁用，点不开菜单（2026-11-12）', (tester) async {
+      await pumpTwoWorks(tester);
+      await tester.tap(find.text("单件作品"));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text("A2"));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+
+      // 下拉可用（未进核对态）
+      final popup = find.byType(PopupMenuButton<int>);
+      expect(popup, findsOneWidget);
+      expect(
+        tester.widget<PopupMenuButton<int>>(popup).enabled,
+        isTrue,
+      );
+
+      // 长按 A2 格（板 4×3，A2 在 w0 的 (2,0)）进入核对态
+      final rect = tester.getRect(find.byType(InteractiveViewer).first);
+      final g = await tester.startGesture(
+        Offset(
+            rect.left + 2.5 * rect.width / 4, rect.top + 0.5 * rect.height / 3),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await g.up();
+      await tester.pumpAndSettle();
+      expect(find.textContaining("已圈选 1 颗「"), findsOneWidget);
+
+      // 整钮禁用 + 点了也不弹菜单（2026-11-12 用户反馈：只挡 onSelected
+      // 菜单照样弹出）
+      expect(tester.widget<PopupMenuButton<int>>(popup).enabled, isFalse);
+      await tester.tap(popup);
+      await tester.pumpAndSettle();
+      expect(find.text("w1"), findsNothing); // 菜单没开（w1 只在菜单里）
+      expect(find.text("w0"), findsOneWidget); // 下拉标签仍是当前作品
       AppSnackBar.dismiss();
     });
   });

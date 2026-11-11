@@ -104,8 +104,12 @@ class _AssemblePageState extends State<AssemblePage> {
 
   ///< 本次手势是否真长按起手过：quick tap/拖动也会触发
   ///< onLongPressCancel（识别器被 reject），只有 _batchActive 时 cancel
-  ///< 才清圈选，否则核对态下点画布核对会误清（2026-11-12）
+  ///< 才回滚圈选，否则核对态下点画布核对会误清（2026-11-12）
   var _batchRegion = false;
+
+  ///< 本次长按起手时的圈选快照（深拷贝）：核对态可追加起手（2026-11-12
+  ///< 用户需求），手势被打断只回滚到起手前，不清掉之前已圈的
+  Map<int, Set<int>>? _batchSnapshot;
 
   ///< 批量圈选模式：false = 单格（划过哪格选哪格）；true = 区块
   ///<（按粗框线分块，划到哪块整块的选中色未放格入圈）
@@ -171,19 +175,17 @@ class _AssemblePageState extends State<AssemblePage> {
   }
 
   /// 画布点按：未选色时点某颗豆 = 选中该豆的颜色（单件方案顺手切到该豆
-  /// 的作品，色条滚到该色）；已选色时点该色格子标记/取消已放
+  /// 的作品，色条滚到该色）；已选色时点该色格子标记/取消已放；
+  /// 圈选核对中点选中色的未放格 = 增/删那一格圈选（2026-11-12 用户需求：
+  /// 没点「设为已完成」前可继续单击/长按追加选中）
   void _toggleAt(Offset local, double canvasW, double canvasH) {
-    if (_pending.isNotEmpty) {
-      // 圈选核对中：屏蔽放豆（画布只留给拖动/缩放核对，2026-11-12）
-      AppSnackBar.show(context, "圈选核对中——先「设为已完成」或「取消」");
-      return;
-    }
+    final pendingMode = _pending.isNotEmpty;
     final b = widget.board;
     final bx = (local.dx / (canvasW / b.w)).floor();
     final by = (local.dy / (canvasH / b.h)).floor();
     final idx = _hitWorkIndex(bx, by);
     if (idx < 0) {
-      if (_highlightId == null) {
+      if (!pendingMode && _highlightId == null) {
         AppSnackBar.show(context, "点图上的豆可选中它的颜色，或点下方颜色条选择");
       }
       return; // 点在板空区
@@ -228,6 +230,21 @@ class _AssemblePageState extends State<AssemblePage> {
     }
     if (id != hi) {
       return; // 非高亮色格子不响应
+    }
+    if (pendingMode) {
+      // 圈选核对中：点已圈格移出、点选中色未放格加入（已放格不可圈）
+      setState(() {
+        final cells = _pending[idx];
+        if (cells != null && cells.contains(i)) {
+          cells.remove(i);
+          if (cells.isEmpty) {
+            _pending.remove(idx);
+          }
+        } else if (!_placed[idx].contains(i)) {
+          _pending.putIfAbsent(idx, () => {}).add(i);
+        }
+      });
+      return;
     }
     setState(() {
       _placed[idx].contains(i) ? _placed[idx].remove(i) : _placed[idx].add(i);
@@ -315,12 +332,13 @@ class _AssemblePageState extends State<AssemblePage> {
   // ==================== 批量圈选（长按滑动） ====================
 
   /// 长按 0.5 秒起手：选中色模式下开始批量圈选（无选中色不响应——
-  /// 长按手势已消费点按，等于无操作）。圈选待确认（_pending 非空）期间
-  /// 屏蔽再次起手（2026-11-12 需求：核对态防误操作）
+  /// 长按手势已消费点按，等于无操作）。圈选核对态也可再次起手追加
+  ///（2026-11-12 用户需求）：起手前快照当前圈选，手势被打断
+  ///（onLongPressCancel）只回滚到起手前，不清掉之前已圈的
   void _batchStart(Offset local, double canvasW, double canvasH) {
-    if (_pending.isNotEmpty) {
-      return;
-    }
+    _batchSnapshot = {
+      for (final e in _pending.entries) e.key: {...e.value},
+    };
     _batchActive = true; // 本次手势真起手过，onLongPressCancel 才作数
     _batchApply(local, canvasW, canvasH);
   }
@@ -398,10 +416,11 @@ class _AssemblePageState extends State<AssemblePage> {
 
   /// 松手：圈选进入待确认态（蓝框保留）——不弹窗：弹窗挡画布，且确认
   /// 前用户往往想拖动/缩放核对圈得对不对（2026-11-12 用户需求）。底部
-  /// 批量行原位换成「设为已完成/取消」确认条，画布保持可拖可缩，其余
-  /// 放豆/选色/圈选/口径切换入口全部屏蔽（各 handler 的 _pending 守卫）
+  /// 批量行原位换成「设为已完成/取消」确认条，画布保持可拖可缩；核对
+  /// 态下单击/长按仍是追加圈选，屏蔽的是放豆/换色/口径切换（各守卫）
   void _batchEnd() {
     _batchActive = false; // 手势正常收尾，pending 转入核对态常驻
+    _batchSnapshot = null; // 本次手势圈选并入核对态，回滚快照作废
     if (_pending.isEmpty) {
       return;
     }
@@ -694,6 +713,18 @@ class _AssemblePageState extends State<AssemblePage> {
                         ),
                       ),
 
+                      ///< 组间分隔（2026-11-12 用户反馈：其他色号与排列
+                      ///< 模式两钮连在一起没有区分）——竖线分组；
+                      ///< 色号序已移到底部色条行（见 _buildColorBar）
+                      const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 7),
+                        child: SizedBox(
+                          width: 1,
+                          height: 18,
+                          child: ColoredBox(color: Colors.black26),
+                        ),
+                      ),
+
                       ///< 文字层模式切换（常显：编号模式须先选色才有效
                       ///< 果，但入口不必藏着——用户可能先设模式再选色）。
                       ///< 文案按候选最宽定宽（2026-11-11 用户反馈：三种
@@ -728,11 +759,6 @@ class _AssemblePageState extends State<AssemblePage> {
                           Theme.of(context).textTheme.bodySmall!,
                         ),
                       ),
-
-                      ///< 色条排序（与图例核对步同款四模式单选菜单）：
-                      ///< 完成色（剩余 0）恒垫后由排序函数保证，这里只
-                      ///< 管段内次序。文案同样定宽防跳
-                      _sortPopup(),
                     ],
                   ),
                 ],
@@ -781,7 +807,11 @@ class _AssemblePageState extends State<AssemblePage> {
               ),
             ),
             _buildScopeRow(),
-            _buildBatchRow(),
+
+            ///< 批量行槽位恒占位（2026-11-12 用户反馈：选色后批量行出现
+            ///< 把画布顶起 ~40px 突然缩移，同一手指点位会映射到不同格）：
+            ///< 未选色=空槽，画布高度全程恒定
+            SizedBox(height: 46, child: _buildBatchRow()),
             _buildColorBar(totals, scope),
           ],
         ),
@@ -862,13 +892,19 @@ class _AssemblePageState extends State<AssemblePage> {
                   onLongPressEnd: (_) => _batchEnd(),
 
                   ///< quick tap/拖动画布也会触发 cancel（长按识别器被
-                  ///< reject 是常态），只清算「真长按起手过又被打断」的
-                  ///< 那次；核对态常驻的 pending 不受点按/拖动影响
+                  ///< reject 是常态），只回滚「真长按起手过又被打断」的
+                  ///< 那次——恢复起手前快照，核对态已圈的颗数不动
                   onLongPressCancel: () {
-                    if (_batchActive && _pending.isNotEmpty) {
-                      _batchActive = false;
-                      setState(() => _pending.clear());
+                    if (!_batchActive) {
+                      return;
                     }
+                    _batchActive = false;
+                    setState(() {
+                      _pending
+                        ..clear()
+                        ..addAll(_batchSnapshot ?? {});
+                    });
+                    _batchSnapshot = null;
                   },
                   child: CustomPaint(
                     size: Size.infinite,
@@ -893,15 +929,20 @@ class _AssemblePageState extends State<AssemblePage> {
                             oy: widget.works[i].oy,
 
                             ///< 按作品方案：只有范围内作品带高亮，范围外
-                            ///< 作品整体压灰（同未选中观感——用户要看
-                            ///< 清"当前在拼哪件"）；全部方案维持同色号
-                            ///< 跨作品一起高亮。未选色时都不压灰
+                            ///< 作品选色时深灰压暗、未选色时略灰退后
+                            ///<（用户要看清"当前在拼哪件"）；全部方案维持
+                            ///< 同色号跨作品一起高亮
                             highlightId: (_scope == null || i == _scope)
                                 ? _highlightId
                                 : null,
+
+                            ///< 选色时范围外深灰压暗（同未选中观感）；
+                            ///< 未选色时整件略灰退后（painter dimScope，
+                            ///< 2026-11-12 用户反馈回归：范围内外要可辨）
                             dimAll: _scope != null &&
                                 i != _scope &&
                                 _highlightId != null,
+                            dimScope: _scope != null && i != _scope,
                             placedCells: _placed[i],
                             pendingCells: _pending[i],
                           ),
@@ -957,6 +998,11 @@ class _AssemblePageState extends State<AssemblePage> {
               child: PopupMenuButton<int>(
                 tooltip: "选择作品",
                 initialValue: sw,
+
+                ///< 核对态整钮禁用（2026-11-12 用户反馈：只挡 onSelected
+                ///< 菜单照样弹出，菜单本身就不能开）；onSelected 守卫保留
+                ///< 作双保险
+                enabled: _pending.isEmpty,
                 onSelected: (i) {
                   if (_pending.isNotEmpty) {
                     return; // 圈选核对中：屏蔽换作品
@@ -1002,104 +1048,117 @@ class _AssemblePageState extends State<AssemblePage> {
     );
   }
 
-  /// 选中色操作行（选中色号才出现）：批量圈选模式（单格 / 区块）+
-  /// 取消选色（2026-11-11 需求 8/10——色条滚远后没有就地取消入口；
-  ///< 长按滑动批量完成没有可见入口）。
+  /// 选中色操作行（选中色号才出现；未选色返回空槽）：批量圈选模式
+  ///（单格 / 区块）+ 取消选色（2026-11-11 需求 8/10——色条滚远后没有
+  /// 就地取消入口；长按滑动批量完成没有可见入口）。
   /// 圈选待确认（_pending 非空）时整行换成确认条：设为已完成/取消——
   /// 弹窗确认已废弃（2026-11-12 用户需求：确认前要能拖动/缩放画布核对
-  /// 圈选内容，弹窗挡画布；确认条就位期间其余入口全部屏蔽）
+  /// 圈选内容，弹窗挡画布）。确认条就位期间单击/长按画布仍是追加圈选，
+  /// 屏蔽的是放豆/换色/口径切换。槽位 46px 恒占位（见调用处注释）
   Widget _buildBatchRow() {
     if (_pending.isNotEmpty) {
       var n = 0;
       for (final s in _pending.values) {
         n += s.length;
       }
-      final btnStyle = ButtonStyle(
+      const btnStyle = ButtonStyle(
         visualDensity: VisualDensity.compact,
-        padding: const MaterialStatePropertyAll(
-          EdgeInsets.symmetric(horizontal: 10),
-        ),
-        minimumSize: const MaterialStatePropertyAll(Size(0, 32)),
+        padding: WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 10)),
+        minimumSize: WidgetStatePropertyAll(Size(0, 32)),
       );
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 2),
-        child: Row(
-          children: [
-            const Icon(Icons.rule, size: 16, color: Color(0xFF1565C0)),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Text(
-                "已圈选 $n 颗「$_highlightId」· 可拖动缩放核对",
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(
-                  context,
-                ).textTheme.bodySmall?.copyWith(color: const Color(0xFF1565C0)),
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 2),
+          child: Row(
+            children: [
+              const Icon(Icons.rule, size: 16, color: Color(0xFF1565C0)),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  "已圈选 $n 颗「$_highlightId」· 可拖动缩放核对",
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(
+                    context,
+                  )
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(color: const Color(0xFF1565C0)),
+                ),
               ),
-            ),
-            const SizedBox(width: 8),
-            OutlinedButton(
-              onPressed: _cancelPending,
-              style: btnStyle,
-              child: const Text("取消"),
-            ),
-            const SizedBox(width: 8),
-            FilledButton(
-              onPressed: _confirmPending,
-              style: btnStyle,
-              child: const Text("设为已完成"),
-            ),
-          ],
+              const SizedBox(width: 8),
+              OutlinedButton(
+                onPressed: _cancelPending,
+                style: btnStyle,
+                child: const Text("取消"),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: _confirmPending,
+                style: btnStyle,
+                child: const Text("设为已完成"),
+              ),
+            ],
+          ),
         ),
       );
     }
     if (_highlightId == null) {
-      return const SizedBox.shrink();
+      return const SizedBox.shrink(); // 空槽：槽位由调用处 SizedBox 恒占
     }
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 2),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 2,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          Text(
-            "长按滑动圈选：",
-            style: Theme.of(
-              context,
-            ).textTheme.bodySmall?.copyWith(color: Colors.black38),
-          ),
-          Tooltip(
-            message: "选中色时长按 0.5 秒滑动圈选豆格，松手核对（可拖动"
-                "缩放）后确认；区块模式按粗框线整块圈选",
-            child: SegmentedButton<bool>(
-              showSelectedIcon: false,
-              style: const ButtonStyle(visualDensity: VisualDensity.compact),
-              segments: const [
-                ButtonSegment(value: false, label: Text("单格")),
-                ButtonSegment(value: true, label: Text("区块")),
-              ],
-              selected: {_batchRegion},
-              onSelectionChanged: (s) => setState(() => _batchRegion = s.first),
+
+    ///< 固定单行 Row（槽位 46px 恒占，Wrap 换行会被裁）：提示文案
+    ///< Flexible 收缩省略，窄屏也不溢出
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 2),
+        child: Row(
+          children: [
+            Flexible(
+              child: Text(
+                "长按滑动圈选：",
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: Colors.black38),
+              ),
             ),
-          ),
-          OutlinedButton.icon(
-            // 圈选核对中禁用（核对态只有确认条两个按钮可用）
-            onPressed: _pending.isEmpty
-                ? () => setState(() => _highlightId = null)
-                : null,
-            style: OutlinedButton.styleFrom(
-              visualDensity: VisualDensity.compact,
-              padding: const EdgeInsets.symmetric(horizontal: 10),
-              minimumSize: const Size(0, 32),
+            const SizedBox(width: 8),
+            Tooltip(
+              message: "选中色时长按 0.5 秒滑动圈选豆格，松手核对（可拖动"
+                  "缩放）后确认；区块模式按粗框线整块圈选",
+              child: SegmentedButton<bool>(
+                showSelectedIcon: false,
+                style: const ButtonStyle(visualDensity: VisualDensity.compact),
+                segments: const [
+                  ButtonSegment(value: false, label: Text("单格")),
+                  ButtonSegment(value: true, label: Text("区块")),
+                ],
+                selected: {_batchRegion},
+                onSelectionChanged: (s) =>
+                    setState(() => _batchRegion = s.first),
+              ),
             ),
-            icon: const Icon(Icons.close, size: 14),
-            label: Text(
-              "取消选色",
-              style: Theme.of(context).textTheme.bodySmall,
+            const SizedBox(width: 8),
+            OutlinedButton.icon(
+              // 圈选核对中禁用（核对态只有确认条两个按钮可用）
+              onPressed: _pending.isEmpty
+                  ? () => setState(() => _highlightId = null)
+                  : null,
+              style: OutlinedButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                minimumSize: const Size(0, 32),
+              ),
+              icon: const Icon(Icons.close, size: 14),
+              label: Text(
+                "取消选色",
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -1167,80 +1226,91 @@ class _AssemblePageState extends State<AssemblePage> {
       (id) => _codeOrder[id] ?? 1 << 30,
     );
     _barOrder = used; // build 期速记，_revealChip 滚动定位用
+
+    ///< 色号序与色条同排（2026-11-12 用户需求 3：排序直接作用于色条，
+    ///< 就地就近；顶部控件行同时让位给分组分隔）。固定在左，不随滚动
     return SizedBox(
       height: 76,
-      child: ListView.builder(
-        controller: _barCtrl,
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        itemCount: used.length,
-        itemBuilder: (context, idx) {
-          final id = used[idx];
-          final c = _colorOf(id);
-          final count = totals[id] ?? 0;
-          final left = remain[id] ?? 0;
-          final selected = id == _highlightId;
-          final borderColor = selected
-              ? Colors.blue
-              : (count > 0 && left == 0)
-                  ? const Color(0xFF2E7D32)
-                  : Colors.black26;
-          // 黑白字判定与画布同款（beadLabelDark：WCAG 对比度取高），
-          // 旧亮度阈值把 M2 类浅灰米色判深出白字
-          final light =
-              c != null && beadLabelDark(Color.fromARGB(255, c.r, c.g, c.b));
-          return GestureDetector(
-            // 单击选色（注册了双击后单击会延迟一拍，属预期）；圈选
-            // 核对中屏蔽换色（防误操作，2026-11-12）
-            onTap: () {
-              if (_pending.isNotEmpty) {
-                return;
-              }
-              setState(() {
-                _highlightId = _highlightId == id ? null : id;
-              });
-            },
+      child: Row(
+        children: [
+          Center(child: _sortPopup()),
+          const SizedBox(width: 4),
+          Expanded(
+            child: ListView.builder(
+              controller: _barCtrl,
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              itemCount: used.length,
+              itemBuilder: (context, idx) {
+                final id = used[idx];
+                final c = _colorOf(id);
+                final count = totals[id] ?? 0;
+                final left = remain[id] ?? 0;
+                final selected = id == _highlightId;
+                final borderColor = selected
+                    ? Colors.blue
+                    : (count > 0 && left == 0)
+                        ? const Color(0xFF2E7D32)
+                        : Colors.black26;
+                // 黑白字判定与画布同款（beadLabelDark：WCAG 对比度取高），
+                // 旧亮度阈值把 M2 类浅灰米色判深出白字
+                final light = c != null &&
+                    beadLabelDark(Color.fromARGB(255, c.r, c.g, c.b));
+                return GestureDetector(
+                  // 单击选色（注册了双击后单击会延迟一拍，属预期）；圈选
+                  // 核对中屏蔽换色（防误操作，2026-11-12）
+                  onTap: () {
+                    if (_pending.isNotEmpty) {
+                      return;
+                    }
+                    setState(() {
+                      _highlightId = _highlightId == id ? null : id;
+                    });
+                  },
 
-            ///< 双击 = 范围内该色全部标记已放（已全完则撤销）
-            onDoubleTap: () => _completeColor(id),
-            child: Container(
-              width: 48,
-              height: 60,
-              margin: const EdgeInsets.symmetric(horizontal: 4),
-              decoration: BoxDecoration(
-                color: c != null
-                    ? Color.fromARGB(255, c.r, c.g, c.b)
-                    : Colors.grey,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: borderColor,
-                  width: selected ? 3 : 1,
-                ),
-              ),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  // 浅色豆黑字/深色豆白字，对比拉到 87/纯白：黑 54/45 在
-                  // 纯白浅豆（H1/H2 类）上小字号下几乎看不见
-                  Text(
-                    id.replaceFirst("P", ""),
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: light ? Colors.black87 : Colors.white,
+                  ///< 双击 = 范围内该色全部标记已放（已全完则撤销）
+                  onDoubleTap: () => _completeColor(id),
+                  child: Container(
+                    width: 48,
+                    height: 60,
+                    margin: const EdgeInsets.symmetric(horizontal: 4),
+                    decoration: BoxDecoration(
+                      color: c != null
+                          ? Color.fromARGB(255, c.r, c.g, c.b)
+                          : Colors.grey,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: borderColor,
+                        width: selected ? 3 : 1,
+                      ),
+                    ),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        // 浅色豆黑字/深色豆白字，对比拉到 87/纯白：黑 54/45 在
+                        // 纯白浅豆（H1/H2 类）上小字号下几乎看不见
+                        Text(
+                          id.replaceFirst("P", ""),
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: light ? Colors.black87 : Colors.white,
+                          ),
+                        ),
+                        Text(
+                          "$left/$count",
+                          style: TextStyle(
+                            fontSize: 9,
+                            color: light ? Colors.black54 : Colors.white70,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                  Text(
-                    "$left/$count",
-                    style: TextStyle(
-                      fontSize: 9,
-                      color: light ? Colors.black54 : Colors.white70,
-                    ),
-                  ),
-                ],
-              ),
+                );
+              },
             ),
-          );
-        },
+          ),
+        ],
       ),
     );
   }

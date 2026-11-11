@@ -45,6 +45,12 @@ class BoardPaintItem {
 
   ///< 整体压灰（拼豆页按作品方案的范围外作品：无高亮色可配对，
   ///< 所有格按未选中同款幅度向深灰混，与高亮中未选中豆观感一致）
+  final bool dimScope;
+
+  ///< 单件口径的范围外作品（未选色时整件略灰——含已放格与对勾，
+  ///<「当前拼哪件」一眼可辨；选色后由 dimAll 接管更强压暗。
+  ///< 2026-11-12 用户反馈：未放豆退后上线后未选色态范围内/外都按
+  ///< 各自进度退后，作品间的区分没了）
   final Set<int>? placedCells;
 
   ///< 拼装已放格（本作品格扁平索引；null = 关闭）
@@ -69,6 +75,7 @@ class BoardPaintItem {
     required this.oy,
     this.highlightId,
     this.dimAll = false,
+    this.dimScope = false,
     this.placedCells,
     this.pendingCells,
     this.showBorder = false,
@@ -138,13 +145,44 @@ class BoardPainter extends CustomPainter {
   ///< 差异一眼可辨；文字仍按 0.5 幅度混保持可读
   static const _dimGray = Color(0xFF374151);
 
-  ///< 未选色（高亮关）且该作品有拼豆进度时，未放豆的退后基色：中性冷灰
-  ///<（比 _dimGray 亮一档）。豆色按 0.4 向它混、已放豆保持原色+绿对勾
-  ///<——完成区鲜艳跳出、待拼区整体退后，进度一眼可辨（2026-11-12 用户
-  ///< 反馈：未选色时已放/未放只差一个对勾，小格上看不出对比）。取中性
-  ///< 中灰而非 _dimGray：向深灰混对深色豆（H7 纯黑）几乎拉不开差，中灰
-  ///< 对深浅两个方向都有明显差；0.4 幅度比高亮的 0.75 温和，色相仍可辨
+  ///< 未选色（高亮关）且该作品有拼豆进度时，**已放豆**的退后基色：
+  ///< 中性冷灰（比 _dimGray 亮一档）。已放豆色按 0.4 向它混、对勾同步
+  ///< 变灰；未放豆保持原色醒目——「拼过的退场、还没拼的跳出」，视线
+  ///< 自然落在待拼部分（2026-11-12 用户两轮定稿：先做「未放退后」后
+  ///< 反转为此方向=任务视角）。取中性中灰而非 _dimGray：向深灰混对
+  ///< 深色豆（H7 纯黑）几乎拉不开差，中灰对深浅两个方向都有明显差；
+  ///< 0.4 幅度比高亮的 0.75 温和，色相仍可辨
   static const _idleGray = Color(0xFF8A93A3);
+
+  ///< 圈选待确认格的默认 overlay：蓝色框+罩（蓝=「选中/待确认」的
+  ///< UI 惯用色）
+  static const _pendBlueRing = Color(0xFF1565C0);
+  static const _pendBlueFill = Color(0xFF1976D2);
+
+  ///< 底色偏蓝（如 C16 深蓝豆）时蓝框隐形 → 换琥珀色 overlay。蓝/琥珀
+  ///< 两候选按 WCAG 对比度对底色取高（与色号黑白字 beadLabelDark 同
+  ///< 思路；2026-11-12 用户反馈：C16 类蓝豆上圈选根本看不清）
+  static const _pendAmberRing = Color(0xFFF57C00);
+  static const _pendAmberFill = Color(0xFFF57C00);
+
+  /// WCAG 相对亮度（palette#beadLabelDark 同式）
+  static double _luma(Color c) {
+    double lin(double v) {
+      final u = v / 255;
+      return u <= 0.03928
+          ? u / 12.92
+          : math.pow((u + 0.055) / 1.055, 2.4).toDouble();
+    }
+
+    return 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
+  }
+
+  /// 两色 WCAG 对比度（1 = 无差别；≥3 小格上已可辨）
+  static double _contrast(Color a, Color b) {
+    final la = _luma(a), lb = _luma(b);
+    final hi = la > lb ? la : lb, lo = la > lb ? lb : la;
+    return (hi + 0.05) / (lo + 0.05);
+  }
 
   BoardPainter({
     required this.board,
@@ -332,13 +370,20 @@ class BoardPainter extends CustomPainter {
             // 残留 25% 色相隐约可辨；早期 lerp 黑 0.78 连色相带层次全灭）
             color = Color.lerp(color, _dimGray, 0.75)!;
             dimmedCells.add(key);
+          } else if (item.highlightId == null && item.dimScope) {
+            // 单件口径范围外（未选色）：整件略灰——含已放格（与范围内
+            // 的「已放原色跳出」拉开，「当前拼哪件」一眼可辨；幅度同
+            // 未放退后 0.4，色相仍可辨）。选色后走上面 dimAll 0.75
+            color = Color.lerp(color, _idleGray, 0.4)!;
+            dimmedCells.add(key);
           } else if (item.highlightId == null &&
               placed != null &&
               placed.isNotEmpty &&
-              !placed.contains(y * m.width + x)) {
-            // 未选色且有进度：未放豆向中性灰轻混退后，已放豆保持原色+
-            // 绿对勾跳出（见 _idleGray 注释；placedCells 为空=无进度可
-            //对比，全板原色——板设置页/缩略图不传 placed 不受影响）
+              placed.contains(y * m.width + x)) {
+            // 未选色且有进度：**已放豆**向中性灰轻混退后（对勾同步变
+            // 灰），未放豆保持原色醒目——拼过的退场、待拼的跳出，视线
+            // 落在还没拼的部分（2026-11-12 用户反转定稿；placedCells
+            // 为空=无进度可对比，全板原色——板设置页/缩略图不受影响）
             color = Color.lerp(color, _idleGray, 0.4)!;
             dimmedCells.add(key);
           }
@@ -478,10 +523,10 @@ class BoardPainter extends CustomPainter {
     }
 
     // 拼装已放格：绿对勾常显；「变浅」白罩只在选中该豆色时施加于该色
-    // 的已放格（变浅是「选中色核对已放」的专属效果）。未选色时已放格
-    // 原色+对勾、未放豆已在上面向 _idleGray 退后——突出关系靠「未放
-    // 退后」表达而非「已放变浅」（2026-11-11 与 2026-11-12 两轮用户
-    // 反馈的合并定稿）。选其他色时，非选中色的已放格随整体压暗即可
+    // 的已放格（变浅是「选中色核对已放」的专属效果）。未选色时已放豆
+    // 已在上面向 _idleGray 退后、对勾同步混灰——突出关系靠「已放退场
+    //」表达，视线落在未放的原色豆上（2026-11-12 用户反转定稿）。选其
+    // 他色时，非选中色的已放格随整体压暗即可
     for (final item in items) {
       final placed = item.placedCells;
       final m = item.model;
@@ -493,7 +538,12 @@ class BoardPainter extends CustomPainter {
         ..color = Colors.white.withValues(alpha: 0.5)
         ..style = PaintingStyle.fill;
       final check = Paint()
-        ..color = const Color(0xFF2E7D32)
+        ..color = item.highlightId == null
+
+            ///< 未选色时已放豆整体退后（见填色层），对勾同步混灰退场
+            ///<（0.45 保绿意可辨）；选色中保持鲜绿——白罩态的勾要醒目
+            ? Color.lerp(const Color(0xFF2E7D32), _idleGray, 0.45)!
+            : const Color(0xFF2E7D32)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.8 / scale
         ..strokeCap = StrokeCap.round;
@@ -530,26 +580,40 @@ class BoardPainter extends CustomPainter {
       }
     }
 
-    // 批量完成待确认格（长按滑动圈选，松手弹确认前）：蓝色高亮框 +
-    // 半透明蓝罩——与已放的「白罩+绿勾」和未放的纯豆色都拉开对比，
-    // 松手后「将变为已完成」与「旧已完成」一眼可辨（2026-11-11 需求）
-    for (final item in items) {
+    // 批量完成待确认格（长按滑动圈选，松手确认前）：高亮框 + 半透明
+    // 罩，与已放的「白罩+绿勾」和未放的纯豆色都拉开对比。overlay 色
+    // **按该格底色自适应**：蓝/琥珀两候选按 WCAG 对比度取高——蓝豆
+    //（C16 类）/深色底上蓝框隐形换琥珀，浅色底保持蓝（2026-11-12
+    // 用户反馈圈选在蓝豆上看不清；思路同色号黑白字自适应）
+    for (var itemIdx = 0; itemIdx < items.length; itemIdx++) {
+      final item = items[itemIdx];
       final pending = item.pendingCells;
       final m = item.model;
       if (pending == null || pending.isEmpty) {
         continue;
       }
-      final fill = Paint()
-        ..color = const Color(0xFF1976D2).withValues(alpha: 0.38)
-        ..style = PaintingStyle.fill;
-      final ring = Paint()
-        ..color = const Color(0xFF1565C0)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.0 / scale;
       for (final i in pending) {
         if (i < 0 || i >= m.grid.length || m.grid[i] < 0) {
           continue;
         }
+        final v = m.grid[i];
+        final bead = item.palette.colors[v];
+
+        ///< 底色=该格混合后实际观感（含高亮/退后混合；cellBase 未记
+        ///<（理论上不发生）回落豆原色）
+        final base = cellBase[itemIdx * 10000000 + i] ??
+            Color.fromARGB(255, bead.r, bead.g, bead.b);
+        final amber =
+            _contrast(base, _pendAmberRing) > _contrast(base, _pendBlueRing);
+        final fill = Paint()
+          ..color = (amber ? _pendAmberFill : _pendBlueFill).withValues(
+            alpha: amber ? 0.30 : 0.38,
+          )
+          ..style = PaintingStyle.fill;
+        final ring = Paint()
+          ..color = amber ? _pendAmberRing : _pendBlueRing
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.0 / scale;
         final rect = Rect.fromLTWH(
           (item.ox + i % m.width) * cellW,
           (item.oy + i ~/ m.width) * cellH,
