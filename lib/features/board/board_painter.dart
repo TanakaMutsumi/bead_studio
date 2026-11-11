@@ -115,8 +115,30 @@ class BoardPainter extends CustomPainter {
   ///<（手势期 setState 跟随刷新 viewScale）
   static final Map<String, TextPainter> _labelCache = {};
 
-  /// 长码适配后的字号缓存（键=文本+格宽）：排版实测一次即恒定
-  static final Map<String, double> _fitPxCache = {};
+  /// 文本排版宽度缓存（fontSize=24 下的像素宽，线性度量）：统一字号
+  /// 换算用；同文本恒定
+  static final Map<String, double> _emWidCache = {};
+
+  /// 量 [text] 在 fontSize 24 / w600 下的排版宽——供统一字号换算
+  ///（px = 目标宽 × 24 / 宽度），结果缓存
+  static double _textWid24(String text) {
+    var w = _emWidCache[text];
+    if (w == null) {
+      final tp = TextPainter(
+        text: TextSpan(
+          text: text,
+          style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w600),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      w = tp.width;
+      if (_emWidCache.length > 2000) {
+        _emWidCache.clear();
+      }
+      _emWidCache[text] = w;
+    }
+    return w;
+  }
 
   ///< 文字绘制缓存（painter 每 build 新建，缓存须跨实例共享；key 含文本+字号+颜色）
 
@@ -211,11 +233,8 @@ class BoardPainter extends CustomPainter {
 
   /// 画格子文字（色号/编号），TextPainter 按内容+有效字号+颜色缓存
   ///
-  /// 字号跟随格子尺寸（无下限）：小格子字小，画布放大后矢量渲染依然清晰。
-  /// 长码（H20/C24 类三位码、编号 123）按排版实测宽度收回格内——基准
-  /// 字号 0.58×格宽对三字符太宽，溢出格线后相邻格文字连成暗带（2026-11-11
-  /// 用户反馈：两位数码挤出格子外；实测 26px 格下连续文字簇 77~103px
-  /// = 三四格粘连），超 0.88 格宽按比例缩字号，结果按「文本+格宽」缓存。
+  /// 字号 [px] 由调用方统一算好（全板最宽码收进 0.88 格宽，见 paint()
+  /// 文字层；所有标签同大小，2026-11-11 用户反馈按码长各自缩参差）。
   /// [light] 豆底亮度判浅（自适应模式选黑白字用）；[dimmed] = 高亮中
   /// 未选中色的格：字色向共同基色轻混 0.15 退后一点（早期 0.5 会把字
   /// 洗成与压暗底只差 ~1.9:1 的灰白——2026-11-10 用户反馈「H2 白字
@@ -229,31 +248,12 @@ class BoardPainter extends CustomPainter {
     Canvas canvas,
     String text,
     Rect rect,
+    double px,
     bool light, {
     bool dimmed = false,
   }) {
     if (text.isEmpty) {
       return;
-    }
-    final fitKey = "$text|${rect.width.toStringAsFixed(1)}";
-    var px = _fitPxCache[fitKey];
-    if (px == null) {
-      px = ((rect.width * 0.58).clamp(1.0, 13.0) * 2).roundToDouble() / 2;
-      final probe = TextPainter(
-        text: TextSpan(
-          text: text,
-          style: TextStyle(fontSize: px, fontWeight: FontWeight.w600),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      final maxW = rect.width * 0.88;
-      if (probe.width > maxW && probe.width > 0) {
-        px = px * maxW / probe.width;
-      }
-      if (_fitPxCache.length > 2000) {
-        _fitPxCache.clear();
-      }
-      _fitPxCache[fitKey] = px;
     }
     var color = switch (labelColorMode) {
       LabelColorMode.adaptive => light ? Colors.black87 : Colors.white,
@@ -399,6 +399,30 @@ class BoardPainter extends CustomPainter {
 
     // 文字层：默认每格显示色号；高亮 + 编号模式时高亮格改为行/列分组编号
     if (showLabels) {
+      // 统一字号：以「本板全部作品调色板最宽色号（编号模式再含最宽
+      // 编号）收进 0.88 格宽」为准，所有标签同大小——按码长各自缩会
+      // 两位码大三位码小，混排参差（2026-11-11 用户二连反馈）。上限
+      // 仍是经典 0.58×格宽：纯两位码板维持原大小不放大。
+      var worst24 = 0.0;
+      for (final item in items) {
+        for (final c in item.palette.colors) {
+          final w = _textWid24(c.id);
+          if (w > worst24) {
+            worst24 = w;
+          }
+        }
+      }
+      if (labelMode != LabelMode.id) {
+        for (final v in numbers.values) {
+          final w = _textWid24("$v");
+          if (w > worst24) {
+            worst24 = w;
+          }
+        }
+      }
+      final basePx = (cellW * 0.58).clamp(1.0, 13.0);
+      final labelPx =
+          worst24 > 0 ? math.min(basePx, cellW * 0.88 * 24 / worst24) : basePx;
       for (var itemIdx = 0; itemIdx < items.length; itemIdx++) {
         final item = items[itemIdx];
         final m = item.model;
@@ -438,6 +462,7 @@ class BoardPainter extends CustomPainter {
                 cellW,
                 cellH,
               ),
+              labelPx,
               light,
               dimmed: dimmedCells.contains(key),
             );
