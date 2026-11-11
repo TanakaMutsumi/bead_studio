@@ -115,6 +115,9 @@ class BoardPainter extends CustomPainter {
   ///<（手势期 setState 跟随刷新 viewScale）
   static final Map<String, TextPainter> _labelCache = {};
 
+  /// 长码适配后的字号缓存（键=文本+格宽）：排版实测一次即恒定
+  static final Map<String, double> _fitPxCache = {};
+
   ///< 文字绘制缓存（painter 每 build 新建，缓存须跨实例共享；key 含文本+字号+颜色）
 
   ///< 高亮模式的板底/压暗豆共同基色：接近黑色的深冷灰 slate-700
@@ -209,6 +212,10 @@ class BoardPainter extends CustomPainter {
   /// 画格子文字（色号/编号），TextPainter 按内容+有效字号+颜色缓存
   ///
   /// 字号跟随格子尺寸（无下限）：小格子字小，画布放大后矢量渲染依然清晰。
+  /// 长码（H20/C24 类三位码、编号 123）按排版实测宽度收回格内——基准
+  /// 字号 0.58×格宽对三字符太宽，溢出格线后相邻格文字连成暗带（2026-11-11
+  /// 用户反馈：两位数码挤出格子外；实测 26px 格下连续文字簇 77~103px
+  /// = 三四格粘连），超 0.88 格宽按比例缩字号，结果按「文本+格宽」缓存。
   /// [light] 豆底亮度判浅（自适应模式选黑白字用）；[dimmed] = 高亮中
   /// 未选中色的格：字色向共同基色轻混 0.15 退后一点（早期 0.5 会把字
   /// 洗成与压暗底只差 ~1.9:1 的灰白——2026-11-10 用户反馈「H2 白字
@@ -228,7 +235,26 @@ class BoardPainter extends CustomPainter {
     if (text.isEmpty) {
       return;
     }
-    final px = ((rect.width * 0.58).clamp(1.0, 13.0) * 2).roundToDouble() / 2;
+    final fitKey = "$text|${rect.width.toStringAsFixed(1)}";
+    var px = _fitPxCache[fitKey];
+    if (px == null) {
+      px = ((rect.width * 0.58).clamp(1.0, 13.0) * 2).roundToDouble() / 2;
+      final probe = TextPainter(
+        text: TextSpan(
+          text: text,
+          style: TextStyle(fontSize: px, fontWeight: FontWeight.w600),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      final maxW = rect.width * 0.88;
+      if (probe.width > maxW && probe.width > 0) {
+        px = px * maxW / probe.width;
+      }
+      if (_fitPxCache.length > 2000) {
+        _fitPxCache.clear();
+      }
+      _fitPxCache[fitKey] = px;
+    }
     var color = switch (labelColorMode) {
       LabelColorMode.adaptive => light ? Colors.black87 : Colors.white,
       LabelColorMode.black => Colors.black,
