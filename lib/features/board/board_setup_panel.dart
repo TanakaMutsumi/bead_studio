@@ -8,9 +8,13 @@ import 'placed_work.dart';
 /// 配置面板（2026-11-12 十六轮改版）：板尺寸 / 分割数两个下拉框（此前
 /// SegmentedButton 两行大条，占竖向空间且「自定义」混在档位里表意含糊），
 /// 顶点相位改带数值的紧凑步进器（相位是连续微调，下拉框不适用，但补上
-/// 当前值显示）+ 粗线颜色圆钮 + 统计摘要行（点开豆数统计明细）
+/// 当前值显示）+ 粗线颜色圆钮 + 统计摘要行（点开豆数统计明细）。
+/// 十七轮：框内恒显 label 前缀说明用途；分割数含「无」档（interval=0
+/// 不画加粗线，相位步进器随之禁用）
 
-/// 带边框下拉框（combobox 形态）：label 前缀 + 展开箭头，选中项右对齐
+/// 带边框下拉框（combobox 形态）：框内恒显「label 前缀 + 当前值」，
+/// 说清这个框管什么（2026-11-12 用户反馈：光一个 104×104 看不出是
+/// 板尺寸还是分割数）
 class _Combo<T> extends StatelessWidget {
   final String label;
 
@@ -38,16 +42,30 @@ class _Combo<T> extends StatelessWidget {
         border: Border.all(color: cs.outlineVariant),
         borderRadius: BorderRadius.circular(8),
       ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<T>(
-          value: value,
-          isExpanded: true,
-          style: Theme.of(context).textTheme.bodyMedium,
-          icon: const Icon(Icons.arrow_drop_down, size: 22),
-          borderRadius: BorderRadius.circular(8),
-          items: items,
-          onChanged: onChanged,
-        ),
+      child: Row(
+        children: [
+          Text(
+            label,
+            style: Theme.of(context)
+                .textTheme
+                .labelMedium
+                ?.copyWith(color: Colors.black54),
+          ),
+          const SizedBox(width: 4),
+          Expanded(
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<T>(
+                value: value,
+                isExpanded: true,
+                style: Theme.of(context).textTheme.bodyMedium,
+                icon: const Icon(Icons.arrow_drop_down, size: 22),
+                borderRadius: BorderRadius.circular(8),
+                items: items,
+                onChanged: onChanged,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -70,6 +88,9 @@ class _PhaseStep extends StatelessWidget {
   final int value;
 
   ///< 当前相位值（0 ~ 分割数-1，随板持久化）
+  final bool enabled;
+
+  ///< 无分割线（interval=0）时相位无意义：按钮禁用
   final VoidCallback onMinus;
   final VoidCallback onPlus;
   const _PhaseStep({
@@ -79,6 +100,7 @@ class _PhaseStep extends StatelessWidget {
     required this.minusIcon,
     required this.plusIcon,
     required this.value,
+    this.enabled = true,
     required this.onMinus,
     required this.onPlus,
   });
@@ -86,7 +108,7 @@ class _PhaseStep extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     Widget btn(IconData i, String tip, VoidCallback onTap) => IconButton(
-          onPressed: onTap,
+          onPressed: enabled ? onTap : null,
           icon: Icon(i, size: 18),
           tooltip: tip,
           visualDensity: VisualDensity.compact,
@@ -207,13 +229,15 @@ class BoardConfigPanel extends StatelessWidget {
               Expanded(
                 child: _Combo<int>(
                   label: "分割数 ",
-                  value: interval,
-                  // 旧板/外部数据可能出现非档位间隔：动态补一项保证当前值
-                  // 可显示（选它无副作用，值本身没变）
+                  value: interval <= 0 ? 0 : interval,
+                  // 「无」= 0（不加粗分割线，2026-11-12 需求：分割线要有
+                  // 无的选项）；旧板/外部数据可能出现非档位间隔：动态补项
+                  // 保证当前值可显示（选它无副作用，值本身没变）
                   items: [
+                    const DropdownMenuItem(value: 0, child: Text("无")),
                     for (final v in intervals)
                       DropdownMenuItem(value: v, child: Text("每$v格")),
-                    if (!intervals.contains(interval))
+                    if (interval > 0 && !intervals.contains(interval))
                       DropdownMenuItem(
                         value: interval,
                         child: Text("每$interval格"),
@@ -238,6 +262,7 @@ class BoardConfigPanel extends StatelessWidget {
                 minusIcon: Icons.chevron_left,
                 plusIcon: Icons.chevron_right,
                 value: phaseX,
+                enabled: interval > 0,
                 onMinus: () => onShiftPhase(dx: -1),
                 onPlus: () => onShiftPhase(dx: 1),
               ),
@@ -249,6 +274,7 @@ class BoardConfigPanel extends StatelessWidget {
                 minusIcon: Icons.expand_more,
                 plusIcon: Icons.expand_less,
                 value: phaseY,
+                enabled: interval > 0,
                 onMinus: () => onShiftPhase(dy: -1),
                 onPlus: () => onShiftPhase(dy: 1),
               ),
@@ -256,7 +282,8 @@ class BoardConfigPanel extends StatelessWidget {
           ),
           const SizedBox(height: 2),
           Text(
-            "板 $bw×$bh · 每$interval格加粗 · 点作品选中后拖动",
+            "板 $bw×$bh · ${interval > 0 ? "每$interval格加粗" : "无分割线"}"
+            " · 点作品选中后拖动",
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 2),

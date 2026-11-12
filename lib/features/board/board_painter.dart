@@ -115,12 +115,13 @@ class BoardPainter extends CustomPainter {
   ///< + 去全部格线（细线与加粗线同 showMajorLines=false 一并关——
   ///< 豆板原图只留作品色块），板最外框换浅黑细线（black38）。红标等
   ///< item 层标注不受影响照画
-  final int padX, padY;
+  final int padL, padT, padR, padB;
 
-  ///< 画布四周的板外余量（格数）：作品悬挂出板的部分画在这里。CustomPaint
-  ///< 越界绘制会被画布 cull 矩形裁掉（2026-11-12 设备实勘：悬挂带纯背景
-  ///< 色零像素），必须把余量算进画布尺寸、原点平移到板左上角。0 = 画布
-  ///< 即板（拼豆页/无悬挂态），行为与旧版完全一致
+  ///< 画布四侧的板外余量（格数，boardPads 算实际悬挂量）：作品悬挂出板
+  ///< 的部分画在这里。CustomPaint 越界绘制会被画布 cull 矩形裁掉
+  ///<（2026-11-12 设备实勘：悬挂带纯背景色零像素），必须把余量算进
+  ///< 画布尺寸、原点平移到板左上角。全 0 = 画布即板（拼豆页/无悬挂态），
+  ///< 行为与旧版完全一致
   final TransformationController? ctrl;
 
   ///< 视图变换控制器（拼豆页传入）：paint 实时读缩放做线宽补偿，并
@@ -210,8 +211,10 @@ class BoardPainter extends CustomPainter {
     this.viewScale = 1.0,
     this.showMajorLines = true,
     this.thumbnail = false,
-    this.padX = 0,
-    this.padY = 0,
+    this.padL = 0,
+    this.padT = 0,
+    this.padR = 0,
+    this.padB = 0,
     TransformationController? ctrl,
   })  : ctrl = ctrl,
         super(repaint: ctrl);
@@ -345,10 +348,11 @@ class BoardPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // 画布含板外余量（padX/padY）：格尺寸按「板+两侧余量」全幅算，原点
-    // 平移到板左上角——此后所有绘制仍用板坐标，与 pad=0 完全同式
-    final cellW = size.width / (board.w + 2 * padX);
-    final cellH = size.height / (board.h + 2 * padY);
+    // 画布含板外余量（padL/padT/padR/padB，四侧各自实际悬挂量）：格尺寸
+    // 按「板+四侧余量」全幅算，原点平移到板左上角——此后所有绘制仍用
+    // 板坐标，与 pad=0 完全同式
+    final cellW = size.width / (board.w + padL + padR);
+    final cellH = size.height / (board.h + padT + padB);
     // 视图缩放（格线/对勾线宽补偿基准，见 _scale 注释）
     final scale = _scale;
     final numbers =
@@ -362,7 +366,7 @@ class BoardPainter extends CustomPainter {
     // 背景透出，板边界一眼可辨
     final hiOn = items.any((e) => e.highlightId != null);
     canvas.save();
-    canvas.translate(padX * cellW, padY * cellH);
+    canvas.translate(padL * cellW, padT * cellH);
     // 板底：缩略图不填（透明底，卡片面透出即板界）
     if (!thumbnail) {
       canvas.drawRect(
@@ -688,7 +692,9 @@ class BoardPainter extends CustomPainter {
       ..strokeWidth = 1.2 / scale
       ..color = majorColor;
     final iv = board.interval;
-    if (showMajorLines && !thumbnail) {
+    // interval=0 = 无分割线（2026-11-12 需求：分割线下拉含「无」档）；
+    // %0 会抛除零，必须守卫
+    if (showMajorLines && !thumbnail && iv > 0) {
       for (var x = 0; x <= board.w; x++) {
         if ((x + board.phaseX) % iv == 0) {
           final p = x * cellW;
@@ -787,8 +793,10 @@ class BoardPainter extends CustomPainter {
         oldDelegate.viewScale != viewScale ||
         oldDelegate.showMajorLines != showMajorLines ||
         oldDelegate.thumbnail != thumbnail ||
-        oldDelegate.padX != padX ||
-        oldDelegate.padY != padY ||
+        oldDelegate.padL != padL ||
+        oldDelegate.padT != padT ||
+        oldDelegate.padR != padR ||
+        oldDelegate.padB != padB ||
         oldDelegate.items.length != items.length ||
         oldDelegate.items != items;
   }

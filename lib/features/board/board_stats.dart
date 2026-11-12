@@ -85,6 +85,37 @@ BeadColor? colorOf(List<PlacedWork> works, String id) {
   return null;
 }
 
+/// 板外四侧实际悬挂余量（格）：按各作品**当前摆位**算最小包络，返回
+/// (左, 上, 右, 下)。全在板内 = 四侧 0（画布即板——复位/缩略图板面
+/// 最大化）；悬挂出板的一侧按实际超出留边（CustomPaint 越界绘制会被
+/// cull，悬挂部分必须落在画布内）。
+///
+/// 取代旧「按最大作品可能悬挂量 (W+1)~/2 对称留边」：旧法把没悬出去的
+/// 方向也留满半界余量，板被缩得偏小——复位缩得看不清、选择页缩略图
+/// 浅黑框外大片空白占位（2026-11-12 用户反馈）。悬挂上限由 clampTo
+/// 半界保证 ≤ floor(W/2)，拖动中重算即随悬挂量渐变
+(int, int, int, int) boardPads(List<PlacedWork> works, int bw, int bh) {
+  var l = 0, t = 0, r = 0, b = 0;
+  for (final w in works) {
+    final m = w.model;
+    if (-w.ox > l) {
+      l = -w.ox;
+    }
+    if (-w.oy > t) {
+      t = -w.oy;
+    }
+    final rx = w.ox + m.width - bw;
+    final by = w.oy + m.height - bh;
+    if (rx > r) {
+      r = rx;
+    }
+    if (by > b) {
+      b = by;
+    }
+  }
+  return (l, t, r, b);
+}
+
 /// 豆数统计明细（BottomSheet：色块 + 色号/名 + 颗数，按颗数降序）
 Future<void> showBeadStatsSheet(
   BuildContext context, {

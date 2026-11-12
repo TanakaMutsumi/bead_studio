@@ -34,8 +34,10 @@ flutter:
   uses-material-design: true
 
   # 内置色卡数据（MARD 220 色，scripts/gen_mard_palette.py 生成）
+  # 应用图标（启动加载页品牌展示；源 = mipmap-xxxhdpi/ic_launcher.png）
   assets:
     - assets/palettes/
+    - assets/icon/app_icon.png
 
   # 中文本地字体：引擎默认从 fonts.gstatic.com 拉 Noto Sans SC 分片（被墙则文字
   # 布局阻塞重试、首帧画不出），打包为应用字体后彻底摆脱网络依赖

@@ -53,7 +53,7 @@ description: 生成「豆田」版本更新公告(md 文字版 + PNG 长图)。�
 
 ## 每版发布完整流程
 
-1. `pubspec.yaml` bump 版本 → `CHANGELOG.md` 新版本段(Keep-a-Changelog:新增/改进/修复,只写用户可感知的变化)。
+1. `pubspec.yaml` bump 版本 → **同步改 `lib/core/app_info.dart` 的 `kAppVersion`**(启动页显示的版本号,两处不一致则加载页版本错——2026-11-12 十七轮起存在) → `CHANGELOG.md` 新版本段(Keep-a-Changelog:新增/改进/修复,只写用户可感知的变化)。
 2. `flutter build apk --release`(必须全架构,dist 交付规矩)→ 覆盖 `dist/bead_studio_v{版本}.apk`,记录字节数/md5。
 3. 复制上一版 `gen_update_notice.py` 数据区(标题版本号、徽标文案、主题卡、STATS、FEATURES)按本版改动重写,跑生成 + PIL 校验 + `code -r`。
 4. 写 `dist/更新公告_v{版本}.md`(文字版,结构对应:导语 → 主题段 → 各功能段 → 安装说明段)。

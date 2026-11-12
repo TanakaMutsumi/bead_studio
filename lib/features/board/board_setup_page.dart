@@ -22,7 +22,8 @@ import 'placed_work.dart';
 /// 顶点相位四向微调 + 导入多件作品 + 选中后拖动摆放 + 豆数统计 → 开始拼豆
 ///
 /// 交互约定：点作品选中（再点空白取消），选中后单指拖动该作品、
-/// 右上角叉移除选中作品；未选中时单指平移画布、双指缩放。
+/// 作品旁浮动工具条（旋转/翻转，随作品走）+ 右上角叉移除选中作品；
+/// 未选中时单指平移画布、双指缩放。
 /// 摆放是软约束：添加永远成功（找不到互不重叠的空位就落左上角），
 /// 拖动自由摆放（宽/高最多移出板外二分之一，出界部分悬挂板外），
 /// 压豆重叠与豆子出板处红标标注。开始拼豆前才硬性要求：没有非空白
@@ -59,20 +60,12 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
 
   ///< 板高（格）
 
-  /// 画布板外余量（格）：作品宽/高各自最多悬挂 floor(W/2) 出板（clampTo
-  /// 半界口径），画布按板上最大作品的可能悬挂量对称留边——CustomPaint
-  /// 越界绘制会被 cull 裁掉，余量必须算进画布尺寸。空板 0（画布即板）。
-  /// 拼豆门槛拦的是「非空白格出板」，空白悬挂不拦但同样要画得出来
-  int get _padX => _works.isEmpty
-      ? 0
-      : _works
-            .map((w) => (w.model.width + 1) ~/ 2)
-            .reduce((a, b) => a > b ? a : b);
-  int get _padY => _works.isEmpty
-      ? 0
-      : _works
-            .map((w) => (w.model.height + 1) ~/ 2)
-            .reduce((a, b) => a > b ? a : b);
+  /// 画布板外余量（格，四侧实际悬挂量，boardPads 算）：作品宽/高各自
+  /// 最多悬挂 floor(W/2) 出板（clampTo 半界口径），只有真悬出去的一侧
+  /// 才留边——CustomPaint 越界绘制会被 cull 裁掉，余量必须算进画布尺寸。
+  /// 全在板内 = 四侧 0（画布即板，复位/整体视图板面最大化）。拼豆门槛
+  /// 拦的是「非空白格出板」，空白悬挂不拦但同样要画得出来
+  (int, int, int, int) get _pads => boardPads(_works, _bw, _bh);
   var _interval = 5;
 
   ///< 加粗框线间隔
@@ -696,8 +689,14 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     _pushUndo();
     setState(() {
       _interval = v;
-      _phaseX = _phaseX.clamp(0, v - 1);
-      _phaseY = _phaseY.clamp(0, v - 1);
+      if (v <= 0) {
+        // 无分割线：相位无意义，归零（步进器同步禁用）
+        _phaseX = 0;
+        _phaseY = 0;
+      } else {
+        _phaseX = _phaseX.clamp(0, v - 1);
+        _phaseY = _phaseY.clamp(0, v - 1);
+      }
     });
   }
 
@@ -737,8 +736,12 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     setState(() => _majorColor = v);
   }
 
-  // 顶点相位：phaseX 增 = 竖粗线左移，减 = 右移；phaseY 增 = 横粗线上移，减 = 下移
+  // 顶点相位：phaseX 增 = 竖粗线左移，减 = 右移；phaseY 增 = 横粗线上移，减 = 下移。
+  // 无分割线（interval=0）时相位无意义，不响应（面板步进器也已禁用）
   void _shiftPhase({int dx = 0, int dy = 0}) {
+    if (_interval <= 0) {
+      return;
+    }
     _pushUndo();
     setState(() {
       _phaseX = (_phaseX + dx + _interval) % _interval;
@@ -932,18 +935,6 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     return false;
   }
 
-  /// 右上角叉：移除选中作品（可撤销——撤销栈持有作品引用，一步回滚）
-  void _removeSelected() {
-    if (_selected < 0 || _selected >= _works.length) {
-      return;
-    }
-    _pushUndo();
-    setState(() {
-      _works.removeAt(_selected);
-      _selected = -1;
-    });
-  }
-
   // ==================== 摆放交互 ===================
 
   ///< 双指缩放手势内上一帧 scale（帧间增量换算用）
@@ -987,8 +978,9 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     if (_selected >= 0 && _selected < _works.length) {
       final w = _works[_selected];
       final scale = _viewerCtrl.value.getMaxScaleOnAxis();
-      // cell 尺寸含板外余量（画布全幅 = 板 + 两侧 pad）
-      final cell = canvasW / (_bw + 2 * _padX) / scale;
+      // cell 尺寸含板外余量（画布全幅 = 板 + 四侧 pad）
+      final (pl, _, pr, _) = _pads;
+      final cell = canvasW / (_bw + pl + pr) / scale;
       _accDx += d.focalPointDelta.dx;
       _accDy += d.focalPointDelta.dy;
       final dx = (_accDx / cell).truncate();
@@ -1029,8 +1021,9 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     // 删除叉命中检测（仅选中作品，与 painter 画叉同款几何）：圆心=作品
     // 右上角顶点，半径按视图缩放补偿（放大后命中区视觉恒定）
     // cell 尺寸含板外余量；板坐标 = 画布坐标减 pad（原点在板左上角）
-    final cellW = canvasW / (_bw + 2 * _padX);
-    final cellH = canvasH / (_bh + 2 * _padY);
+    final (pl, pt, pr, pb) = _pads;
+    final cellW = canvasW / (_bw + pl + pr);
+    final cellH = canvasH / (_bh + pt + pb);
     final hitR = 26 / _viewerCtrl.value.getMaxScaleOnAxis();
     for (var i = _works.length - 1; i >= 0; i--) {
       if (i != _selected) {
@@ -1039,16 +1032,16 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       final w = _works[i];
       final m = w.model;
       final center = Offset(
-        (w.ox + _padX + m.width) * cellW,
-        (w.oy + _padY) * cellH,
+        (w.ox + pl + m.width) * cellW,
+        (w.oy + pt) * cellH,
       );
       if ((local - center).distance <= hitR) {
         _confirmRemoveAt(i);
         return;
       }
     }
-    final bx = (local.dx / cellW).floor() - _padX;
-    final by = (local.dy / cellH).floor() - _padY;
+    final bx = (local.dx / cellW).floor() - pl;
+    final by = (local.dy / cellH).floor() - pt;
     var hit = -1;
     for (var i = _works.length - 1; i >= 0; i--) {
       final w = _works[i];
@@ -1200,39 +1193,11 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
           title: AdaptiveTitleText(
               _boardName == null ? "拼豆板设置" : "拼豆板 · $_boardName"),
           actions: [
-            // 选中作品时先给变换工具组（Office 上下文工具语义，2026-11-12
-            // 十六轮：新建/打开图标撤掉——表意不清，入口收进 ⋮ 菜单，
-            // dirty 三键提示已保证不丢改动，少两个图标换来常驻撤销/重做）
-            if (_selected >= 0) ...[
-              IconButton(
-                onPressed: () => _transformSelected(rotDelta: 3),
-                icon: const Icon(Icons.rotate_left),
-                tooltip: "逆时针旋转 90°",
-              ),
-              IconButton(
-                onPressed: () => _transformSelected(rotDelta: 1),
-                icon: const Icon(Icons.rotate_right),
-                tooltip: "顺时针旋转 90°",
-              ),
-              IconButton(
-                onPressed: () => _transformSelected(flipH: true),
-                icon: const Icon(Icons.flip),
-                tooltip: "左右翻转",
-              ),
-              IconButton(
-                onPressed: () => _transformSelected(flipV: true),
-                icon: const RotatedBox(
-                  quarterTurns: 1,
-                  child: Icon(Icons.flip),
-                ),
-                tooltip: "上下翻转",
-              ),
-              IconButton(
-                onPressed: _removeSelected,
-                icon: const Icon(Icons.close),
-                tooltip: "移除选中作品",
-              ),
-            ],
+            // 顶栏恒为 保存/撤销/重做/⋮（2026-11-12 十七轮：旋转/翻转
+            // 变换钮撤出 AppBar——跟随选中作品走（画布浮动工具条，
+            // _buildWorkBar），不再抢占标题与保存按钮的位置，且选中
+            // 前后按钮坐标恒定。移除仍走作品右上角叉）
+            //
 
             ///< 保存/撤销/重做常驻（不随选中让位）：拖完作品仍处于选中态，
             ///< 撤销得一步可达。撤销/重做栈空时置灰（onPressed null）
@@ -1367,8 +1332,11 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
               boundaryMargin: const EdgeInsets.all(300),
               child: AspectRatio(
                 // 画布纵横比含板外余量（悬挂作品的出板部分要画得出来，
-                // 见 _padX 注释）
-                aspectRatio: (_bw + 2 * _padX) / (_bh + 2 * _padY),
+                // 见 _pads 注释——四侧按实际悬挂量，全在板内 = 画布即板）
+                aspectRatio: () {
+                  final (pl, pt, pr, pb) = _pads;
+                  return (_bw + pl + pr) / (_bh + pt + pb);
+                }(),
                 child: LayoutBuilder(
                   builder: (context, constraints) {
                     final canvasW = constraints.maxWidth;
@@ -1376,54 +1344,65 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
                     // 速记画布内容尺寸（无 setState，build 期间赋值）——
                     // ZoomControls 缩放边界计算用（闭包跨出本 builder）
                     _lastCanvasSize = Size(canvasW, canvasH);
-                    return GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTapUp: (d) => _onCanvasTap(
-                        d.localPosition,
-                        canvasW,
-                        canvasH,
-                      ),
-                      onScaleStart: (_) {
-                        _dragSnap = _captureSnap(); // 拖动起手快照（真有位移才入撤销栈）
-                        _lastScale = 1.0;
-                        _accDx = 0;
-                        _accDy = 0;
-                      },
-                      onScaleUpdate: (d) => _onCanvasScale(d, canvasW, canvasH),
-                      onScaleEnd: (_) => _endDrag(),
-                      child: CustomPaint(
-                        size: Size.infinite,
-                        painter: BoardPainter(
-                          board: BoardConfig(
-                            w: _bw,
-                            h: _bh,
-                            interval: _interval,
-                            phaseX: _phaseX,
-                            phaseY: _phaseY,
-                            // 本页预览也要带粗线色（否则色板选色只在拼豆
-                            // 页生效，本页恒默认橙、状态已变视图不反映）
-                            majorColor: _majorColor,
+                    return Stack(
+                      children: [
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTapUp: (d) => _onCanvasTap(
+                            d.localPosition,
+                            canvasW,
+                            canvasH,
                           ),
-                          // viewScale：删除叉尺寸/线宽补偿（缩放中视觉恒定）；
-                          // showClose：仅选中作品画右上角删除叉（先点选中、
-                          // 再点叉删，未选中不显示也不可点，防误触）
-                          viewScale: _viewerCtrl.value.getMaxScaleOnAxis(),
-                          padX: _padX,
-                          padY: _padY,
-                          items: [
-                            for (var i = 0; i < _works.length; i++)
-                              BoardPaintItem(
-                                model: _works[i].model,
-                                palette: _works[i].palette,
-                                ox: _works[i].ox,
-                                oy: _works[i].oy,
-                                showBorder: true,
-                                selected: i == _selected,
-                                showClose: i == _selected,
+                          onScaleStart: (_) {
+                            _dragSnap = _captureSnap(); // 拖动起手快照（真有位移才入撤销栈）
+                            _lastScale = 1.0;
+                            _accDx = 0;
+                            _accDy = 0;
+                          },
+                          onScaleUpdate: (d) =>
+                              _onCanvasScale(d, canvasW, canvasH),
+                          onScaleEnd: (_) => _endDrag(),
+                          child: CustomPaint(
+                            size: Size.infinite,
+                            painter: BoardPainter(
+                              board: BoardConfig(
+                                w: _bw,
+                                h: _bh,
+                                interval: _interval,
+                                phaseX: _phaseX,
+                                phaseY: _phaseY,
+                                // 本页预览也要带粗线色（否则色板选色只在拼豆
+                                // 页生效，本页恒默认橙、状态已变视图不反映）
+                                majorColor: _majorColor,
                               ),
-                          ],
+                              // viewScale：删除叉尺寸/线宽补偿（缩放中视觉恒定）；
+                              // showClose：仅选中作品画右上角删除叉（先点选中、
+                              // 再点叉删，未选中不显示也不可点，防误触）
+                              viewScale:
+                                  _viewerCtrl.value.getMaxScaleOnAxis(),
+                              padL: _pads.$1,
+                              padT: _pads.$2,
+                              padR: _pads.$3,
+                              padB: _pads.$4,
+                              items: [
+                                for (var i = 0; i < _works.length; i++)
+                                  BoardPaintItem(
+                                    model: _works[i].model,
+                                    palette: _works[i].palette,
+                                    ox: _works[i].ox,
+                                    oy: _works[i].oy,
+                                    showBorder: true,
+                                    selected: i == _selected,
+                                    showClose: i == _selected,
+                                  ),
+                              ],
+                            ),
+                          ),
                         ),
-                      ),
+                        // 选中作品的浮动变换工具条（跟随作品，见 _buildWorkBar）
+                        if (_selected >= 0 && _selected < _works.length)
+                          _buildWorkBar(canvasW, canvasH),
+                      ],
                     );
                   },
                 ),
@@ -1432,6 +1411,82 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
           ),
         ),
       ],
+    );
+  }
+
+  /// 选中作品的浮动变换工具条（2026-11-12 十七轮需求：旋转/翻转控件要
+  /// 像删除叉一样跟随作品走，不再占 AppBar）。挂在作品底边中点下方，
+  /// 作品贴画布底时翻到顶边上方：条体处于画布坐标系（随平移/缩放跟着
+  /// 作品走），占位尺寸除以视图缩放、FittedBox 拉满放大回原尺寸——
+  /// 屏幕上视觉恒定大小（painter 删除叉的 1/s 补偿同思路）
+  Widget _buildWorkBar(double canvasW, double canvasH) {
+    final w = _works[_selected];
+    final m = w.model;
+    final (pl, pt, pr, pb) = _pads;
+    final cellW = canvasW / (_bw + pl + pr);
+    final cellH = canvasH / (_bh + pt + pb);
+    final s = _viewerCtrl.value.getMaxScaleOnAxis();
+    const barW = 184.0;
+    const barH = 48.0;
+    final topY = (w.oy + pt) * cellH;
+    final bottomY = (w.oy + pt + m.height) * cellH;
+    final centerX = (w.ox + pl + m.width / 2) * cellW;
+    // 优先作品底边下方；画布放不下（贴底）换顶边上方，仍越界钳回画布内
+    final below = bottomY + (barH + 12) / s <= canvasH;
+    var top = below ? bottomY + 12 / s : topY - (barH + 12) / s;
+    if (top < 2) {
+      top = 2;
+    }
+    // 横向收进画布（极窄画布不越界即可）
+    final barWc = barW / s;
+    final hi = canvasW - barWc - 2;
+    final left = (centerX - barWc / 2).clamp(2.0, hi > 2.0 ? hi : 2.0);
+    Widget btn(
+      IconData icon,
+      String tip,
+      VoidCallback onTap, {
+      int quarterTurns = 0,
+    }) => IconButton(
+      onPressed: onTap,
+      icon: RotatedBox(
+        quarterTurns: quarterTurns,
+        child: Icon(icon, size: 22),
+      ),
+      tooltip: tip,
+      visualDensity: VisualDensity.compact,
+      color: Colors.black87,
+    );
+    return Positioned(
+      left: left,
+      top: top,
+      width: barWc,
+      height: barH / s,
+      child: FittedBox(
+        fit: BoxFit.fill,
+        child: SizedBox(
+          width: barW,
+          height: barH,
+          child: Material(
+            elevation: 4,
+            borderRadius: BorderRadius.circular(24),
+            color: Colors.white,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                btn(Icons.rotate_left, "逆时针旋转 90°",
+                    () => _transformSelected(rotDelta: 3)),
+                btn(Icons.rotate_right, "顺时针旋转 90°",
+                    () => _transformSelected(rotDelta: 1)),
+                btn(Icons.flip, "左右翻转",
+                    () => _transformSelected(flipH: true)),
+                btn(Icons.flip, "上下翻转",
+                    () => _transformSelected(flipV: true),
+                    quarterTurns: 1),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 

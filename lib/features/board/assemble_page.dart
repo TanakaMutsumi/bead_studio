@@ -383,7 +383,13 @@ class _AssemblePageState extends State<AssemblePage> {
       }
     } else {
       // 区块：粗框线分块（线在 (x+phaseX)%interval==0 处 -> 列块号 =
-      //(x+phaseX)~/interval），指到的块内选中色未放格全部入圈
+      //(x+phaseX)~/interval），指到的块内选中色未放格全部入圈。
+      // 无分割线（interval=0）没有块可言：按钮已禁用，这里兜底按单格
+      if (b.interval <= 0) {
+        _batchRegion = false;
+        _batchApply(local, canvasW, canvasH);
+        return;
+      }
       final bkx = (bx + b.phaseX) ~/ b.interval;
       final bky = (by + b.phaseY) ~/ b.interval;
       for (var idx = 0; idx < widget.works.length; idx++) {
@@ -664,7 +670,7 @@ class _AssemblePageState extends State<AssemblePage> {
                 children: [
                   Text(
                     "板 ${widget.board.w}×${widget.board.h} · "
-                    "每${widget.board.interval}格加粗",
+                    "${widget.board.interval > 0 ? "每${widget.board.interval}格加粗" : "无分割线"}",
                     style: Theme.of(context).textTheme.bodySmall,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -1131,9 +1137,14 @@ class _AssemblePageState extends State<AssemblePage> {
               child: SegmentedButton<bool>(
                 showSelectedIcon: false,
                 style: const ButtonStyle(visualDensity: VisualDensity.compact),
-                segments: const [
-                  ButtonSegment(value: false, label: Text("单格")),
-                  ButtonSegment(value: true, label: Text("区块")),
+                // 无分割线（interval=0）没有粗线分块，区块档禁用
+                segments: [
+                  const ButtonSegment(value: false, label: Text("单格")),
+                  ButtonSegment(
+                    value: true,
+                    label: const Text("区块"),
+                    enabled: widget.board.interval > 0,
+                  ),
                 ],
                 selected: {_batchRegion},
                 onSelectionChanged: (s) =>

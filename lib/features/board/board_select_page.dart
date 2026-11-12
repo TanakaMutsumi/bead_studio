@@ -15,6 +15,7 @@ import 'assemble_page.dart';
 import 'board_dialogs.dart';
 import 'board_painter.dart';
 import 'board_setup_page.dart';
+import 'board_stats.dart';
 import 'placed_work.dart';
 
 /// 一块豆板的展示模型：列表条目 + 完整会话（板配置/作品引用）+
@@ -355,21 +356,18 @@ class _BoardSelectPageState extends State<BoardSelectPage> with RouteAware {
                       Center(
                         child: Builder(builder: (context) {
                           // 板外余量：悬挂出板的作品在缩略图里也要画得出来
-                          //（口径同板设置页 _padX/_padY）
-                          final padX = vm.works.isEmpty
-                              ? 0
-                              : vm.works
-                                    .map((w) => (w.model.width + 1) ~/ 2)
-                                    .reduce((a, b) => a > b ? a : b);
-                          final padY = vm.works.isEmpty
-                              ? 0
-                              : vm.works
-                                    .map((w) => (w.model.height + 1) ~/ 2)
-                                    .reduce((a, b) => a > b ? a : b);
+                          //（口径同板设置页 _pads——四侧按**实际悬挂量**，
+                          // 2026-11-12 十七轮：旧法按可能悬挂量对称留满半界，
+                          // 浅黑框外大片空白占位、板面缩得偏小）
+                          final (pl, pt, pr, pb) = boardPads(
+                            vm.works,
+                            vm.session.board.w,
+                            vm.session.board.h,
+                          );
                           return AspectRatio(
                             aspectRatio:
-                                (vm.session.board.w + 2 * padX) /
-                                (vm.session.board.h + 2 * padY),
+                                (vm.session.board.w + pl + pr) /
+                                (vm.session.board.h + pt + pb),
                             child: Padding(
                               padding: const EdgeInsets.all(4),
                               child: CustomPaint(
@@ -382,8 +380,10 @@ class _BoardSelectPageState extends State<BoardSelectPage> with RouteAware {
                                 ///< ——豆板原图只留作品色块，小尺寸下网格
                                 ///< 满屏遮挡作品；红标（出界/重叠）照画
                                 thumbnail: true,
-                                padX: padX,
-                                padY: padY,
+                                padL: pl,
+                                padT: pt,
+                                padR: pr,
+                                padB: pb,
                                 items: [
                                   for (final w in vm.works)
                                     BoardPaintItem(

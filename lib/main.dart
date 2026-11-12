@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'core/app_info.dart';
 import 'features/home/home_page.dart';
 
 /// 路由观察者：页面间 push/pop 的可见性通知（豆板选择页靠 didPopNext
@@ -36,7 +37,93 @@ class BeadStudioApp extends StatelessWidget {
           child: SafeArea(top: false, child: child!),
         );
       },
-      home: const HomePage(),
+      home: const _SplashGate(child: HomePage()),
+    );
+  }
+}
+
+/// 启动加载页（2026-11-12 需求：加载界面图标下方显示应用名与版本号）。
+///
+/// Android 12+ 系统启动图强制圆形图标、API 不支持图下文字，故系统段
+/// 保持图标，进 Flutter 后首帧接一版品牌加载页：图标 + 应用名 + 版本号
+/// （白底，与系统启动图背景一致视觉连续），展示约 0.6s 后淡出。主页在
+/// 覆盖层下同步构建预热，不增加实际等待
+class _SplashGate extends StatefulWidget {
+  final Widget child;
+
+  const _SplashGate({required this.child});
+
+  @override
+  State<_SplashGate> createState() => _SplashGateState();
+}
+
+class _SplashGateState extends State<_SplashGate> {
+  var _fading = false;
+
+  ///< 开始淡出（展示时长已到）
+
+  var _gone = false;
+
+  ///< 淡出完成，覆盖层移除
+
+  @override
+  void initState() {
+    super.initState();
+    Future.delayed(const Duration(milliseconds: 600), () {
+      if (mounted) {
+        setState(() => _fading = true);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      textDirection: TextDirection.ltr,
+      children: [
+        widget.child,
+        if (!_gone)
+          // 覆盖层存在期间挡住输入（避免加载页下误触主页卡片）
+          AbsorbPointer(
+            child: AnimatedOpacity(
+              opacity: _fading ? 0 : 1,
+              duration: const Duration(milliseconds: 250),
+              onEnd: () {
+                if (_fading && mounted) {
+                  setState(() => _gone = true);
+                }
+              },
+              child: Container(
+                color: Colors.white,
+                alignment: Alignment.center,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Image.asset(
+                      "assets/icon/app_icon.png",
+                      width: 112,
+                      filterQuality: FilterQuality.medium,
+                    ),
+                    const SizedBox(height: 20),
+                    const Text(
+                      kAppName,
+                      style: TextStyle(
+                        fontSize: 28,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.black87,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      "v$kAppVersion",
+                      style: TextStyle(fontSize: 13, color: Colors.black45),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
