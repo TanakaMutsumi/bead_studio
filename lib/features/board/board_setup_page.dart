@@ -106,6 +106,14 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
   _SetupSnap? _dragSnap;
 
   ///< 拖动手势起手快照（onScaleStart 捕获，onScaleEnd 真有位移才入栈）
+  bool _dragOverL = false, _dragOverR = false, _dragOverT = false, _dragOverB = false;
+  bool _dragOverReady = false;
+
+  ///< 本轮拖动允许哪几侧悬挂出板（2026-11-12 十八轮两段式出界）：
+  /// 起手时作品**已贴住**的边才放行悬挂（贴住 = 已贴线或本就悬出），
+  /// 没贴的边第一次碰到就停在板边，抬手重拖（那时已贴）才出得去；
+  /// 作品整边宽/高超过板时两侧恒放行（不可能有「全在板内」位）。
+  /// 标志在首次拖动位移时按起手摆位捕获，手势结束/新手势重置
   final _viewerCtrl = TransformationController();
 
   @override
@@ -251,6 +259,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
   void _endDrag() {
     final s = _dragSnap;
     _dragSnap = null;
+    _dragOverReady = false; // 两段式出界：贴边放行标志随手势结束失效
     if (s == null || s.key == _stateKey()) {
       return;
     }
@@ -700,8 +709,10 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     });
   }
 
-  /// 粗框线颜色圆钮：显示当前颜色（null = 默认橙），点开色板选择
+  /// 粗框线颜色圆钮：显示当前颜色（null = 默认橙）；「不显示」档
+  ///（十八轮，全透明哨兵）画斜杠水滴图标示意无线
   Widget _majorColorDot() {
+    final hidden = _majorColor == BoardConfig.hiddenMajorColor;
     final c = Color(_majorColor ?? BoardConfig.defaultMajorColor);
     return Tooltip(
       message: "粗框线颜色",
@@ -712,10 +723,17 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
           width: 28,
           height: 28,
           decoration: BoxDecoration(
-            color: c,
+            color: hidden ? Colors.white : c,
             shape: BoxShape.circle,
             border: Border.all(color: Colors.black38),
           ),
+          child: hidden
+              ? const Icon(
+                  Icons.format_color_reset,
+                  size: 16,
+                  color: Colors.black54,
+                )
+              : null,
         ),
       ),
     );
@@ -992,13 +1010,32 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       _accDy -= dy * cell;
       final m = w.model;
 
-      ///< 偏移可达范围与 clampTo 同口径：宽/高最多移出板外二分之一
-      ///（2026-11-12 用户需求：出界部分悬挂板外，非空白格出界由
-      /// 开始拼豆门槛拦截）
-      final nx =
-          (w.ox + dx).clamp(-(m.width ~/ 2), _bw - (m.width + 1) ~/ 2).toInt();
+      ///< 两段式出界（2026-11-12 十八轮）：起手已贴住的边才允许悬挂
+      /// 出去（最多仍 floor(W/2) 半界），没贴住的边第一次碰到就停在
+      /// 板边——防止从板中间一把拖出去；抬手后从贴边位重拖即可悬出。
+      /// 出界的若是空白格不拦拼豆（豆级拦截口径不变）
+      if (!_dragOverReady) {
+        _dragOverL = w.ox <= 0 || m.width > _bw;
+        _dragOverR = w.ox + m.width >= _bw || m.width > _bw;
+        _dragOverT = w.oy <= 0 || m.height > _bh;
+        _dragOverB = w.oy + m.height >= _bh || m.height > _bh;
+        _dragOverReady = true;
+      }
+      final nx = (w.ox + dx)
+          .clamp(
+            _dragOverL ? -(m.width ~/ 2) : 0,
+            _dragOverR
+                ? _bw - (m.width + 1) ~/ 2
+                : _bw - m.width,
+          )
+          .toInt();
       final ny = (w.oy + dy)
-          .clamp(-(m.height ~/ 2), _bh - (m.height + 1) ~/ 2)
+          .clamp(
+            _dragOverT ? -(m.height ~/ 2) : 0,
+            _dragOverB
+                ? _bh - (m.height + 1) ~/ 2
+                : _bh - m.height,
+          )
           .toInt();
       setState(() {
         w.ox = nx;
@@ -1288,6 +1325,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       phaseX: _phaseX,
       phaseY: _phaseY,
       majorColorDot: _majorColorDot(),
+      majorHidden: _majorColor == BoardConfig.hiddenMajorColor,
       worksCount: _works.length,
       stats: beadStats(_works),
       onSelectPreset: _setBoardSize,
@@ -1358,6 +1396,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
                             _lastScale = 1.0;
                             _accDx = 0;
                             _accDy = 0;
+                            _dragOverReady = false; // 贴边放行标志待首次位移按起手摆位捕获
                           },
                           onScaleUpdate: (d) =>
                               _onCanvasScale(d, canvasW, canvasH),

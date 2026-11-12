@@ -670,14 +670,15 @@ class _AssemblePageState extends State<AssemblePage> {
                 children: [
                   Text(
                     "板 ${widget.board.w}×${widget.board.h} · "
-                    "${widget.board.interval > 0 ? "每${widget.board.interval}格加粗" : "无分割线"}",
+                    "${widget.board.interval > 0 ? (_majorColor == BoardConfig.hiddenMajorColor ? "每${widget.board.interval}格分块·线不显示" : "每${widget.board.interval}格加粗") : "无分割线"}",
                     style: Theme.of(context).textTheme.bodySmall,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
                   Row(
                     children: [
-                      // 粗框线颜色（与板设置页同款色板；本会话内即时生效）
+                      // 粗框线颜色（与板设置页同款色板；本会话内即时生效）；
+                      // 「不显示」档（十八轮）画斜杠水滴图标示意无线
                       Tooltip(
                         message: "粗框线颜色",
                         child: InkWell(
@@ -687,12 +688,24 @@ class _AssemblePageState extends State<AssemblePage> {
                             width: 28,
                             height: 28,
                             decoration: BoxDecoration(
-                              color: Color(
-                                _majorColor ?? BoardConfig.defaultMajorColor,
-                              ),
+                              color:
+                                  _majorColor == BoardConfig.hiddenMajorColor
+                                  ? Colors.white
+                                  : Color(
+                                      _majorColor ??
+                                          BoardConfig.defaultMajorColor,
+                                    ),
                               shape: BoxShape.circle,
                               border: Border.all(color: Colors.black38),
                             ),
+                            child:
+                                _majorColor == BoardConfig.hiddenMajorColor
+                                ? const Icon(
+                                    Icons.format_color_reset,
+                                    size: 16,
+                                    color: Colors.black54,
+                                  )
+                                : null,
                           ),
                         ),
                       ),

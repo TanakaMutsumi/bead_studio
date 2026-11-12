@@ -11,10 +11,11 @@ import 'package:flutter_test/flutter_test.dart';
 
 /// 豆板摆放：clampTo 出界半界（宽/高最多移出二分之一）/
 /// boardHasBeadOutside（豆级出界判定，空白格出界不拦）/ boardPads
-///（四侧实际悬挂余量，全在板内=0）/ 拖动手势全链（拖到出界极限 →
-/// 底部提示 + 开始拼豆禁用；拖回板内恢复）/ 撤销重做（拖动出界→undo
-/// 恢复→redo 再出界）/ dirty 三键退出 / 选中作品浮动变换工具条 /
-/// 分割数「无」档
+///（四侧实际悬挂余量，全在板内=0）/ 拖动手势全链（两段式出界：起手
+/// 未贴边先停在板边，贴边后再拖才悬出 → 底部提示 + 开始拼豆禁用；
+/// 拖回板内恢复）/ 撤销重做（拖动出界→undo 恢复→redo 再出界）/
+/// dirty 三键退出 / 选中作品浮动变换工具条 / 分割数「无」档 /
+/// 粗线颜色「不显示」档（十八轮）
 void main() {
   PatternModel model(int w, int h, {int blankLeft = 0}) => PatternModel(
         width: w,
@@ -33,6 +34,9 @@ void main() {
         updatedAt: DateTime(2026, 1, 1),
         model: m,
       );
+
+  /// 初始态（作品全在板内、余量 0）的格像素尺寸——第二段拖动起手点换算用
+  double cell0(Rect canvas) => canvas.width / 52;
 
   group('clampTo 半界（宽/高最多移出二分之一）', () {
     test('偶数宽：左右各最多 floor(W/2) 格', () {
@@ -186,8 +190,8 @@ void main() {
       FilledButton btn() => tester.widget<FilledButton>(startBtn);
       expect(btn().onPressed, isNotNull);
 
-      // 单指拖动选中作品（initial 自带 _selected=0）：往左上大位移，
-      // clamp 到 -W/2 = -13（上下左右全出界极限）
+      // 两段式出界（十八轮）：第一段从板中央（ox=oy=13 未贴边）往左上
+      // 大位移——未贴的边第一次碰到就停在板边（0,0），不出界不提示
       final canvas = tester.getRect(find.byType(InteractiveViewer).first);
       final g = await tester.startGesture(canvas.center);
       await tester.pump(const Duration(milliseconds: 120));
@@ -195,8 +199,19 @@ void main() {
       await tester.pump();
       await g.up();
       await tester.pumpAndSettle();
+      expect(find.textContaining("豆子超出豆板"), findsNothing);
+      expect(btn().onPressed, isNotNull);
 
-      // 出界（非空白格出板）→ 底部提示 + 开始禁用
+      // 第二段：抬手重拖（此时已贴住左/上边），再次往左上——放行悬挂
+      // 到半界极限 -W/2 = -13，非空白格出板 → 底部提示 + 开始禁用
+      final g2 = await tester.startGesture(
+        canvas.topLeft + Offset(2 * cell0(canvas), 2 * cell0(canvas)),
+      );
+      await tester.pump(const Duration(milliseconds: 120));
+      await g2.moveBy(const Offset(-3000, -3000));
+      await tester.pump();
+      await g2.up();
+      await tester.pumpAndSettle();
       expect(find.textContaining("豆子超出豆板"), findsOneWidget);
       expect(btn().onPressed, isNull);
 
@@ -204,13 +219,13 @@ void main() {
       // 左/上两侧各 13 格、右/下 0（全幅 65 格）。起手点取作品本体内——
       // 浮动变换工具条横在作品正下方，canvas.center 恰被它盖住会吞手势
       final cell = canvas.width / 65;
-      final g2 = await tester.startGesture(
+      final g3 = await tester.startGesture(
         canvas.topLeft + Offset(13 * cell, 13 * cell),
       );
       await tester.pump(const Duration(milliseconds: 120));
-      await g2.moveBy(Offset(26 * cell, 26 * cell));
+      await g3.moveBy(Offset(26 * cell, 26 * cell));
       await tester.pump();
-      await g2.up();
+      await g3.up();
       await tester.pumpAndSettle();
 
       expect(find.textContaining("豆子超出豆板"), findsNothing);
@@ -236,14 +251,19 @@ void main() {
       expect(undoBtn().onPressed, isNull);
       expect(redoBtn().onPressed, isNull);
 
-      // 拖到出界极限（同前测：clamp 到 -13 全出界）
+      // 拖到出界极限（两段式：第一段停板边，第二段贴边悬出到 -13）
       final canvas = tester.getRect(find.byType(InteractiveViewer).first);
-      final g = await tester.startGesture(canvas.center);
-      await tester.pump(const Duration(milliseconds: 120));
-      await g.moveBy(const Offset(-3000, -3000));
-      await tester.pump();
-      await g.up();
-      await tester.pumpAndSettle();
+      for (final (i, start) in [canvas.center, canvas.topLeft + const Offset(4, 4)].indexed) {
+        final g = await tester.startGesture(start);
+        await tester.pump(const Duration(milliseconds: 120));
+        await g.moveBy(const Offset(-3000, -3000));
+        await tester.pump();
+        await g.up();
+        await tester.pumpAndSettle();
+        if (i == 0) {
+          expect(find.textContaining("豆子超出豆板"), findsNothing); // 未贴边停在 (0,0)
+        }
+      }
       expect(find.textContaining("豆子超出豆板"), findsOneWidget);
 
       // 拖动产生历史：撤销可按、重做仍置灰
@@ -297,12 +317,15 @@ void main() {
       await tester.tap(find.text("open"));
       await tester.pumpAndSettle();
       final canvas = tester.getRect(find.byType(InteractiveViewer).first);
-      final g = await tester.startGesture(canvas.center);
-      await tester.pump(const Duration(milliseconds: 120));
-      await g.moveBy(const Offset(-3000, -3000));
-      await tester.pump();
-      await g.up();
-      await tester.pumpAndSettle();
+      // 两段式拖到出界（第一段停板边、第二段贴边悬出）
+      for (final start in [canvas.center, canvas.topLeft + const Offset(4, 4)]) {
+        final g = await tester.startGesture(start);
+        await tester.pump(const Duration(milliseconds: 120));
+        await g.moveBy(const Offset(-3000, -3000));
+        await tester.pump();
+        await g.up();
+        await tester.pumpAndSettle();
+      }
 
       // back：弹「保存豆板？」三键（是/否/取消）
       await tester.binding.handlePopRoute();
@@ -315,11 +338,14 @@ void main() {
       expect(find.byType(BoardSetupPage), findsOneWidget);
       expect(find.text("保存豆板？"), findsNothing);
 
-      // 撤销回到进页基线（clean）→ back 直接退出，不再弹
-      tester
-          .widget<IconButton>(find.widgetWithIcon(IconButton, Icons.undo))
-          .onPressed!();
-      await tester.pumpAndSettle();
+      // 撤销回到进页基线（clean；两段拖动=两步，连撤两次）→ back
+      // 直接退出，不再弹
+      for (var i = 0; i < 2; i++) {
+        tester
+            .widget<IconButton>(find.widgetWithIcon(IconButton, Icons.undo))
+            .onPressed!();
+        await tester.pumpAndSettle();
+      }
       await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
       expect(find.byType(BoardSetupPage), findsNothing);
@@ -377,6 +403,82 @@ void main() {
         find.widgetWithIcon(IconButton, Icons.rotate_right),
         findsNothing,
       );
+    });
+  });
+
+  group('两段式出界（十八轮）', () {
+    testWidgets('悬挂出去的全是空白格不拦开始拼豆（豆级口径）', (tester) async {
+      // 左侧 6 列空白的作品：贴左边界后悬出 6 格——空白格出界不拦；
+      // 悬到极限 -13 时出界的含非空白格 → 拦
+      final e = entryOf(model(26, 26, blankLeft: 6));
+      await tester.pumpWidget(MaterialApp(home: BoardSetupPage(initial: e)));
+      await tester.pumpAndSettle();
+
+      final canvas0 = tester.getRect(find.byType(InteractiveViewer).first);
+      FilledButton btn() =>
+          tester.widget<FilledButton>(find.widgetWithText(FilledButton, "开始拼豆"));
+
+      // 第一段：从中央往左大位移——未贴边停在左边（0 列），不出界
+      var g = await tester.startGesture(canvas0.center);
+      await tester.pump(const Duration(milliseconds: 120));
+      await g.moveBy(const Offset(-3000, 0));
+      await tester.pump();
+      await g.up();
+      await tester.pumpAndSettle();
+      expect(find.textContaining("豆子超出豆板"), findsNothing);
+
+      // 第二段：贴住左边后悬出恰 6 格（全是空白列）
+      var canvas = tester.getRect(find.byType(InteractiveViewer).first);
+      var cell = canvas.width / 52; // 贴边未出，余量 0
+      g = await tester.startGesture(canvas.topLeft + const Offset(4, 4));
+      await tester.pump(const Duration(milliseconds: 120));
+      await g.moveBy(Offset(-6.5 * cell, 0));
+      await tester.pump();
+      await g.up();
+      await tester.pumpAndSettle();
+      expect(find.textContaining("豆子超出豆板"), findsNothing);
+      expect(btn().onPressed, isNotNull);
+
+      // 再悬到极限 -13：空白只有 6 列，非空白格出板 → 提示 + 禁用
+      canvas = tester.getRect(find.byType(InteractiveViewer).first);
+      cell = canvas.width / 58; // 左余 6 格
+      g = await tester.startGesture(canvas.topLeft + const Offset(4, 4));
+      await tester.pump(const Duration(milliseconds: 120));
+      await g.moveBy(Offset(-7.5 * cell, 0));
+      await tester.pump();
+      await g.up();
+      await tester.pumpAndSettle();
+      expect(find.textContaining("豆子超出豆板"), findsOneWidget);
+      expect(btn().onPressed, isNull);
+    });
+  });
+
+  group('粗线颜色「不显示」档（十八轮）', () {
+    testWidgets('选不显示：info 行换口径、分块保留、撤销可回', (tester) async {
+      final e = entryOf(model(26, 26));
+      await tester.pumpWidget(MaterialApp(home: BoardSetupPage(initial: e)));
+      await tester.pumpAndSettle();
+
+      // 初始口径：每5格加粗
+      expect(find.textContaining("每5格加粗"), findsOneWidget);
+
+      // 点色钮 → 色板 sheet → 点「不显示」
+      await tester.tap(find.byTooltip("粗框线颜色"));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip("不显示"));
+      await tester.pumpAndSettle();
+
+      // info 行切「分块·线不显示」（interval 仍 5，分块结构保留）
+      expect(find.textContaining("线不显示"), findsOneWidget);
+      expect(find.textContaining("每5格加粗"), findsNothing);
+
+      // 撤销回到默认橙
+      IconButton undoBtn() =>
+          tester.widget<IconButton>(find.widgetWithIcon(IconButton, Icons.undo));
+      expect(undoBtn().onPressed, isNotNull);
+      undoBtn().onPressed!();
+      await tester.pumpAndSettle();
+      expect(find.textContaining("每5格加粗"), findsOneWidget);
     });
   });
 

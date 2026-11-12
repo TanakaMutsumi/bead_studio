@@ -693,8 +693,9 @@ class BoardPainter extends CustomPainter {
       ..color = majorColor;
     final iv = board.interval;
     // interval=0 = 无分割线（2026-11-12 需求：分割线下拉含「无」档）；
-    // %0 会抛除零，必须守卫
-    if (showMajorLines && !thumbnail && iv > 0) {
+    // %0 会抛除零，必须守卫。majorColor 全透明（十八轮「不显示」档）=
+    // 分块结构保留但不画线（拼豆页区块圈选仍按 interval 分块）
+    if (showMajorLines && !thumbnail && iv > 0 && majorColor.a != 0) {
       for (var x = 0; x <= board.w; x++) {
         if ((x + board.phaseX) % iv == 0) {
           final p = x * cellW;

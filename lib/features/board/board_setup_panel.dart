@@ -10,62 +10,99 @@ import 'placed_work.dart';
 /// 顶点相位改带数值的紧凑步进器（相位是连续微调，下拉框不适用，但补上
 /// 当前值显示）+ 粗线颜色圆钮 + 统计摘要行（点开豆数统计明细）。
 /// 十七轮：框内恒显 label 前缀说明用途；分割数含「无」档（interval=0
-/// 不画加粗线，相位步进器随之禁用）
+/// 不画加粗线，相位步进器随之禁用）。
+/// 十八轮：下拉改 PopupMenuButton 锚定框正下方贴边弹出（DropdownButton
+/// 的菜单按选中项对齐定位会飘到面板上方远处 + 独立圆角卡观感太分离，
+/// 用户反馈不像下拉）；粗线颜色新增「不显示」档（全透明，分块保留）。
 
 /// 带边框下拉框（combobox 形态）：框内恒显「label 前缀 + 当前值」，
 /// 说清这个框管什么（2026-11-12 用户反馈：光一个 104×104 看不出是
-/// 板尺寸还是分割数）
+/// 板尺寸还是分割数）。菜单贴框正下方弹出、宽同框、勾选当前项
+///（十八轮：DropdownButton 原生菜单定位/观感与框太分离，不像下拉）
 class _Combo<T> extends StatelessWidget {
   final String label;
 
   ///< 框内前缀标签（恒显示，选中值跟随在后）
+  final String display;
+
+  ///< 框内显示的当前值文本（与 [value] 对应项的菜单文本一致）
   final T value;
 
-  ///< 当前值（必须在 [items] 里，否则显示空——调用方保证）
-  final List<DropdownMenuItem<T>> items;
-  final ValueChanged<T?> onChanged;
+  ///< 当前值（菜单里对应项打勾）
+  final List<(T, String)> items;
+
+  ///< 菜单项：(值, 菜单文本)
+  final ValueChanged<T> onSelected;
   const _Combo({
     super.key,
     required this.label,
+    required this.display,
     required this.value,
     required this.items,
-    required this.onChanged,
+    required this.onSelected,
   });
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return Container(
-      height: 40,
-      padding: const EdgeInsets.fromLTRB(10, 0, 6, 0),
-      decoration: BoxDecoration(
-        border: Border.all(color: cs.outlineVariant),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        children: [
-          Text(
-            label,
-            style: Theme.of(context)
-                .textTheme
-                .labelMedium
-                ?.copyWith(color: Colors.black54),
-          ),
-          const SizedBox(width: 4),
-          Expanded(
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<T>(
-                value: value,
-                isExpanded: true,
-                style: Theme.of(context).textTheme.bodyMedium,
-                icon: const Icon(Icons.arrow_drop_down, size: 22),
-                borderRadius: BorderRadius.circular(8),
-                items: items,
-                onChanged: onChanged,
+    return LayoutBuilder(
+      builder: (context, cons) => PopupMenuButton<T>(
+        // 菜单宽与框一致（默认按最宽菜单项步进缩放，窄于框时视觉断开）
+        constraints: BoxConstraints(minWidth: cons.maxWidth, maxWidth: cons.maxWidth),
+        position: PopupMenuPosition.under,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8),
+          side: BorderSide(color: cs.outlineVariant),
+        ),
+        onSelected: onSelected,
+        itemBuilder: (context) => [
+          for (final (v, t) in items)
+            PopupMenuItem(
+              value: v,
+              height: 48,
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 20,
+                    child: v == value
+                        ? Icon(Icons.check, size: 18, color: cs.primary)
+                        : null,
+                  ),
+                  const SizedBox(width: 2),
+                  Text(t, style: Theme.of(context).textTheme.bodyMedium),
+                ],
               ),
             ),
-          ),
         ],
+        child: Container(
+          height: 40,
+          padding: const EdgeInsets.fromLTRB(10, 0, 6, 0),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: cs.outlineVariant),
+          ),
+          child: Row(
+            children: [
+              Text(
+                label,
+                style: Theme.of(context)
+                    .textTheme
+                    .labelMedium
+                    ?.copyWith(color: Colors.black54),
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  display,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              ),
+              const Icon(Icons.arrow_drop_down, size: 22),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -145,6 +182,9 @@ class BoardConfigPanel extends StatelessWidget {
   final int interval;
 
   ///< 加粗框线间隔（每 N 格加粗）
+  final bool majorHidden;
+
+  ///< 粗线颜色=「不显示」（十八轮）：info 行换口径提示分块仍在
   final int phaseX, phaseY;
 
   ///< 顶点相位（0 ~ 分割数-1，步进器显示当前值）
@@ -177,6 +217,7 @@ class BoardConfigPanel extends StatelessWidget {
     required this.bw,
     required this.bh,
     required this.interval,
+    required this.majorHidden,
     required this.phaseX,
     required this.phaseY,
     required this.majorColorDot,
@@ -204,19 +245,13 @@ class BoardConfigPanel extends StatelessWidget {
               Expanded(
                 child: _Combo<int>(
                   label: "板尺寸 ",
+                  display: presetHit ? "$bw×$bh" : "自定义 $bw×$bh",
                   value: presetHit ? bw : 0,
                   items: [
-                    for (final s in presets)
-                      DropdownMenuItem(value: s, child: Text("$s×$s")),
-                    DropdownMenuItem(
-                      value: 0,
-                      child: Text(
-                        presetHit ? "自定义…" : "自定义 $bw×$bh",
-                      ),
-                    ),
+                    for (final s in presets) (s, "$s×$s"),
+                    (0, presetHit ? "自定义…" : "自定义 $bw×$bh"),
                   ],
-                  onChanged: (v) {
-                    if (v == null) return;
+                  onSelected: (v) {
                     if (v > 0) {
                       onSelectPreset(v);
                     } else {
@@ -229,22 +264,19 @@ class BoardConfigPanel extends StatelessWidget {
               Expanded(
                 child: _Combo<int>(
                   label: "分割数 ",
+                  display: interval <= 0 ? "无" : "每$interval格",
                   value: interval <= 0 ? 0 : interval,
                   // 「无」= 0（不加粗分割线，2026-11-12 需求：分割线要有
                   // 无的选项）；旧板/外部数据可能出现非档位间隔：动态补项
                   // 保证当前值可显示（选它无副作用，值本身没变）
                   items: [
-                    const DropdownMenuItem(value: 0, child: Text("无")),
-                    for (final v in intervals)
-                      DropdownMenuItem(value: v, child: Text("每$v格")),
+                    (0, "无"),
+                    for (final v in intervals) (v, "每$v格"),
                     if (interval > 0 && !intervals.contains(interval))
-                      DropdownMenuItem(
-                        value: interval,
-                        child: Text("每$interval格"),
-                      ),
+                      (interval, "每$interval格"),
                   ],
-                  onChanged: (v) {
-                    if (v != null && v != interval) onSetInterval(v);
+                  onSelected: (v) {
+                    if (v != interval) onSetInterval(v);
                   },
                 ),
               ),
@@ -282,7 +314,7 @@ class BoardConfigPanel extends StatelessWidget {
           ),
           const SizedBox(height: 2),
           Text(
-            "板 $bw×$bh · ${interval > 0 ? "每$interval格加粗" : "无分割线"}"
+            "板 $bw×$bh · ${interval > 0 ? (majorHidden ? "每$interval格分块·线不显示" : "每$interval格加粗") : "无分割线"}"
             " · 点作品选中后拖动",
             style: Theme.of(context).textTheme.bodySmall,
           ),

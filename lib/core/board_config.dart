@@ -8,6 +8,11 @@ class BoardConfig {
   static const int defaultMajorColor = 0xFFFF9800;
 
   ///< 粗框线默认颜色（橙——深色豆上压得住的亮色）
+  static const int hiddenMajorColor = 0x00000000;
+
+  ///< 粗框线「不显示」（全透明 ARGB，2026-11-12 十八轮）：与 null（默认
+  ///< 橙）区分——interval 分块结构保留（拼豆页区块圈选仍按它分块），
+  ///< 只是不画粗线；painter 侧按 alpha==0 跳过
   final int w;
 
   ///< 板宽（格）
