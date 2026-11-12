@@ -159,20 +159,20 @@ class BoardConfigPanel extends StatelessWidget {
   }
 }
 
-/// 底部操作条：导入作品 + 开始拼豆（作品超板或相互重叠时禁用并提示）
+/// 底部操作条：导入作品 + 开始拼豆（豆子出板或相互重叠时禁用并提示）
 class BoardBottomBar extends StatelessWidget {
   final List<PlacedWork> works;
 
   ///< 板上作品（空=「导入作品」文案 + 开始钮禁用）
   final int bw, bh;
 
-  ///< 板宽高（fits 判定）
+  ///< 板宽高（豆级出界判定）
   final VoidCallback onAddWork;
 
   ///< 导入/添加作品
   final VoidCallback? onStart;
 
-  ///< 开始拼豆（作品空、超板或重叠时调用方传 null 禁用）
+  ///< 开始拼豆（作品空、豆子出板或重叠时调用方传 null 禁用）
   const BoardBottomBar({
     super.key,
     required this.works,
@@ -184,21 +184,21 @@ class BoardBottomBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final anyOverflow = works.any((w) => !w.fits(bw, bh));
-    final anyOverlap = !anyOverflow && boardHasOverlap(works);
+    final anyOutside = boardHasBeadOutside(works, bw, bh);
+    final anyOverlap = !anyOutside && boardHasOverlap(works);
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (works.isNotEmpty && anyOverflow)
+          if (works.isNotEmpty && anyOutside)
             Text(
-              "有作品超出豆板 $bw×$bh（可继续摆放；开始拼豆前需换大板或收进板内）",
+              "有豆子超出豆板 $bw×$bh（可继续摆放；开始拼豆前需拖回板内或换大板）",
               style: const TextStyle(fontSize: 12, color: Colors.orange),
             )
           else if (works.isNotEmpty && anyOverlap)
             const Text(
-              "有作品相互重叠（浅红标注处），拖开后才能开始拼豆",
+              "有作品相互重叠（红标处），拖开后才能开始拼豆",
               style: TextStyle(fontSize: 12, color: Colors.orange),
             ),
           Row(

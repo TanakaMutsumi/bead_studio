@@ -109,6 +109,12 @@ class BoardPainter extends CustomPainter {
   ///< 是否画 interval 加粗分割线（板设置/拼豆页开——数格定位参考；
   ///< 选择页缩略图关——小尺寸下粗网格满屏遮挡作品，2026-11-12 反馈。
   ///< 板最外边框不受此开关影响）
+  final int padX, padY;
+
+  ///< 画布四周的板外余量（格数）：作品悬挂出板的部分画在这里。CustomPaint
+  ///< 越界绘制会被画布 cull 矩形裁掉（2026-11-12 设备实勘：悬挂带纯背景
+  ///< 色零像素），必须把余量算进画布尺寸、原点平移到板左上角。0 = 画布
+  ///< 即板（拼豆页/无悬挂态），行为与旧版完全一致
   final TransformationController? ctrl;
 
   ///< 视图变换控制器（拼豆页传入）：paint 实时读缩放做线宽补偿，并
@@ -197,6 +203,8 @@ class BoardPainter extends CustomPainter {
     this.showNonHiLabels = true,
     this.viewScale = 1.0,
     this.showMajorLines = true,
+    this.padX = 0,
+    this.padY = 0,
     TransformationController? ctrl,
   })  : ctrl = ctrl,
         super(repaint: ctrl);
@@ -330,8 +338,10 @@ class BoardPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final cellW = size.width / board.w;
-    final cellH = size.height / board.h;
+    // 画布含板外余量（padX/padY）：格尺寸按「板+两侧余量」全幅算，原点
+    // 平移到板左上角——此后所有绘制仍用板坐标，与 pad=0 完全同式
+    final cellW = size.width / (board.w + 2 * padX);
+    final cellH = size.height / (board.h + 2 * padY);
     // 视图缩放（格线/对勾线宽补偿基准，见 _scale 注释）
     final scale = _scale;
     final numbers =
@@ -341,10 +351,13 @@ class BoardPainter extends CustomPainter {
 
     // 板底：无高亮 = 白（空白格必须白底，不沉底变黑）；高亮中 = 中灰
     //（空白区与其他色号豆一起变灰衬托选中色）。任一 item 带高亮即算
-    //（按作品方案下仅范围内作品有）
+    //（按作品方案下仅范围内作品有）。只填板区——余量区保持透明，页面
+    // 背景透出，板边界一眼可辨
     final hiOn = items.any((e) => e.highlightId != null);
+    canvas.save();
+    canvas.translate(padX * cellW, padY * cellH);
     canvas.drawRect(
-      Offset.zero & size,
+      Offset.zero & Size(board.w * cellW, board.h * cellH),
       Paint()..color = hiOn ? _dimGray : const Color(0xFFFAFAFA),
     );
 
@@ -406,38 +419,59 @@ class BoardPainter extends CustomPainter {
       }
     }
 
-    // 重叠标注：同一板格被两件作品同时占豆（两边都非空格）才铺浅红——
-    // 豆级判定，空豆位置的交叠不标也不拦开始拼豆；超板悬挂部分只在板内
-    // 标注。画在豆色块之后、格线/文字之前，豆色仍从半透明下透出可辨
-    if (items.length > 1) {
-      final overlapPaint = Paint()
-        ..color = const Color(0xFFFFCDD2).withValues(alpha: 0.55)
-        ..style = PaintingStyle.fill;
-      for (var i = 0; i < items.length; i++) {
-        for (var j = i + 1; j < items.length; j++) {
-          final a = items[i], b = items[j];
-          final x0 = math.max(math.max(a.ox, b.ox), 0);
-          final y0 = math.max(math.max(a.oy, b.oy), 0);
-          final x1 = math.min(
-            math.min(a.ox + a.model.width, b.ox + b.model.width),
-            board.w,
-          );
-          final y1 = math.min(
-            math.min(a.oy + a.model.height, b.oy + b.model.height),
-            board.h,
-          );
-          for (var by = y0; by < y1; by++) {
-            for (var bx = x0; bx < x1; bx++) {
-              final av =
-                  a.model.grid[(by - a.oy) * a.model.width + (bx - a.ox)];
-              final bv =
-                  b.model.grid[(by - b.oy) * b.model.width + (bx - b.ox)];
-              if (av >= 0 && bv >= 0) {
-                canvas.drawRect(
-                  Rect.fromLTWH(bx * cellW, by * cellH, cellW, cellH),
-                  overlapPaint,
-                );
-              }
+    // 冲突标注（2026-11-12 加深定稿：红罩+深红描边，浅红罩用户反馈不够
+    // 醒目）——两类同款画法：①压豆重叠：同一板格被两件作品同时占豆
+    //（两边都非空格），豆级判定，空豆位置的交叠不标也不拦开始拼豆，
+    // 只在板内标注；②豆子出板：作品悬挂出界的非空白格（空白格出界
+    // 不标也不拦）。都画在豆色块之后、格线/文字之前，豆色仍从半透明
+    // 罩下透出可辨
+    final conflictFill = Paint()
+      ..color = const Color(0xFFE53935).withValues(alpha: 0.42)
+      ..style = PaintingStyle.fill;
+    final conflictStroke = Paint()
+      ..color = const Color(0xFFB71C1C)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2 / scale;
+    void markCell(int bx, int by) {
+      final rect = Rect.fromLTWH(bx * cellW, by * cellH, cellW, cellH);
+      canvas.drawRect(rect, conflictFill);
+      canvas.drawRect(rect.deflate(0.6 / scale), conflictStroke);
+    }
+
+    for (var i = 0; i < items.length; i++) {
+      final a = items[i];
+      // ② 豆子出板标注（悬挂部分照画——板设置页画布板外区域可见）
+      final am = a.model;
+      for (var y = 0; y < am.height; y++) {
+        for (var x = 0; x < am.width; x++) {
+          if (am.grid[y * am.width + x] < 0) {
+            continue;
+          }
+          final bx = a.ox + x, by = a.oy + y;
+          if (bx < 0 || bx >= board.w || by < 0 || by >= board.h) {
+            markCell(bx, by);
+          }
+        }
+      }
+      // ① 压豆重叠标注
+      for (var j = i + 1; j < items.length; j++) {
+        final b = items[j];
+        final x0 = math.max(math.max(a.ox, b.ox), 0);
+        final y0 = math.max(math.max(a.oy, b.oy), 0);
+        final x1 = math.min(
+          math.min(a.ox + a.model.width, b.ox + b.model.width),
+          board.w,
+        );
+        final y1 = math.min(
+          math.min(a.oy + a.model.height, b.oy + b.model.height),
+          board.h,
+        );
+        for (var by = y0; by < y1; by++) {
+          for (var bx = x0; bx < x1; bx++) {
+            final av = a.model.grid[(by - a.oy) * a.model.width + (bx - a.ox)];
+            final bv = b.model.grid[(by - b.oy) * b.model.width + (bx - b.ox)];
+            if (av >= 0 && bv >= 0) {
+              markCell(bx, by);
             }
           }
         }
@@ -454,11 +488,11 @@ class BoardPainter extends CustomPainter {
       ..color = hiOn ? Colors.black26 : Colors.black12;
     for (var x = 0; x <= board.w; x++) {
       final p = x * cellW;
-      canvas.drawLine(Offset(p, 0), Offset(p, size.height), linePaint);
+      canvas.drawLine(Offset(p, 0), Offset(p, board.h * cellH), linePaint);
     }
     for (var y = 0; y <= board.h; y++) {
       final p = y * cellH;
-      canvas.drawLine(Offset(0, p), Offset(size.width, p), linePaint);
+      canvas.drawLine(Offset(0, p), Offset(board.w * cellW, p), linePaint);
     }
 
     // 文字层：默认每格显示色号；高亮 + 编号模式时高亮格改为行/列分组编号
@@ -646,13 +680,21 @@ class BoardPainter extends CustomPainter {
       for (var x = 0; x <= board.w; x++) {
         if ((x + board.phaseX) % iv == 0) {
           final p = x * cellW;
-          canvas.drawLine(Offset(p, 0), Offset(p, size.height), majorPaint);
+          canvas.drawLine(
+            Offset(p, 0),
+            Offset(p, board.h * cellH),
+            majorPaint,
+          );
         }
       }
       for (var y = 0; y <= board.h; y++) {
         if ((y + board.phaseY) % iv == 0) {
           final p = y * cellH;
-          canvas.drawLine(Offset(0, p), Offset(size.width, p), majorPaint);
+          canvas.drawLine(
+            Offset(0, p),
+            Offset(board.w * cellW, p),
+            majorPaint,
+          );
         }
       }
     }
@@ -660,7 +702,10 @@ class BoardPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.2 / scale
       ..color = Colors.black87;
-    canvas.drawRect(Offset.zero & size, boardBorder);
+    canvas.drawRect(
+      Offset.zero & Size(board.w * cellW, board.h * cellH),
+      boardBorder,
+    );
 
     // 作品边框（豆板配置页）：选中加粗蓝，未选中细灰
     for (final item in items) {
@@ -716,6 +761,7 @@ class BoardPainter extends CustomPainter {
         cross,
       );
     }
+    canvas.restore();
   }
 
   @override
@@ -725,6 +771,8 @@ class BoardPainter extends CustomPainter {
         oldDelegate.showLabels != showLabels ||
         oldDelegate.showNonHiLabels != showNonHiLabels ||
         oldDelegate.viewScale != viewScale ||
+        oldDelegate.padX != padX ||
+        oldDelegate.padY != padY ||
         oldDelegate.items.length != items.length ||
         oldDelegate.items != items;
   }

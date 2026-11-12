@@ -46,6 +46,34 @@ bool boardHasOverlap(List<PlacedWork> works) {
   return false;
 }
 
+/// 板上是否有豆子（非空白格）落在板外：豆级判定——作品可整体悬挂出界
+///（宽/高最多移出一半），但空白格出界不碍事，非空白豆格出板 = 该豆
+/// 没地方放，与压豆重叠同为开始拼豆的硬门槛（2026-11-12 用户需求）。
+/// 画布出界红标同一口径
+bool boardHasBeadOutside(List<PlacedWork> works, int bw, int bh) {
+  for (final w in works) {
+    final m = w.model;
+    for (var y = 0; y < m.height; y++) {
+      final by = w.oy + y;
+      if (by < 0 || by >= bh) {
+        if (m.grid.skip(y * m.width).take(m.width).any((v) => v >= 0)) {
+          return true; // 整行在板外且行内有豆
+        }
+        continue;
+      }
+      for (var x = 0; x < m.width; x++) {
+        if (w.ox + x >= 0 && w.ox + x < bw) {
+          continue; // 板内格
+        }
+        if (m.grid[y * m.width + x] >= 0) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 /// 色号查显示颜色（任一含该色的作品调色板）
 BeadColor? colorOf(List<PlacedWork> works, String id) {
   for (final w in works) {

@@ -7,8 +7,6 @@
 /// 回原坐标，作品文件不感知变换
 library;
 
-import 'dart:math' as math;
-
 import '../../core/draft_store.dart';
 import '../../core/palette.dart';
 import '../../core/pattern_model.dart';
@@ -123,19 +121,13 @@ class PlacedWork {
   /// 作品是否完全放进板内（按变换后尺寸）
   bool fits(int bw, int bh) => _model.width <= bw && _model.height <= bh;
 
-  /// 把偏移 clamp 进可达范围：放得下的作品 [0, 板边-作品边]；超板作品
-  /// 允许负偏移（[板边-作品边, 0]，出界部分悬挂板外左/上），拖动可选
-  /// 哪一段落在板内
+  /// 把偏移 clamp 进可达范围：宽/高各自最多移出板外二分之一（左出
+  /// floor(W/2) 格、右出 ceil(W/2)-1 格，双向对称），出界部分悬挂板外
+  /// ——摆放期软约束，非空白格出界由开始拼豆门槛拦（boardHasBeadOutside）。
+  /// 超板作品同样按此范围（可整体悬挂只留一半在板内）
   void clampTo(int bw, int bh) {
-    ox = ox
-        .clamp(math.min(0, bw - _model.width), math.max(0, bw - _model.width))
-        .toInt();
-    oy = oy
-        .clamp(
-          math.min(0, bh - _model.height),
-          math.max(0, bh - _model.height),
-        )
-        .toInt();
+    ox = ox.clamp(-(_model.width ~/ 2), bw - (_model.width + 1) ~/ 2).toInt();
+    oy = oy.clamp(-(_model.height ~/ 2), bh - (_model.height + 1) ~/ 2).toInt();
   }
 
   PlacedWork copyWith({BeadPalette? palette}) {

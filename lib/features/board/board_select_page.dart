@@ -353,11 +353,26 @@ class _BoardSelectPageState extends State<BoardSelectPage> with RouteAware {
                     fit: StackFit.passthrough,
                     children: [
                       Center(
-                        child: AspectRatio(
-                          aspectRatio: vm.session.board.w / vm.session.board.h,
-                          child: Padding(
-                            padding: const EdgeInsets.all(4),
-                            child: CustomPaint(
+                        child: Builder(builder: (context) {
+                          // 板外余量：悬挂出板的作品在缩略图里也要画得出来
+                          //（口径同板设置页 _padX/_padY）
+                          final padX = vm.works.isEmpty
+                              ? 0
+                              : vm.works
+                                    .map((w) => (w.model.width + 1) ~/ 2)
+                                    .reduce((a, b) => a > b ? a : b);
+                          final padY = vm.works.isEmpty
+                              ? 0
+                              : vm.works
+                                    .map((w) => (w.model.height + 1) ~/ 2)
+                                    .reduce((a, b) => a > b ? a : b);
+                          return AspectRatio(
+                            aspectRatio:
+                                (vm.session.board.w + 2 * padX) /
+                                (vm.session.board.h + 2 * padY),
+                            child: Padding(
+                              padding: const EdgeInsets.all(4),
+                              child: CustomPaint(
                               size: Size.infinite,
                               painter: BoardPainter(
                                 board: vm.session.board,
@@ -365,6 +380,8 @@ class _BoardSelectPageState extends State<BoardSelectPage> with RouteAware {
 
                                 ///< 缩略图不画加粗分割线：小尺寸下粗网格
                                 ///< 满屏遮挡作品（2026-11-12 反馈）
+                                padX: padX,
+                                padY: padY,
                                 items: [
                                   for (final w in vm.works)
                                     BoardPaintItem(
@@ -377,7 +394,8 @@ class _BoardSelectPageState extends State<BoardSelectPage> with RouteAware {
                               ),
                             ),
                           ),
-                        ),
+                        );
+                        }),
                       ),
                       Positioned(
                         top: 0,

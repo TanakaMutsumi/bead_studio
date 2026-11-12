@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -10,6 +9,7 @@ import '../../core/draft_store.dart';
 import '../../core/palette.dart';
 import '../../core/palette_registry.dart';
 import '../../core/zoom_controls.dart';
+import '../editor/grid_painter.dart';
 import 'assemble_page.dart';
 import 'board_dialogs.dart';
 import 'board_painter.dart';
@@ -24,9 +24,9 @@ import 'placed_work.dart';
 /// 交互约定：点作品选中（再点空白取消），选中后单指拖动该作品、
 /// 右上角叉移除选中作品；未选中时单指平移画布、双指缩放。
 /// 摆放是软约束：添加永远成功（找不到互不重叠的空位就落左上角），
-/// 拖动自由摆放，压豆重叠处浅红标注；超板作品可拖动选哪一段落在板内。
-/// 开始拼豆前才硬性要求：全部作品完整在板内且互不压豆（空豆位置交叠
-/// 不碍事——判定按豆级，非矩形级）
+/// 拖动自由摆放（宽/高最多移出板外二分之一，出界部分悬挂板外），
+/// 压豆重叠与豆子出板处红标标注。开始拼豆前才硬性要求：没有非空白
+/// 豆格出板且互不压豆（空白格出板/空豆位置交叠不碍事——判定按豆级）
 ///
 /// 豆板管理：右上菜单按 Office 文件菜单语序「保存豆板 / 另存为豆板… //
 /// 新建豆板 / 打开豆板… // 删除当前豆板(仅已命名)」（2026-11-12 整理：
@@ -60,6 +60,21 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
   var _bh = 52;
 
   ///< 板高（格）
+
+  /// 画布板外余量（格）：作品宽/高各自最多悬挂 floor(W/2) 出板（clampTo
+  /// 半界口径），画布按板上最大作品的可能悬挂量对称留边——CustomPaint
+  /// 越界绘制会被 cull 裁掉，余量必须算进画布尺寸。空板 0（画布即板）。
+  /// 拼豆门槛拦的是「非空白格出板」，空白悬挂不拦但同样要画得出来
+  int get _padX => _works.isEmpty
+      ? 0
+      : _works
+            .map((w) => (w.model.width + 1) ~/ 2)
+            .reduce((a, b) => a > b ? a : b);
+  int get _padY => _works.isEmpty
+      ? 0
+      : _works
+            .map((w) => (w.model.height + 1) ~/ 2)
+            .reduce((a, b) => a > b ? a : b);
   var _interval = 5;
 
   ///< 加粗框线间隔
@@ -624,6 +639,12 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     }
     // 不按「已在板上」过滤：同一作品可重复添加多件（拼两幅同款等场景），
     // 重复件各占一块板位、可单独叉掉
+    // 预览图调色板逐件解析（GridPainter 需要渲染色卡；作品库页同款做法）
+    final sel = await PaletteRegistry.loadSelected();
+    final palettes = <WorkEntry, BeadPalette>{};
+    for (final w in all) {
+      palettes[w] = await PaletteRegistry.resolveForModel(w.model, sel.palette);
+    }
     final picked = await showModalBottomSheet<WorkEntry>(
       context: context,
       builder: (sctx) => SafeArea(
@@ -639,7 +660,25 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
             ),
             for (final w in all)
               ListTile(
-                leading: const Icon(Icons.grid_on_outlined),
+                // 作品预览图（2026-11-12 需求：不再用占位图标——库里
+                // 同名/近似图案多，认图比认名快）；非方形按原始宽高比
+                leading: SizedBox(
+                  width: 56,
+                  height: 56,
+                  child: Center(
+                    child: AspectRatio(
+                      aspectRatio: w.model.width / w.model.height,
+                      child: CustomPaint(
+                        size: Size.infinite,
+                        painter: GridPainter(
+                          model: w.model,
+                          palette: palettes[w]!,
+                          selectedColorIndex: -1,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
                 title: Text(w.name),
                 subtitle: Text(
                   "${w.model.width}×${w.model.height} · "
@@ -772,7 +811,8 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     if (_selected >= 0 && _selected < _works.length) {
       final w = _works[_selected];
       final scale = _viewerCtrl.value.getMaxScaleOnAxis();
-      final cell = canvasW / _bw / scale;
+      // cell 尺寸含板外余量（画布全幅 = 板 + 两侧 pad）
+      final cell = canvasW / (_bw + 2 * _padX) / scale;
       _accDx += d.focalPointDelta.dx;
       _accDy += d.focalPointDelta.dy;
       final dx = (_accDx / cell).truncate();
@@ -783,13 +823,14 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       _accDx -= dx * cell;
       _accDy -= dy * cell;
       final m = w.model;
-      // 偏移可达范围与 clampTo 同口径：放得下 [0, 板边-作品边]；超板
-      // [板边-作品边, 0]（出界部分悬挂板外左/上）
-      final nx = (w.ox + dx)
-          .clamp(math.min(0, _bw - m.width), math.max(0, _bw - m.width))
-          .toInt();
+
+      ///< 偏移可达范围与 clampTo 同口径：宽/高最多移出板外二分之一
+      ///（2026-11-12 用户需求：出界部分悬挂板外，非空白格出界由
+      /// 开始拼豆门槛拦截）
+      final nx =
+          (w.ox + dx).clamp(-(m.width ~/ 2), _bw - (m.width + 1) ~/ 2).toInt();
       final ny = (w.oy + dy)
-          .clamp(math.min(0, _bh - m.height), math.max(0, _bh - m.height))
+          .clamp(-(m.height ~/ 2), _bh - (m.height + 1) ~/ 2)
           .toInt();
       setState(() {
         w.ox = nx;
@@ -811,8 +852,9 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
   void _onCanvasTap(Offset local, double canvasW, double canvasH) {
     // 删除叉命中检测（仅选中作品，与 painter 画叉同款几何）：圆心=作品
     // 右上角顶点，半径按视图缩放补偿（放大后命中区视觉恒定）
-    final cellW = canvasW / _bw;
-    final cellH = canvasH / _bh;
+    // cell 尺寸含板外余量；板坐标 = 画布坐标减 pad（原点在板左上角）
+    final cellW = canvasW / (_bw + 2 * _padX);
+    final cellH = canvasH / (_bh + 2 * _padY);
     final hitR = 26 / _viewerCtrl.value.getMaxScaleOnAxis();
     for (var i = _works.length - 1; i >= 0; i--) {
       if (i != _selected) {
@@ -820,14 +862,17 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       }
       final w = _works[i];
       final m = w.model;
-      final center = Offset((w.ox + m.width) * cellW, w.oy * cellH);
+      final center = Offset(
+        (w.ox + _padX + m.width) * cellW,
+        (w.oy + _padY) * cellH,
+      );
       if ((local - center).distance <= hitR) {
         _confirmRemoveAt(i);
         return;
       }
     }
-    final bx = (local.dx / (canvasW / _bw)).floor();
-    final by = (local.dy / (canvasH / _bh)).floor();
+    final bx = (local.dx / cellW).floor() - _padX;
+    final by = (local.dy / cellH).floor() - _padY;
     var hit = -1;
     for (var i = _works.length - 1; i >= 0; i--) {
       final w = _works[i];
@@ -897,23 +942,23 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
 
   // ==================== 开始拼豆 ====================
 
-  /// 摆放是否就绪（开始拼豆的硬门槛）：全部作品完整在板内且互不压豆
-  ///（空豆位置交叠不算冲突）。摆放期间超板/压豆只是浅红提示，进入
-  /// 实际拼豆前必须收拾干净
+  /// 摆放是否就绪（开始拼豆的硬门槛）：没有非空白豆格出板且互不压豆
+  ///（空白格出板/空豆位置交叠不算冲突——判定按豆级）。摆放期间出板/
+  /// 压豆只是红标提示，进入实际拼豆前必须收拾干净
   bool _boardClean() =>
-      !_works.any((w) => !w.fits(_bw, _bh)) && !boardHasOverlap(_works);
+      !boardHasBeadOutside(_works, _bw, _bh) && !boardHasOverlap(_works);
 
   /// 开始拼豆：确认「保存并开始拼豆？」（是=保存后进入；否/点外部=留在本页）
   Future<void> _startAssemble() async {
     if (_works.isEmpty) {
       return;
     }
-    if (_works.any((w) => !w.fits(_bw, _bh))) {
-      AppSnackBar.show(context, "有作品超出豆板（可换大板或自定义尺寸）");
+    if (boardHasBeadOutside(_works, _bw, _bh)) {
+      AppSnackBar.show(context, "有豆子超出豆板（红标处），拖回板内或换大板后再开始");
       return;
     }
     if (boardHasOverlap(_works)) {
-      AppSnackBar.show(context, "作品有压豆重叠（浅红标注处），拖开后再开始拼豆");
+      AppSnackBar.show(context, "作品有压豆重叠（红标处），拖开后再开始拼豆");
       return;
     }
     final save = await _confirmDialog("保存并开始拼豆？", "保存当前豆板后进入拼豆");
@@ -980,6 +1025,26 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
           title: AdaptiveTitleText(
               _boardName == null ? "拼豆板设置" : "拼豆板 · $_boardName"),
           actions: [
+            // 无选中：文件操作铺开成图标一步直达（2026-11-12 用户需求——
+            // 此前藏在 ⋮ 菜单里要点两下）；选中作品时让位给变换工具组
+            //（Office 上下文工具语义），全量入口仍在 ⋮ 菜单兜底
+            if (_selected < 0) ...[
+              IconButton(
+                onPressed: _saveBoard,
+                icon: const Icon(Icons.save_outlined),
+                tooltip: "保存豆板",
+              ),
+              IconButton(
+                onPressed: _newBoard,
+                icon: const Icon(Icons.note_add_outlined),
+                tooltip: "新建豆板",
+              ),
+              IconButton(
+                onPressed: _openBoardPicker,
+                icon: const Icon(Icons.folder_open_outlined),
+                tooltip: "打开豆板",
+              ),
+            ],
             if (_selected >= 0) ...[
               IconButton(
                 onPressed: () => _transformSelected(rotDelta: 3),
@@ -1124,7 +1189,9 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
               ///< 平移/缩放由子层 onScaleUpdate 分发（未选中平移/选中拖作品/双指缩放）
               boundaryMargin: const EdgeInsets.all(300),
               child: AspectRatio(
-                aspectRatio: _bw / _bh,
+                // 画布纵横比含板外余量（悬挂作品的出板部分要画得出来，
+                // 见 _padX 注释）
+                aspectRatio: (_bw + 2 * _padX) / (_bh + 2 * _padY),
                 child: LayoutBuilder(
                   builder: (context, constraints) {
                     final canvasW = constraints.maxWidth;
@@ -1163,6 +1230,8 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
                           // showClose：仅选中作品画右上角删除叉（先点选中、
                           // 再点叉删，未选中不显示也不可点，防误触）
                           viewScale: _viewerCtrl.value.getMaxScaleOnAxis(),
+                          padX: _padX,
+                          padY: _padY,
                           items: [
                             for (var i = 0; i < _works.length; i++)
                               BoardPaintItem(
