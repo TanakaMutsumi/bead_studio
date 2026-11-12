@@ -497,10 +497,14 @@ class _WorksPageState extends State<WorksPage> {
                             padding: const EdgeInsets.all(4),
                             child: CustomPaint(
                               size: Size.infinite,
+                              // 缩略图模式：去格线+浅黑外框+透明底（2026-11-12
+                              // 需求：小尺寸下格线密成噪点遮图案）
                               painter: GridPainter(
                                 model: w.entry.model,
                                 palette: w.palette,
                                 selectedColorIndex: -1,
+                                showGrid: false,
+                                outline: true,
                               ),
                             ),
                           ),
@@ -581,13 +585,18 @@ class _WorksPageState extends State<WorksPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        w.entry.name,
-                        maxLines: 2,
-
-                        ///< 长名两行放完，不再一行截「…」（2026-11-10 反馈）
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodySmall,
+                      // 名字恒占两行盒（一行名补空）：文本区恒等高 →
+                      // Expanded 缩略图盒不随名字行数变，各作品浅黑外框
+                      // 大小一致（2026-11-12 需求：自适应缩放到统一效果；
+                      // 长名两行放完不截「…」是 2026-11-10 反馈，保留）
+                      SizedBox(
+                        height: 2 * _lineHeight(context),
+                        child: Text(
+                          w.entry.name,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
                       ),
                       Text(
                         "${w.entry.model.width}×${w.entry.model.height} · ${_fmtTime(w.entry.updatedAt)}",
@@ -607,6 +616,19 @@ class _WorksPageState extends State<WorksPage> {
         );
       },
     );
+  }
+
+  /// 当前主题 bodySmall 的单行高（TextPainter 实测，随系统字体缩放
+  /// 自适应）——作品卡名字区恒占两行的量尺
+  double _lineHeight(BuildContext context) {
+    final tp = TextPainter(
+      text: TextSpan(
+        text: "测",
+        style: Theme.of(context).textTheme.bodySmall,
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    return tp.height;
   }
 
   /// 多选模式底部批量操作条

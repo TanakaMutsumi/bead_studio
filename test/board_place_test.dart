@@ -11,7 +11,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 /// 豆板摆放：clampTo 出界半界（宽/高最多移出二分之一）/
 /// boardHasBeadOutside（豆级出界判定，空白格出界不拦）/ 拖动手势全链
-///（拖到出界极限 → 底部提示 + 开始拼豆禁用；拖回板内恢复）
+///（拖到出界极限 → 底部提示 + 开始拼豆禁用；拖回板内恢复）/
+/// 撤销重做（拖动出界→undo 恢复→redo 再出界）/ dirty 三键退出
 void main() {
   PatternModel model(int w, int h, {int blankLeft = 0}) => PatternModel(
         width: w,
@@ -172,6 +173,114 @@ void main() {
 
       expect(find.textContaining("豆子超出豆板"), findsNothing);
       expect(btn().onPressed, isNotNull);
+    });
+  });
+
+  group('撤销/重做（板设置页）', () {
+    testWidgets('拖动出界 → 撤销恢复板内 → 重做再次出界', (tester) async {
+      final e = entryOf(model(26, 26));
+      await tester.pumpWidget(
+        MaterialApp(home: BoardSetupPage(initial: e)),
+      );
+      await tester.pumpAndSettle();
+
+      // byTooltip 命中的是 RawTooltip 壳，按图标找 IconButton 本体
+      IconButton undoBtn() =>
+          tester.widget<IconButton>(find.widgetWithIcon(IconButton, Icons.undo));
+      IconButton redoBtn() =>
+          tester.widget<IconButton>(find.widgetWithIcon(IconButton, Icons.redo));
+
+      // 初始无历史：撤销/重做都置灰
+      expect(undoBtn().onPressed, isNull);
+      expect(redoBtn().onPressed, isNull);
+
+      // 拖到出界极限（同前测：clamp 到 -13 全出界）
+      final canvas = tester.getRect(find.byType(InteractiveViewer).first);
+      final g = await tester.startGesture(canvas.center);
+      await tester.pump(const Duration(milliseconds: 120));
+      await g.moveBy(const Offset(-3000, -3000));
+      await tester.pump();
+      await g.up();
+      await tester.pumpAndSettle();
+      expect(find.textContaining("豆子超出豆板"), findsOneWidget);
+
+      // 拖动产生历史：撤销可按、重做仍置灰
+      expect(undoBtn().onPressed, isNotNull);
+      expect(redoBtn().onPressed, isNull);
+
+      // 撤销：回到拖动前（板内居中），出界提示消失
+      undoBtn().onPressed!();
+      await tester.pumpAndSettle();
+      expect(find.textContaining("豆子超出豆板"), findsNothing);
+      expect(redoBtn().onPressed, isNotNull);
+
+      // 重做：再次出界
+      redoBtn().onPressed!();
+      await tester.pumpAndSettle();
+      expect(find.textContaining("豆子超出豆板"), findsOneWidget);
+    });
+
+    testWidgets('改动后 back 弹三键保存确认；撤销回已存态直接退出', (tester) async {
+      final e = entryOf(model(26, 26));
+      // 垫引导页再 push：根路由的 popDisposition 恒 bubble（back 关App
+      // 语义），压栈后 PopScope 拦截/放行才有观测点
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (ctx) => Scaffold(
+              body: Center(
+                child: ElevatedButton(
+                  onPressed: () => Navigator.push(
+                    ctx,
+                    MaterialPageRoute(
+                      builder: (_) => BoardSetupPage(initial: e),
+                    ),
+                  ),
+                  child: const Text("open"),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text("open"));
+      await tester.pumpAndSettle();
+
+      // 干净板（进页即基线）back：不弹框直接退出
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byType(BoardSetupPage), findsNothing);
+
+      // 重进 → 拖动改坐标 → dirty
+      await tester.tap(find.text("open"));
+      await tester.pumpAndSettle();
+      final canvas = tester.getRect(find.byType(InteractiveViewer).first);
+      final g = await tester.startGesture(canvas.center);
+      await tester.pump(const Duration(milliseconds: 120));
+      await g.moveBy(const Offset(-3000, -3000));
+      await tester.pump();
+      await g.up();
+      await tester.pumpAndSettle();
+
+      // back：弹「保存豆板？」三键（是/否/取消）
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.text("保存豆板？"), findsOneWidget);
+
+      // 取消：留在本页
+      await tester.tap(find.text("取消"));
+      await tester.pumpAndSettle();
+      expect(find.byType(BoardSetupPage), findsOneWidget);
+      expect(find.text("保存豆板？"), findsNothing);
+
+      // 撤销回到进页基线（clean）→ back 直接退出，不再弹
+      tester
+          .widget<IconButton>(find.widgetWithIcon(IconButton, Icons.undo))
+          .onPressed!();
+      await tester.pumpAndSettle();
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byType(BoardSetupPage), findsNothing);
     });
   });
 }

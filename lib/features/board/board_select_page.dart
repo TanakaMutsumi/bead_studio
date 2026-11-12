@@ -376,10 +376,12 @@ class _BoardSelectPageState extends State<BoardSelectPage> with RouteAware {
                               size: Size.infinite,
                               painter: BoardPainter(
                                 board: vm.session.board,
-                                showMajorLines: false,
 
-                                ///< 缩略图不画加粗分割线：小尺寸下粗网格
-                                ///< 满屏遮挡作品（2026-11-12 反馈）
+                                ///< 缩略图模式（2026-11-12 需求定稿）：去全部
+                                ///< 格线（细线/加粗线）+ 透明底 + 浅黑细外框
+                                ///< ——豆板原图只留作品色块，小尺寸下网格
+                                ///< 满屏遮挡作品；红标（出界/重叠）照画
+                                thumbnail: true,
                                 padX: padX,
                                 padY: padY,
                                 items: [
@@ -450,13 +452,18 @@ class _BoardSelectPageState extends State<BoardSelectPage> with RouteAware {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        vm.entry.name,
-                        maxLines: 2,
-
-                        ///< 长名两行放完，不再一行截「…」（2026-11-10 反馈）
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodySmall,
+                      // 名字恒占两行盒（一行名补空）：文本区恒等高 → Expanded
+                      // 缩略图盒不随名字行数变，各豆板缩略图大小一致
+                      //（2026-11-12 需求：自适应缩放到统一效果；长名两行
+                      // 放完不截「…」是 2026-11-10 反馈，保留）
+                      SizedBox(
+                        height: 2 * _lineHeight(context),
+                        child: Text(
+                          vm.entry.name,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
                       ),
                       Text(
                         "${vm.entry.workCount} 件作品 · ${vm.entry.boardLabel}"
@@ -477,6 +484,19 @@ class _BoardSelectPageState extends State<BoardSelectPage> with RouteAware {
         );
       },
     );
+  }
+
+  /// 当前主题 bodySmall 的单行高（TextPainter 实测，随字体缩放自适应）
+  /// ——豆板卡名字区恒占两行的量尺（同作品库卡片做法）
+  double _lineHeight(BuildContext context) {
+    final tp = TextPainter(
+      text: TextSpan(
+        text: "测",
+        style: Theme.of(context).textTheme.bodySmall,
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    return tp.height;
   }
 
   String _fmtTime(DateTime t) =>

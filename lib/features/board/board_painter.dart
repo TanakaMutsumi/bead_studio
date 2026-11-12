@@ -109,6 +109,12 @@ class BoardPainter extends CustomPainter {
   ///< 是否画 interval 加粗分割线（板设置/拼豆页开——数格定位参考；
   ///< 选择页缩略图关——小尺寸下粗网格满屏遮挡作品，2026-11-12 反馈。
   ///< 板最外边框不受此开关影响）
+  final bool thumbnail;
+
+  ///< 缩略图模式（豆板选择页，2026-11-12 需求）：去板底填色（透明底）
+  ///< + 去全部格线（细线与加粗线同 showMajorLines=false 一并关——
+  ///< 豆板原图只留作品色块），板最外框换浅黑细线（black38）。红标等
+  ///< item 层标注不受影响照画
   final int padX, padY;
 
   ///< 画布四周的板外余量（格数）：作品悬挂出板的部分画在这里。CustomPaint
@@ -203,6 +209,7 @@ class BoardPainter extends CustomPainter {
     this.showNonHiLabels = true,
     this.viewScale = 1.0,
     this.showMajorLines = true,
+    this.thumbnail = false,
     this.padX = 0,
     this.padY = 0,
     TransformationController? ctrl,
@@ -356,10 +363,13 @@ class BoardPainter extends CustomPainter {
     final hiOn = items.any((e) => e.highlightId != null);
     canvas.save();
     canvas.translate(padX * cellW, padY * cellH);
-    canvas.drawRect(
-      Offset.zero & Size(board.w * cellW, board.h * cellH),
-      Paint()..color = hiOn ? _dimGray : const Color(0xFFFAFAFA),
-    );
+    // 板底：缩略图不填（透明底，卡片面透出即板界）
+    if (!thumbnail) {
+      canvas.drawRect(
+        Offset.zero & Size(board.w * cellW, board.h * cellH),
+        Paint()..color = hiOn ? _dimGray : const Color(0xFFFAFAFA),
+      );
+    }
 
     // 各作品格（板外部分画布自裁；越界索引/调色板缺失跳过）
     final gridPaint = Paint()..style = PaintingStyle.fill;
@@ -486,13 +496,15 @@ class BoardPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 0.5 / scale
       ..color = hiOn ? Colors.black26 : Colors.black12;
-    for (var x = 0; x <= board.w; x++) {
-      final p = x * cellW;
-      canvas.drawLine(Offset(p, 0), Offset(p, board.h * cellH), linePaint);
-    }
-    for (var y = 0; y <= board.h; y++) {
-      final p = y * cellH;
-      canvas.drawLine(Offset(0, p), Offset(board.w * cellW, p), linePaint);
+    if (!thumbnail) {
+      for (var x = 0; x <= board.w; x++) {
+        final p = x * cellW;
+        canvas.drawLine(Offset(p, 0), Offset(p, board.h * cellH), linePaint);
+      }
+      for (var y = 0; y <= board.h; y++) {
+        final p = y * cellH;
+        canvas.drawLine(Offset(0, p), Offset(board.w * cellW, p), linePaint);
+      }
     }
 
     // 文字层：默认每格显示色号；高亮 + 编号模式时高亮格改为行/列分组编号
@@ -676,7 +688,7 @@ class BoardPainter extends CustomPainter {
       ..strokeWidth = 1.2 / scale
       ..color = majorColor;
     final iv = board.interval;
-    if (showMajorLines) {
+    if (showMajorLines && !thumbnail) {
       for (var x = 0; x <= board.w; x++) {
         if ((x + board.phaseX) % iv == 0) {
           final p = x * cellW;
@@ -698,10 +710,12 @@ class BoardPainter extends CustomPainter {
         }
       }
     }
+    // 板外框：常规深黑粗线；缩略图换浅黑细线（去格线后外框是唯一
+    // 板界提示，太重会在小尺寸下压作品）
     final boardBorder = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.2 / scale
-      ..color = Colors.black87;
+      ..strokeWidth = (thumbnail ? 1.2 : 2.2) / scale
+      ..color = thumbnail ? Colors.black38 : Colors.black87;
     canvas.drawRect(
       Offset.zero & Size(board.w * cellW, board.h * cellH),
       boardBorder,
@@ -771,6 +785,8 @@ class BoardPainter extends CustomPainter {
         oldDelegate.showLabels != showLabels ||
         oldDelegate.showNonHiLabels != showNonHiLabels ||
         oldDelegate.viewScale != viewScale ||
+        oldDelegate.showMajorLines != showMajorLines ||
+        oldDelegate.thumbnail != thumbnail ||
         oldDelegate.padX != padX ||
         oldDelegate.padY != padY ||
         oldDelegate.items.length != items.length ||

@@ -28,12 +28,12 @@ import 'placed_work.dart';
 /// 压豆重叠与豆子出板处红标标注。开始拼豆前才硬性要求：没有非空白
 /// 豆格出板且互不压豆（空白格出板/空豆位置交叠不碍事——判定按豆级）
 ///
-/// 豆板管理：右上菜单按 Office 文件菜单语序「保存豆板 / 另存为豆板… //
-/// 新建豆板 / 打开豆板… // 删除当前豆板(仅已命名)」（2026-11-12 整理：
-/// 此前只有「另存为」一个保存入口，主保存动词缺失）；
-/// 已命名豆板随增删/拖动/换板自动覆盖保存。「开始拼豆」与 back 退出都先弹
-/// 保存确认（是=保存后继续；否=不保存继续；点外部=留在本页），未命名板
-/// 选「是」先问豆板名。不打开旧豆板进入 = 新的空板
+/// 豆板管理：右上「保存豆板」图标 + 撤销/重做图标（随编辑历史启停）+
+/// ⋮ 菜单（保存/另存为…/新建/打开…/删除，仅已命名板有删除）。改动不再
+/// 连续自动保存——dirty 由状态键派生（_stateKey 与最近保存基线比对，
+/// undo 回到已存态自动变 clean）；有未保存修改时新建/打开其他豆板/
+/// back 退出统一弹三键确认（保存/不保存/取消，Office 规范），干净板
+/// 静默放行。未命名板选「保存」先问豆板名。不打开旧豆板进入 = 新的空板
 ///
 /// [initial] 保存作品后直接开始拼豆时带入的作品；null = 不带入
 /// [initialBoard] 从豆板选择页进入时带入的豆板（载入其配置与作品摆位）；
@@ -49,8 +49,6 @@ class BoardSetupPage extends StatefulWidget {
 }
 
 class _BoardSetupPageState extends State<BoardSetupPage> {
-  static const _presets = [52, 78, 104];
-
   final List<PlacedWork> _works = [];
 
   ///< 板上作品列表（后加入的画在上层）
@@ -102,6 +100,19 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
   var _popAllowed = false;
 
   ///< 退出确认已通过（放行本次 pop，防 PopScope 拦截自己发起的 pop）
+  String? _savedKey;
+
+  ///< 最近保存/载入时的状态键（null = 尚无基线，视为 clean）。dirty 由
+  ///< 键比对派生，免手工维护 flag——undo 回到已存态自动变 clean
+  final List<_SetupSnap> _undoStack = [];
+
+  ///< 撤销栈（栈顶 = 最近一次改动前的状态；上限 50 步，超出丢最旧）
+  final List<_SetupSnap> _redoStack = [];
+
+  ///< 重做栈（undo 时压入当前态；任何新改动即清空）
+  _SetupSnap? _dragSnap;
+
+  ///< 拖动手势起手快照（onScaleStart 捕获，onScaleEnd 真有位移才入栈）
   final _viewerCtrl = TransformationController();
 
   @override
@@ -113,6 +124,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       if (b != null) {
         _loadBoard(b); // 从豆板选择页进入：载入选中豆板（异步，含失效作品跳过）
       }
+      _savedKey = _stateKey(); // 载入失败/空板的兜底基线（载入成功后刷新）
       return; // 都不带：新的空板（要继续旧板走「打开豆板」）
     }
     final b = e.board;
@@ -143,6 +155,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     w.clampTo(_bw, _bh);
     _works.add(w);
     _selected = 0;
+    _savedKey = _stateKey();
     _resolvePalette(0);
   }
 
@@ -178,13 +191,145 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
         ],
       );
 
-  /// 已命名豆板自动覆盖保存（增删/拖动结束/换板/换相位后调用；未命名板不落盘）
-  Future<void> _persistBoard() async {
-    final name = _boardName;
-    if (name == null) {
+  // ==================== dirty 状态与撤销/重做 ====================
+
+  /// 当前状态键：板配置 + 各作品（文件@偏移@变换）。与 [_savedKey] 比对
+  /// 派生 dirty；选中等视图态不参与（不构成「修改」）
+  String _stateKey() {
+    final sb = StringBuffer(
+      "$_bw|$_bh|$_interval|$_phaseX|$_phaseY|$_majorColor",
+    );
+    for (final w in _works) {
+      sb.write(
+        "|${w.entry.file.path}"
+        "@${w.ox},${w.oy},${w.rot},${w.flipH},${w.flipV}",
+      );
+    }
+    return sb.toString();
+  }
+
+  /// 有未保存修改（Office 文档 dirty；无基线=刚进页/载入中，视为干净）
+  bool get _dirty => _savedKey != null && _stateKey() != _savedKey;
+
+  /// 置当前态为已保存基线（保存/另存/载入/新建重置后调用）
+  void _markSaved() => _savedKey = _stateKey();
+
+  _SetupSnap _captureSnap() => _SetupSnap(
+        name: _boardName,
+        file: _boardFile,
+        bw: _bw,
+        bh: _bh,
+        interval: _interval,
+        phaseX: _phaseX,
+        phaseY: _phaseY,
+        majorColor: _majorColor,
+        key: _stateKey(),
+        works: [
+          for (final w in _works)
+            _SnapWork(
+              ref: w,
+              ox: w.ox,
+              oy: w.oy,
+              rot: w.rot,
+              flipH: w.flipH,
+              flipV: w.flipV,
+            ),
+        ],
+      );
+
+  /// 变更前调用（快照 = 改动前状态）。与栈顶同键（前一次操作未产生实际
+  /// 变化）不入栈，避免出现「按撤销没反应」的空步
+  void _pushUndo() {
+    final s = _captureSnap();
+    if (_undoStack.isNotEmpty && _undoStack.last.key == s.key) {
       return;
     }
-    _boardFile = await DraftStore.saveBoardFile(_currentSession(name));
+    _undoStack.add(s);
+    if (_undoStack.length > 50) {
+      _undoStack.removeAt(0);
+    }
+    _redoStack.clear();
+    setState(() {}); // AppBar 撤销/重做按钮启停跟随
+  }
+
+  /// 拖动手势结束：起手快照与当前态不同（真拖动了作品/板）才入栈。
+  /// 注意不能按 _pushUndo 的同键折叠——拖动前栈顶常恰好等于起手态
+  ///（上一步刚改过），这里要的是「回到起手」这一步
+  void _endDrag() {
+    final s = _dragSnap;
+    _dragSnap = null;
+    if (s == null || s.key == _stateKey()) {
+      return;
+    }
+    _undoStack.add(s);
+    if (_undoStack.length > 50) {
+      _undoStack.removeAt(0);
+    }
+    _redoStack.clear();
+    setState(() {});
+  }
+
+  void _undo() {
+    if (_undoStack.isEmpty) {
+      return;
+    }
+    setState(() {
+      _redoStack.add(_captureSnap());
+      _applySnap(_undoStack.removeLast());
+    });
+  }
+
+  void _redo() {
+    if (_redoStack.isEmpty) {
+      return;
+    }
+    setState(() {
+      _undoStack.add(_captureSnap());
+      _applySnap(_redoStack.removeLast());
+    });
+  }
+
+  /// 应用快照（undo/redo 共用；不 setState，由调用方包裹）。作品实例
+  /// 优先按同一性回填（保留 resolveForModel 换过的调色板）；copyWith
+  /// 换过壳的按作品文件兜底匹配；实例已不在当前列表（被移除的作品）用
+  /// 快照里的引用复活——它带着离板时已解析的调色板
+  void _applySnap(_SetupSnap s) {
+    final pool = List<PlacedWork>.of(_works);
+    final restored = <PlacedWork>[];
+    for (final e in s.works) {
+      PlacedWork? cur;
+      for (var i = 0; i < pool.length; i++) {
+        if (identical(pool[i], e.ref)) {
+          cur = pool.removeAt(i);
+          break;
+        }
+      }
+      if (cur == null) {
+        for (var i = 0; i < pool.length; i++) {
+          if (pool[i].entry.file == e.ref.entry.file) {
+            cur = pool.removeAt(i);
+            break;
+          }
+        }
+      }
+      final w = cur ?? e.ref;
+      w.ox = e.ox;
+      w.oy = e.oy;
+      w.setTransform(rot: e.rot, flipH: e.flipH, flipV: e.flipV);
+      restored.add(w);
+    }
+    _boardName = s.name;
+    _boardFile = s.file;
+    _bw = s.bw;
+    _bh = s.bh;
+    _interval = s.interval;
+    _phaseX = s.phaseX;
+    _phaseY = s.phaseY;
+    _majorColor = s.majorColor;
+    _works
+      ..clear()
+      ..addAll(restored);
+    _selected = -1; // 快照不带选中态（视图不属于历史），回到无选中
   }
 
   /// 打开豆板列表（BottomSheet 点选载入）
@@ -198,8 +343,8 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       return;
     }
 
-    ///< 未命名板上有摆板：换板即丢弃，先确认（已命名板自动保存无此虑）
-    if (!await _confirmDiscardUnsaved("打开豆板")) {
+    ///< 有未保存修改先三键确认（保存/不保存/取消），干净板直接换
+    if (!await _confirmUnsavedAction("打开豆板")) {
       return;
     }
     final picked = await showModalBottomSheet<BoardEntry>(
@@ -281,6 +426,15 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       )..clampTo(_bw, _bh);
       setState(() => _works.add(w));
     }
+    if (!mounted) {
+      return;
+    }
+    // 载入完成：载入态即基线（clean），撤销历史属新文档从头计
+    setState(() {
+      _markSaved();
+      _undoStack.clear();
+      _redoStack.clear();
+    });
   }
 
   /// 另存为豆板（输入名字保存；保存后随编辑自动覆盖）
@@ -293,8 +447,11 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     if (!mounted) {
       return; // 保存已完成，页面销毁只跳过 UI 更新
     }
-    setState(() => _boardName = n);
-    AppSnackBar.show(context, "已保存豆板「$n」，继续编辑会自动保存");
+    setState(() {
+      _boardName = n;
+      _markSaved();
+    });
+    AppSnackBar.show(context, "已保存豆板「$n」");
   }
 
   /// 菜单「保存豆板」：显式主保存动词（Office 的 Ctrl+S 位）——已命名板
@@ -310,6 +467,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     if (!mounted) {
       return; // 保存已完成，页面销毁只跳过 UI 更新
     }
+    setState(() => _markSaved());
     AppSnackBar.show(context, "已保存豆板「$name」");
   }
 
@@ -331,6 +489,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     final name = _boardName;
     if (name != null) {
       _boardFile = await DraftStore.saveBoardFile(_currentSession(name));
+      _markSaved();
       return true;
     }
     final n = await _askBoardName("保存豆板");
@@ -341,7 +500,10 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     if (!mounted) {
       return true; // 保存已完成，页面销毁只跳过 UI 更新（调用方另查 mounted）
     }
-    setState(() => _boardName = n);
+    setState(() {
+      _boardName = n;
+      _markSaved();
+    });
     AppSnackBar.show(context, "已保存豆板「$n」");
     return true;
   }
@@ -356,10 +518,10 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     return confirmDialog(context, title, content, cancelLabel: cancelLabel);
   }
 
-  /// back 退出确认：板上有作品时问是否保存——显式三键（是=保存退出 /
-  /// 否=不保存直接退出 / 取消=留在本页；点外部同取消）
+  /// back 退出确认：有未保存修改时问是否保存——显式三键（是=保存退出 /
+  /// 否=不保存直接退出 / 取消=留在本页；点外部同取消）；干净板静默退出
   Future<void> _confirmExit() async {
-    if (_works.isEmpty) {
+    if (!_dirty) {
       _doExit();
       return;
     }
@@ -390,37 +552,35 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     });
   }
 
-  /// 未命名板上有作品时确认丢弃才放行（Office 规范：未保存文档上
-  /// 新建/打开其他文件先提示）。已命名板随编辑自动保存、无未保存改动，
-  /// 空板无可丢——两者直接放行，不再恐吓式确认（2026-11-12 整理）
-  Future<bool> _confirmDiscardUnsaved(String action) async {
-    if (_boardName != null || _works.isEmpty) {
+  /// 有未保存修改时的三键确认（2026-11-12 需求：新建豆板/打开其他豆板
+  /// 与退出同理先问保存）。返回 true=放行（改动已保存或明确丢弃）；
+  /// false=取消留在本页。干净板直接放行，不恐吓式弹窗
+  Future<bool> _confirmUnsavedAction(String action) async {
+    if (!_dirty) {
       return true;
     }
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (dctx) => AlertDialog(
-        title: Text("$action？"),
-        content: Text("当前摆板还没保存，$action后将丢弃"),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dctx, false),
-            child: const Text("取消"),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dctx, true),
-            child: Text(action),
-          ),
-        ],
-      ),
+    final save = await _confirmDialog(
+      "保存豆板？",
+      "当前豆板有未保存的修改。「是」保存后$action；「否」不保存直接"
+      "$action（丢弃修改）；「取消」留在本页",
+      cancelLabel: "取消",
     );
-    return ok == true;
+    if (save == null || !mounted) {
+      return false;
+    }
+    if (save) {
+      final ok = await _ensureSaved();
+      if (!ok || !mounted) {
+        return false; // 未命名板放弃输名字：视同取消
+      }
+    }
+    return true;
   }
 
-  /// 新建豆板（未命名板上有摆板先确认丢弃；已命名板已自动保存、空板
-  /// 无可丢，直接新建）
+  /// 新建豆板（有未保存修改先三键确认）；新文档新历史——撤销栈清空、
+  /// 空板态即基线
   Future<void> _newBoard() async {
-    if (!await _confirmDiscardUnsaved("新建")) {
+    if (!await _confirmUnsavedAction("新建豆板")) {
       return;
     }
     setState(() {
@@ -434,6 +594,9 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       _majorColor = null;
       _works.clear();
       _selected = -1;
+      _undoStack.clear();
+      _redoStack.clear();
+      _markSaved();
     });
   }
 
@@ -468,11 +631,16 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     if (!mounted) {
       return;
     }
+    // 删除即终结：文件已没了，历史不可回（弹窗已明示无法恢复）——
+    // 回空板态重置基线并清栈
     setState(() {
       _boardName = null;
       _boardFile = null;
       _works.clear();
       _selected = -1;
+      _undoStack.clear();
+      _redoStack.clear();
+      _markSaved();
     });
   }
 
@@ -508,6 +676,10 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
   void _setBoardSize(int side) => _applyBoardSize(side, side);
 
   void _applyBoardSize(int w, int h) {
+    if (w == _bw && h == _bh) {
+      return; // 尺寸没变：不产生历史也不标脏（自定义框原值确定）
+    }
+    _pushUndo();
     setState(() {
       _bw = w;
       _bh = h;
@@ -515,16 +687,18 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
         work.clampTo(w, h); // 换板保留相对布局，出界作品拉回可达范围
       }
     });
-    _persistBoard();
   }
 
   void _setInterval(int v) {
+    if (v == _interval) {
+      return;
+    }
+    _pushUndo();
     setState(() {
       _interval = v;
       _phaseX = _phaseX.clamp(0, v - 1);
       _phaseY = _phaseY.clamp(0, v - 1);
     });
-    _persistBoard();
   }
 
   /// 粗框线颜色圆钮：显示当前颜色（null = 默认橙），点开色板选择
@@ -555,19 +729,21 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     if (picked == null || !mounted) {
       return; // 点外部/取消不改动
     }
-    setState(() {
-      _majorColor = picked == BoardConfig.defaultMajorColor ? null : picked;
-    });
-    _persistBoard();
+    final v = picked == BoardConfig.defaultMajorColor ? null : picked;
+    if (v == _majorColor) {
+      return; // 选了原色：无改动
+    }
+    _pushUndo();
+    setState(() => _majorColor = v);
   }
 
   // 顶点相位：phaseX 增 = 竖粗线左移，减 = 右移；phaseY 增 = 横粗线上移，减 = 下移
   void _shiftPhase({int dx = 0, int dy = 0}) {
+    _pushUndo();
     setState(() {
       _phaseX = (_phaseX + dx + _interval) % _interval;
       _phaseY = (_phaseY + dy + _interval) % _interval;
     });
-    _persistBoard();
   }
 
   /// 自定义板尺寸
@@ -661,21 +837,21 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
             for (final w in all)
               ListTile(
                 // 作品预览图（2026-11-12 需求：不再用占位图标——库里
-                // 同名/近似图案多，认图比认名快）；非方形按原始宽高比
+                // 同名/近似图案多，认图比认名快）；非方形按原始宽高比。
+                // 缩略图口径同作品库卡片：去格线+浅黑外框+透明底
                 leading: SizedBox(
                   width: 56,
                   height: 56,
-                  child: Center(
-                    child: AspectRatio(
-                      aspectRatio: w.model.width / w.model.height,
-                      child: CustomPaint(
-                        size: Size.infinite,
-                        painter: GridPainter(
-                          model: w.model,
-                          palette: palettes[w]!,
-                          selectedColorIndex: -1,
-                        ),
-                      ),
+                  // 占满方形盒：图案 contain 缩放居中（GridPainter 内做），
+                  // 各作品外框大小一致（2026-11-12 需求），非方形不再变窄
+                  child: CustomPaint(
+                    size: Size.infinite,
+                    painter: GridPainter(
+                      model: w.model,
+                      palette: palettes[w]!,
+                      selectedColorIndex: -1,
+                      showGrid: false,
+                      outline: true,
                     ),
                   ),
                 ),
@@ -699,6 +875,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     // 找不到空位不拒绝：落 (0,0) 照常摆上（重叠处浅红标注，可再拖开）；
     // 超板作品同样放行（出界部分悬挂板外右/下）
     final (ox, oy) = spot ?? (0, 0);
+    _pushUndo();
     setState(() {
       _works.add(
         PlacedWork(
@@ -714,7 +891,6 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       AppSnackBar.show(context, "没找到空位：已放在左上角，重叠处浅红标注，可拖开");
     }
     _resolvePalette(_works.length - 1);
-    _persistBoard();
   }
 
   /// 找第一个放得下的空位（行扫描，不与已摆作品矩形相交）
@@ -756,16 +932,16 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     return false;
   }
 
-  /// 右上角叉：移除选中作品
+  /// 右上角叉：移除选中作品（可撤销——撤销栈持有作品引用，一步回滚）
   void _removeSelected() {
     if (_selected < 0 || _selected >= _works.length) {
       return;
     }
+    _pushUndo();
     setState(() {
       _works.removeAt(_selected);
       _selected = -1;
     });
-    _persistBoard();
   }
 
   // ==================== 摆放交互 ===================
@@ -906,6 +1082,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     if (index >= _works.length) {
       return; // 弹窗期间列表已变，索引失效放弃本次删除
     }
+    _pushUndo();
     setState(() {
       _works.removeAt(index);
       if (_selected == index) {
@@ -914,17 +1091,17 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
         _selected--;
       }
     });
-    _persistBoard();
   }
 
   // ==================== 豆数统计 ====================
 
-  /// 变换选中作品（旋转 ±90°/翻转），clamp 回板内并持久化
+  /// 变换选中作品（旋转 ±90°/翻转），clamp 回可达范围（可撤销）
   void _transformSelected({int? rotDelta, bool? flipH, bool? flipV}) {
     if (_selected < 0 || _selected >= _works.length) {
       return;
     }
     final w = _works[_selected];
+    _pushUndo();
     w.setTransform(
       rot: rotDelta == null ? null : (w.rot + rotDelta) % 4,
       flipH: flipH == null ? null : !w.flipH,
@@ -932,7 +1109,6 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     );
     w.clampTo(_bw, _bh);
     setState(() {});
-    _persistBoard();
   }
 
   /// 豆数统计明细（BottomSheet：色块 + 色号/名 + 颗数，按颗数降序）
@@ -1010,10 +1186,9 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
 
   @override
   Widget build(BuildContext context) {
-    final presetSelected = _presets.any((s) => s == _bw && s == _bh);
     return PopScope(
-      // back 先问保存（是/否/取消）；空板与已确认退出直接放行
-      canPop: _popAllowed || _works.isEmpty,
+      // back 先问保存（是/否/取消）；干净板与已确认退出直接放行
+      canPop: _popAllowed || !_dirty,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) {
           return;
@@ -1025,26 +1200,9 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
           title: AdaptiveTitleText(
               _boardName == null ? "拼豆板设置" : "拼豆板 · $_boardName"),
           actions: [
-            // 无选中：文件操作铺开成图标一步直达（2026-11-12 用户需求——
-            // 此前藏在 ⋮ 菜单里要点两下）；选中作品时让位给变换工具组
-            //（Office 上下文工具语义），全量入口仍在 ⋮ 菜单兜底
-            if (_selected < 0) ...[
-              IconButton(
-                onPressed: _saveBoard,
-                icon: const Icon(Icons.save_outlined),
-                tooltip: "保存豆板",
-              ),
-              IconButton(
-                onPressed: _newBoard,
-                icon: const Icon(Icons.note_add_outlined),
-                tooltip: "新建豆板",
-              ),
-              IconButton(
-                onPressed: _openBoardPicker,
-                icon: const Icon(Icons.folder_open_outlined),
-                tooltip: "打开豆板",
-              ),
-            ],
+            // 选中作品时先给变换工具组（Office 上下文工具语义，2026-11-12
+            // 十六轮：新建/打开图标撤掉——表意不清，入口收进 ⋮ 菜单，
+            // dirty 三键提示已保证不丢改动，少两个图标换来常驻撤销/重做）
             if (_selected >= 0) ...[
               IconButton(
                 onPressed: () => _transformSelected(rotDelta: 3),
@@ -1075,6 +1233,24 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
                 tooltip: "移除选中作品",
               ),
             ],
+
+            ///< 保存/撤销/重做常驻（不随选中让位）：拖完作品仍处于选中态，
+            ///< 撤销得一步可达。撤销/重做栈空时置灰（onPressed null）
+            IconButton(
+              onPressed: _saveBoard,
+              icon: const Icon(Icons.save_outlined),
+              tooltip: "保存豆板",
+            ),
+            IconButton(
+              onPressed: _undoStack.isEmpty ? null : _undo,
+              icon: const Icon(Icons.undo),
+              tooltip: "撤销",
+            ),
+            IconButton(
+              onPressed: _redoStack.isEmpty ? null : _redo,
+              icon: const Icon(Icons.redo),
+              tooltip: "重做",
+            ),
             PopupMenuButton<String>(
               tooltip: "豆板菜单",
               onSelected: (action) {
@@ -1113,7 +1289,7 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
         ),
         body: Column(
           children: [
-            _buildConfigRows(presetSelected),
+            _buildConfigRows(),
             Expanded(child: _buildCanvas()),
             // 缩放控制组（外置条，不放画布上——浮在画布会挡作品删除叉）：
             // 放大/缩小（以画面中心为锚）+ 还原全幅。onChanged 里 setState
@@ -1139,12 +1315,13 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     );
   }
 
-  Widget _buildConfigRows(bool presetSelected) {
+  Widget _buildConfigRows() {
     return BoardConfigPanel(
-      presetSelected: presetSelected,
       bw: _bw,
       bh: _bh,
       interval: _interval,
+      phaseX: _phaseX,
+      phaseY: _phaseY,
       majorColorDot: _majorColorDot(),
       worksCount: _works.length,
       stats: beadStats(_works),
@@ -1207,12 +1384,13 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
                         canvasH,
                       ),
                       onScaleStart: (_) {
+                        _dragSnap = _captureSnap(); // 拖动起手快照（真有位移才入撤销栈）
                         _lastScale = 1.0;
                         _accDx = 0;
                         _accDy = 0;
                       },
                       onScaleUpdate: (d) => _onCanvasScale(d, canvasW, canvasH),
-                      onScaleEnd: (_) => _persistBoard(),
+                      onScaleEnd: (_) => _endDrag(),
                       child: CustomPaint(
                         size: Size.infinite,
                         painter: BoardPainter(
@@ -1266,4 +1444,45 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       onStart: _works.isNotEmpty && _boardClean() ? _startAssemble : null,
     );
   }
+}
+
+/// 撤销/重做的状态快照：板配置 + 板名/文件 + 各作品坐标副本。
+/// [key] 为捕获时的状态键（与页面 _stateKey 同式）——拖动手势靠它判
+/// 「起手到松手有没有真改动」，无需另记位移量
+class _SetupSnap {
+  final String? name;
+  final File? file;
+  final int bw, bh, interval, phaseX, phaseY;
+  final int? majorColor;
+  final String key;
+  final List<_SnapWork> works;
+  const _SetupSnap({
+    required this.name,
+    required this.file,
+    required this.bw,
+    required this.bh,
+    required this.interval,
+    required this.phaseX,
+    required this.phaseY,
+    required this.majorColor,
+    required this.key,
+    required this.works,
+  });
+}
+
+/// 快照里的一件作品：持有 PlacedWork 引用 + 坐标/变换副本（PlacedWork
+/// 的 ox/oy/rot/flip 是可变字段，快照必须抄数值；引用留着是为了撤销
+/// 移除时能把作品原样复活——含它已解析的调色板与拼装进度）
+class _SnapWork {
+  final PlacedWork ref;
+  final int ox, oy, rot;
+  final bool flipH, flipV;
+  const _SnapWork({
+    required this.ref,
+    required this.ox,
+    required this.oy,
+    required this.rot,
+    required this.flipH,
+    required this.flipV,
+  });
 }
