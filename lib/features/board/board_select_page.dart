@@ -2,7 +2,7 @@
 /// 名称，形态同「我的作品」）。点选豆板：有拼豆进度先问「继续上次进度
 ///（直接回拼豆页）/ 重新编辑豆板（清空该板进度后进板设置重摆）」
 ///（2026-11-11 需求：进度记在作品文件里，回来要能接着拼）；没进度直接
-/// 进板设置。也可新建空板。缩略图直接复用 BoardPainter 静态渲染
+/// 进板设置。也可新建豆板。缩略图直接复用 BoardPainter 静态渲染
 ///（板底格 + 各作品按摆位叠加），与板设置页所见一致。
 library;
 
@@ -208,7 +208,7 @@ class _BoardSelectPageState extends State<BoardSelectPage> with RouteAware {
     );
   }
 
-  /// 新建空板（无确认：本页没有可丢的编辑状态）。push：返回时退回本页
+  /// 新建豆板（无确认：本页没有可丢的编辑状态）。push：返回时退回本页
   void _newBoard() {
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const BoardSetupPage()),
@@ -267,7 +267,7 @@ class _BoardSelectPageState extends State<BoardSelectPage> with RouteAware {
           IconButton(
             onPressed: _loading ? null : _newBoard,
             icon: const Icon(Icons.add),
-            tooltip: "新建空板",
+            tooltip: "新建豆板",
           ),
         ],
       ),
@@ -312,12 +312,12 @@ class _BoardSelectPageState extends State<BoardSelectPage> with RouteAware {
                             color: Colors.black26,
                           ),
                           const SizedBox(height: 16),
-                          const Text("还没有保存过豆板，先摆好再「另存为豆板」"),
+                          const Text("还没有豆板——新建一块摆好作品，保存后就会出现在这里"),
                           const SizedBox(height: 16),
                           FilledButton.icon(
                             onPressed: _newBoard,
                             icon: const Icon(Icons.add),
-                            label: const Text("新建空板"),
+                            label: const Text("新建豆板"),
                           ),
                         ],
                       ),
@@ -361,6 +361,10 @@ class _BoardSelectPageState extends State<BoardSelectPage> with RouteAware {
                               size: Size.infinite,
                               painter: BoardPainter(
                                 board: vm.session.board,
+                                showMajorLines: false,
+
+                                ///< 缩略图不画加粗分割线：小尺寸下粗网格
+                                ///< 满屏遮挡作品（2026-11-12 反馈）
                                 items: [
                                   for (final w in vm.works)
                                     BoardPaintItem(

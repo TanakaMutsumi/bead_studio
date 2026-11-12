@@ -28,7 +28,9 @@ import 'placed_work.dart';
 /// 开始拼豆前才硬性要求：全部作品完整在板内且互不压豆（空豆位置交叠
 /// 不碍事——判定按豆级，非矩形级）
 ///
-/// 豆板管理：右上菜单「新建空板 / 打开豆板 / 另存为 / 删除当前板」；
+/// 豆板管理：右上菜单按 Office 文件菜单语序「保存豆板 / 另存为豆板… //
+/// 新建豆板 / 打开豆板… // 删除当前豆板(仅已命名)」（2026-11-12 整理：
+/// 此前只有「另存为」一个保存入口，主保存动词缺失）；
 /// 已命名豆板随增删/拖动/换板自动覆盖保存。「开始拼豆」与 back 退出都先弹
 /// 保存确认（是=保存后继续；否=不保存继续；点外部=留在本页），未命名板
 /// 选「是」先问豆板名。不打开旧豆板进入 = 新的空板
@@ -177,7 +179,12 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
       return;
     }
     if (boards.isEmpty) {
-      AppSnackBar.show(context, "还没有保存过豆板，先摆好再「另存为豆板」");
+      AppSnackBar.show(context, "还没有已保存的豆板——摆好当前板后用「保存豆板」存下来");
+      return;
+    }
+
+    ///< 未命名板上有摆板：换板即丢弃，先确认（已命名板自动保存无此虑）
+    if (!await _confirmDiscardUnsaved("打开豆板")) {
       return;
     }
     final picked = await showModalBottomSheet<BoardEntry>(
@@ -275,6 +282,22 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     AppSnackBar.show(context, "已保存豆板「$n」，继续编辑会自动保存");
   }
 
+  /// 菜单「保存豆板」：显式主保存动词（Office 的 Ctrl+S 位）——已命名板
+  /// 覆盖保存并提示；未命名板先问名字（2026-11-12 反馈：此前菜单只有
+  /// 「另存为」一个保存入口，用户无从确认列表里的板是已保存文件）
+  Future<void> _saveBoard() async {
+    final name = _boardName;
+    if (name == null) {
+      await _ensureSaved(); // 问名 + 保存 + snackbar（内部已完成）
+      return;
+    }
+    _boardFile = await DraftStore.saveBoardFile(_currentSession(name));
+    if (!mounted) {
+      return; // 保存已完成，页面销毁只跳过 UI 更新
+    }
+    AppSnackBar.show(context, "已保存豆板「$name」");
+  }
+
   /// 询问豆板名（预填当前名；取消返回 null；空名在框内拦截不关框）
   Future<String?> _askBoardName(String title) async {
     final ctrl = TextEditingController(text: _boardName ?? "");
@@ -352,13 +375,18 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
     });
   }
 
-  /// 新建空板（当前摆板丢弃，确认后执行）
-  Future<void> _newBoard() async {
+  /// 未命名板上有作品时确认丢弃才放行（Office 规范：未保存文档上
+  /// 新建/打开其他文件先提示）。已命名板随编辑自动保存、无未保存改动，
+  /// 空板无可丢——两者直接放行，不再恐吓式确认（2026-11-12 整理）
+  Future<bool> _confirmDiscardUnsaved(String action) async {
+    if (_boardName != null || _works.isEmpty) {
+      return true;
+    }
     final ok = await showDialog<bool>(
       context: context,
       builder: (dctx) => AlertDialog(
-        title: const Text("新建空板？"),
-        content: const Text("当前摆板未保存的改动会丢弃"),
+        title: Text("$action？"),
+        content: Text("当前摆板还没保存，$action后将丢弃"),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dctx, false),
@@ -366,12 +394,18 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(dctx, true),
-            child: const Text("新建"),
+            child: Text(action),
           ),
         ],
       ),
     );
-    if (ok != true) {
+    return ok == true;
+  }
+
+  /// 新建豆板（未命名板上有摆板先确认丢弃；已命名板已自动保存、空板
+  /// 无可丢，直接新建）
+  Future<void> _newBoard() async {
+    if (!await _confirmDiscardUnsaved("新建")) {
       return;
     }
     setState(() {
@@ -984,21 +1018,30 @@ class _BoardSetupPageState extends State<BoardSetupPage> {
                     _newBoard();
                   case "open":
                     _openBoardPicker();
+                  case "save":
+                    _saveBoard();
                   case "saveas":
                     _saveBoardAs();
                   case "delete":
                     _deleteBoard();
                 }
               },
+
+              ///< Office 文件菜单语序：保存/另存为在上，新建/打开居中，
+              ///< 删除（仅已命名板）垫底（2026-11-12 按钮规范整理）
               itemBuilder: (_) => [
-                const PopupMenuItem(value: "new", child: Text("新建空板")),
-                const PopupMenuItem(value: "open", child: Text("打开豆板…")),
+                const PopupMenuItem(value: "save", child: Text("保存豆板")),
                 const PopupMenuItem(value: "saveas", child: Text("另存为豆板…")),
-                if (_boardFile != null)
+                const PopupMenuDivider(),
+                const PopupMenuItem(value: "new", child: Text("新建豆板")),
+                const PopupMenuItem(value: "open", child: Text("打开豆板…")),
+                if (_boardFile != null) ...[
+                  const PopupMenuDivider(),
                   const PopupMenuItem(
                     value: "delete",
                     child: Text("删除当前豆板"),
                   ),
+                ],
               ],
             ),
           ],

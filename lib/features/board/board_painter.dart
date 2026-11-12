@@ -104,6 +104,11 @@ class BoardPainter extends CustomPainter {
   final double viewScale;
 
   ///< 当前视图缩放倍数（无 ctrl 时的静态取值：格线/对勾线宽补偿用）
+  final bool showMajorLines;
+
+  ///< 是否画 interval 加粗分割线（板设置/拼豆页开——数格定位参考；
+  ///< 选择页缩略图关——小尺寸下粗网格满屏遮挡作品，2026-11-12 反馈。
+  ///< 板最外边框不受此开关影响）
   final TransformationController? ctrl;
 
   ///< 视图变换控制器（拼豆页传入）：paint 实时读缩放做线宽补偿，并
@@ -191,6 +196,7 @@ class BoardPainter extends CustomPainter {
     this.showLabels = false,
     this.showNonHiLabels = true,
     this.viewScale = 1.0,
+    this.showMajorLines = true,
     TransformationController? ctrl,
   })  : ctrl = ctrl,
         super(repaint: ctrl);
@@ -636,16 +642,18 @@ class BoardPainter extends CustomPainter {
       ..strokeWidth = 1.2 / scale
       ..color = majorColor;
     final iv = board.interval;
-    for (var x = 0; x <= board.w; x++) {
-      if ((x + board.phaseX) % iv == 0) {
-        final p = x * cellW;
-        canvas.drawLine(Offset(p, 0), Offset(p, size.height), majorPaint);
+    if (showMajorLines) {
+      for (var x = 0; x <= board.w; x++) {
+        if ((x + board.phaseX) % iv == 0) {
+          final p = x * cellW;
+          canvas.drawLine(Offset(p, 0), Offset(p, size.height), majorPaint);
+        }
       }
-    }
-    for (var y = 0; y <= board.h; y++) {
-      if ((y + board.phaseY) % iv == 0) {
-        final p = y * cellH;
-        canvas.drawLine(Offset(0, p), Offset(size.width, p), majorPaint);
+      for (var y = 0; y <= board.h; y++) {
+        if ((y + board.phaseY) % iv == 0) {
+          final p = y * cellH;
+          canvas.drawLine(Offset(0, p), Offset(size.width, p), majorPaint);
+        }
       }
     }
     final boardBorder = Paint()
