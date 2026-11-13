@@ -435,6 +435,12 @@ class BoardPainter extends CustomPainter {
             // 残留 25% 色相隐约可辨；早期 lerp 黑 0.78 连色相带层次全灭）
             color = Color.lerp(color, _dimGray, 0.75)!;
             dimmedCells.add(key);
+          } else if (item.highlightId != null && placedHere) {
+            // 选中色·已放：轻压暗一档（0.35）+ 鲜艳绿勾（见已放标记层）
+            // ——白罩方案 2026-11-13 两度定稿被否（用户：要压暗不要提亮，
+            // 勾分鲜艳/暗两档、都要比豆本身亮）
+            color = Color.lerp(color, _dimGray, 0.35)!;
+            dimmedCells.add(key);
           } else if (item.highlightId == null && item.dimScope) {
             // 单件口径范围外（未选色）：整件略灰——含已放格（与范围内
             // 的「已放原色跳出」拉开，「当前拼哪件」一眼可辨；幅度同
@@ -607,12 +613,10 @@ class BoardPainter extends CustomPainter {
       }
     }
 
-    // 拼装已放格（选色中两档对比，2026-11-13 用户定稿）：
-    // - 选中色的已放豆：**v1 白罩强对比回归**——半透明白罩 α0.5 整格
-    //   提亮盖过豆色与色号（「强对比到不用显示色号都可以」，用户原
-    //   话）+ 鲜艳绿勾（白底上绿勾本身清晰，不再向白提亮）；
-    // - 非选中色的已放豆（选色中）：填色层 0.75 深压暗 + 暗一档绿勾
-    //   （勾亮度不足时向白提亮，保证比豆本身亮）；
+    // 拼装已放格（2026-11-13 用户两次定稿：压暗不要提亮，白罩已废）：
+    // - 选中色的已放豆：填色层轻压暗（0.35 层级1）+ 鲜艳绿勾；
+    // - 非选中色的已放豆（选色中）：填色层 0.75 层级2 深压暗 + 暗一档
+    //   绿勾——两档勾亮度不足都向白提亮，保证**勾比豆本身亮**；
     // - 未选色时：已放豆整体向 _idleGray 退后（见填色层），对勾同步
     //   混灰退场（0.45 保绿意可辨，2026-11-12 反转定稿，维持）
     for (var itemIdx = 0; itemIdx < items.length; itemIdx++) {
@@ -623,9 +627,6 @@ class BoardPainter extends CustomPainter {
         continue;
       }
       final hi = item.highlightId;
-      final veil = Paint()
-        ..color = Colors.white.withValues(alpha: 0.5)
-        ..style = PaintingStyle.fill;
       final check = Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.8 / scale
@@ -649,12 +650,8 @@ class BoardPainter extends CustomPainter {
         if (hi == null) {
           // 未选色：对勾随已放豆混灰退场（勾底为豆退后色，亮度足够）
           check.color = _checkIdle;
-        } else if (sel) {
-          // 选中色已放：v1 白罩整格提亮（盖住色号标签）+ 鲜艳绿勾
-          canvas.drawRect(rect, veil);
-          check.color = _checkVivid;
         } else {
-          // 非选中色已放：暗一档绿，不足比豆亮时向白提亮
+          // 选色中：选中色鲜艳绿 / 非选中色暗一档绿，都比豆本身亮
           final base = cellBase[itemIdx * 10000000 + i] ??
               Color.fromARGB(
                 255,
@@ -662,7 +659,7 @@ class BoardPainter extends CustomPainter {
                 item.palette.colors[v].g,
                 item.palette.colors[v].b,
               );
-          check.color = _checkOver(base, _checkDim);
+          check.color = _checkOver(base, sel ? _checkVivid : _checkDim);
         }
         final cx = rect.center.dx, cy = rect.center.dy;
         canvas.drawLine(

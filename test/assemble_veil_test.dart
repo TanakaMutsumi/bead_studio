@@ -10,12 +10,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// 已放豆两档对比（2026-11-13 用户定稿：选中色 v1 白罩强对比回归）：
-/// 选色中——选中色已放豆半透明白罩 α0.5 整格提亮（冲得色号看不清也
-/// 没关系）+ 鲜艳绿勾、非选中色已放豆深压暗（0.75）+ 暗一档绿勾（勾
-/// 亮度不足向白提亮保证比豆亮）；未选色但有进度时，已放豆向中性灰
-/// _idleGray 混 0.4 退后、对勾同步混灰、未放豆保持原色醒目。画布
-/// CustomPaint 不进语义树，用 RepaintBoundary 出图逐格验色
+/// 已放豆压暗层级（2026-11-13 用户两次定稿：压暗不要提亮，白罩已废）：
+/// 选色中——选中色已放豆轻压暗（lerp _dimGray 0.35）+ 鲜艳绿勾、非选中
+/// 色已放豆深压暗（0.75）+ 暗一档绿勾（两档勾亮度不足都向白提亮保证比
+/// 豆亮）；未选色但有进度时，已放豆向中性灰 _idleGray 混 0.4 退后、
+/// 对勾同步混灰、未放豆保持原色醒目。画布 CustomPaint 不进语义树，用
+/// RepaintBoundary 出图逐格验色
 void main() {
   const e11 = Color(0xFFF7DAD4);
 
@@ -23,7 +23,7 @@ void main() {
   const c16 = Color(0xFF1858A2);
 
   ///< C16=(24,88,162) 深蓝
-  testWidgets('选中色已放=白罩+鲜艳绿勾；非选中已放=深压暗+暗绿勾；未选色已放退后', (tester) async {
+  testWidgets('选中色已放=轻压暗+鲜艳绿勾；非选中已放=深压暗+暗绿勾；未选色已放退后', (tester) async {
     tester.view.physicalSize = const Size(600, 460);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -113,24 +113,25 @@ void main() {
     expect(c16Dim.red, greaterThan(c16.red)); // 深色向中灰抬升
     expect(await cellColor(300, 300), c16); // 未放 C16（格 4）：原色
 
-    // —— 选中 E11（2026-11-13 v1 白罩回归）：已放 E11 半透明白罩整格
-    //    提亮（三通道都抬向白——「强对比到不用显示色号都可以」），未放
-    //    E11 仍原色；非选中色（C16 已放格）深压暗 0.75 不变
+    // —— 选中 E11（压暗层级定稿）：已放 E11 **轻压暗**（lerp _dimGray
+    //    0.35——三通道下沉，白罩提亮方案两度被否），未放 E11 仍原色；
+    //    非选中色（C16 已放格）深压暗 0.75，两级拉开
     setOuter(() => hi = "E11");
     await tester.pumpAndSettle();
-    final veilSel = await cellColor(100, 100);
-    expect(veilSel, isNot(e11));
-    expect(veilSel.red, greaterThan(e11.red)); // 白罩 = 三通道都向白抬
-    expect(veilSel.green, greaterThan(e11.green));
-    expect(veilSel.blue, greaterThan(e11.blue));
-    expect(veilSel.red, greaterThan(240)); // α0.5 白罩：浅粉也抬到近白
+    final dimSel = await cellColor(100, 100);
+    expect(dimSel, isNot(e11));
+    expect(dimSel.red, lessThan(e11.red)); // 压暗 = 三通道都向 _dimGray 沉
+    expect(dimSel.green, lessThan(e11.green));
+    expect(dimSel.blue, lessThan(e11.blue));
     expect(await cellColor(300, 100), e11); // 未放 E11：原色不变
     final dimmed = await cellColor(100, 300); // 已放 C16（非选中色）
     expect(dimmed.red, greaterThan(c16.red)); // 深色向压暗基色抬升（≠原色）
+    // 选中色已放压暗幅度 0.35 < 非选中 0.75：E11 两态亮度差可辨
+    //（浅色豆 0.35 档 ≈ (180,164,166)，明显浅于 0.75 档的深灰区）
+    expect(dimSel.red, greaterThan(150));
 
-    // —— 对勾层级（2026-11-13）：选中色已放 = 白罩上直接鲜艳绿（不再
-    //    向白提亮——白底上鲜艳绿本身清晰）；非选中色已放 = 暗一档绿
-    //   （深底无需提亮）
+    // —— 对勾层级（定稿）：选中色已放 = 鲜艳绿（浅底上 _checkOver 向
+    //    白提亮一档保证比豆亮）；非选中色已放 = 暗一档绿（深底无需提亮）
     final d = await tester.runAsync<ByteData?>(() async {
       final boundary = boundaryKey.currentContext!.findRenderObject()
           as RenderRepaintBoundary;
@@ -154,18 +155,20 @@ void main() {
       return n;
     }
 
-    const vivid = Color.fromARGB(255, 76, 175, 80);
+    // vivid(76,175,80) luma 0.33 < 浅粉压暗底(180,164,166) luma 0.39 →
+    // _checkOver 提亮一步 ≈ lerp(白,0.35) = (139,203,141)
+    const vividLift = Color.fromARGB(255, 139, 203, 141);
     const darkGreen = Color.fromARGB(255, 46, 125, 50);
     final eCell = const Rect.fromLTWH(30, 60, 150, 120); // 已放 E11 格
     final cCell = const Rect.fromLTWH(30, 260, 150, 120); // 已放 C16 格
-    expect(countNear(eCell, vivid, 14), greaterThan(0),
-        reason: "选中色已放勾=白罩上鲜艳绿");
+    expect(countNear(eCell, vividLift, 14), greaterThan(0),
+        reason: "选中色已放勾=提亮鲜艳绿");
     expect(countNear(eCell, darkGreen, 10), equals(0),
         reason: "选中色已放勾不出暗绿");
     expect(countNear(cCell, darkGreen, 12), greaterThan(0),
         reason: "非选中色已放勾=暗绿（深底无需提亮）");
-    expect(countNear(cCell, vivid, 10), equals(0),
-        reason: "非选中色已放勾不出鲜艳绿");
+    expect(countNear(cCell, vividLift, 10), equals(0),
+        reason: "非选中色已放勾不出提亮绿");
   });
 
   ///< 单件口径范围外作品（dimScope）：未选色时整件略灰——含已放格与

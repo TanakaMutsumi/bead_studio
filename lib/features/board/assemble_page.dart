@@ -1231,7 +1231,13 @@ class _AssemblePageState extends State<AssemblePage> {
           border: Border.all(color: Colors.black26),
           borderRadius: BorderRadius.circular(14),
         ),
+
+        ///< mainAxisSize.min 必须显式（2026-11-13 用户反馈「胶囊拉到
+        ///< 和屏幕一样宽」根因）：默认 max 在有界宽松约束（Align 下）会
+        ///< 撑满全宽；在 Row 里（无界约束）又按内容收窄——两态宽度不
+        ///< 一致。min 保证任何上下文都按内容收窄
         child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
             const Icon(Icons.sort, size: 14, color: Colors.black54),
             const SizedBox(width: 2),
