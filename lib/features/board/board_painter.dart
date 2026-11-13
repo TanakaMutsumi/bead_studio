@@ -183,10 +183,39 @@ class BoardPainter extends CustomPainter {
   static const _pendAmberRing = Color(0xFFF57C00);
   static const _pendAmberFill = Color(0xFFF57C00);
 
-  /// WCAG 相对亮度（palette#beadLabelDark 同式）
+  ///< 已放对勾三档（十九轮选色中层级重做）：选中色已放豆（填色层
+  ///< 0.35 轻压暗）配**鲜艳绿**；非选中色已放豆（0.75 深压暗）配暗
+  ///< 一档绿；亮度不足时 _checkOver 向白提亮保证「勾比豆本身亮」
+  static const _checkVivid = Color(0xFF4CAF50);
+  static const _checkDim = Color(0xFF2E7D32);
+
+  ///< 未选色时的对勾：随已放豆退后混灰（0.45 保绿意，2026-11-12
+  ///< 反转定稿维持）——勾底豆已向中灰退，亮度天然足够
+  static final _checkIdle = Color.lerp(
+    const Color(0xFF2E7D32),
+    const Color(0xFF8A93A3),
+    0.45,
+  )!;
+
+  /// 对勾绿按需提亮：勾必须比所在豆（混合后的实际底色）亮——浅色豆
+  /// 压暗后仍偏亮（白豆 0.35 档 ≈ 185 亮度），固定绿会沉底看不清；
+  /// 每次向白混 0.35 直到亮度高出底色 0.08（上限三步，最浅底色也够）
+  static Color _checkOver(Color base, Color green) {
+    final target = _luma(base) + 0.08;
+    var c = green;
+    for (var i = 0; i < 3 && _luma(c) <= target; i++) {
+      c = Color.lerp(c, Colors.white, 0.35)!;
+    }
+    return c;
+  }
+
+  /// WCAG 相对亮度（palette#beadLabelDark 同式）。
+  /// 【坑】Color.r/g/b 已是 0-1 浮点分量（旧 int API 时代写法是 v/255
+  /// 再判 0.03928——迁移后等于把分量又除 255，所有颜色亮度恒 ~0.0002，
+  /// 圈选蓝/琥珀比对在测试色上恰好同判才没暴露；十九轮勾色提亮依赖
+  /// 真亮度才现形）——lin 直接吃 0-1 分量
   static double _luma(Color c) {
-    double lin(double v) {
-      final u = v / 255;
+    double lin(double u) {
       return u <= 0.03928
           ? u / 12.92
           : math.pow((u + 0.055) / 1.055, 2.4).toDouble();
@@ -397,6 +426,9 @@ class BoardPainter extends CustomPainter {
           var color = Color.fromARGB(255, c.r, c.g, c.b);
           final key = itemIdx * 10000000 + y * m.width + x;
           final placed = item.placedCells;
+          final cellIdx = y * m.width + x;
+          final placedHere =
+              placed != null && placed.isNotEmpty && placed.contains(cellIdx);
           if (item.dimAll ||
               item.highlightId != null && c.id != item.highlightId) {
             // 未选中豆大比例向深灰混（0.75：整体沉到深灰区衬托选中色，
@@ -409,10 +441,7 @@ class BoardPainter extends CustomPainter {
             // 未放退后 0.4，色相仍可辨）。选色后走上面 dimAll 0.75
             color = Color.lerp(color, _idleGray, 0.4)!;
             dimmedCells.add(key);
-          } else if (item.highlightId == null &&
-              placed != null &&
-              placed.isNotEmpty &&
-              placed.contains(y * m.width + x)) {
+          } else if (item.highlightId == null && placedHere) {
             // 未选色且有进度：**已放豆**向中性灰轻混退后（对勾同步变
             // 灰），未放豆保持原色醒目——拼过的退场、待拼的跳出，视线
             // 落在还没拼的部分（2026-11-12 用户反转定稿；placedCells
@@ -578,12 +607,16 @@ class BoardPainter extends CustomPainter {
       }
     }
 
-    // 拼装已放格：绿对勾常显；「变浅」白罩只在选中该豆色时施加于该色
-    // 的已放格（变浅是「选中色核对已放」的专属效果）。未选色时已放豆
-    // 已在上面向 _idleGray 退后、对勾同步混灰——突出关系靠「已放退场
-    //」表达，视线落在未放的原色豆上（2026-11-12 用户反转定稿）。选其
-    // 他色时，非选中色的已放格随整体压暗即可
-    for (final item in items) {
+    // 拼装已放格（选色中两档对比，2026-11-13 用户定稿）：
+    // - 选中色的已放豆：**v1 白罩强对比回归**——半透明白罩 α0.5 整格
+    //   提亮盖过豆色与色号（「强对比到不用显示色号都可以」，用户原
+    //   话）+ 鲜艳绿勾（白底上绿勾本身清晰，不再向白提亮）；
+    // - 非选中色的已放豆（选色中）：填色层 0.75 深压暗 + 暗一档绿勾
+    //   （勾亮度不足时向白提亮，保证比豆本身亮）；
+    // - 未选色时：已放豆整体向 _idleGray 退后（见填色层），对勾同步
+    //   混灰退场（0.45 保绿意可辨，2026-11-12 反转定稿，维持）
+    for (var itemIdx = 0; itemIdx < items.length; itemIdx++) {
+      final item = items[itemIdx];
       final placed = item.placedCells;
       final m = item.model;
       if (placed == null || placed.isEmpty) {
@@ -594,12 +627,6 @@ class BoardPainter extends CustomPainter {
         ..color = Colors.white.withValues(alpha: 0.5)
         ..style = PaintingStyle.fill;
       final check = Paint()
-        ..color = item.highlightId == null
-
-            ///< 未选色时已放豆整体退后（见填色层），对勾同步混灰退场
-            ///<（0.45 保绿意可辨）；选色中保持鲜绿——白罩态的勾要醒目
-            ? Color.lerp(const Color(0xFF2E7D32), _idleGray, 0.45)!
-            : const Color(0xFF2E7D32)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.8 / scale
         ..strokeCap = StrokeCap.round;
@@ -614,13 +641,28 @@ class BoardPainter extends CustomPainter {
           cellW,
           cellH,
         );
-        // 白罩仅：有选中色 且 该格豆色 == 选中色（调色板索引越界不算）
         final v = m.grid[i];
-        if (hi != null &&
+        final sel = hi != null &&
             v >= 0 &&
             v < m.paletteIds.length &&
-            m.paletteIds[v] == hi) {
+            m.paletteIds[v] == hi;
+        if (hi == null) {
+          // 未选色：对勾随已放豆混灰退场（勾底为豆退后色，亮度足够）
+          check.color = _checkIdle;
+        } else if (sel) {
+          // 选中色已放：v1 白罩整格提亮（盖住色号标签）+ 鲜艳绿勾
           canvas.drawRect(rect, veil);
+          check.color = _checkVivid;
+        } else {
+          // 非选中色已放：暗一档绿，不足比豆亮时向白提亮
+          final base = cellBase[itemIdx * 10000000 + i] ??
+              Color.fromARGB(
+                255,
+                item.palette.colors[v].r,
+                item.palette.colors[v].g,
+                item.palette.colors[v].b,
+              );
+          check.color = _checkOver(base, _checkDim);
         }
         final cx = rect.center.dx, cy = rect.center.dy;
         canvas.drawLine(

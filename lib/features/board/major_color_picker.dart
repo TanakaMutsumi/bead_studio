@@ -36,14 +36,16 @@ Future<int?> showMajorColorPicker(BuildContext context, int? current) {
               spacing: 12,
               runSpacing: 12,
               children: [
+                // 「不显示」放首位（十九轮用户要求：藏线是常用档，末位
+                // 要翻到第二行才看得见）；默认色仍是橙——首位≠默认值
+                _noneOption(sctx, current == BoardConfig.hiddenMajorColor),
+                const SizedBox(width: 12),
                 for (final v in majorColorPresets)
                   _colorOption(
                     sctx,
                     Color(v),
                     v == (current ?? BoardConfig.defaultMajorColor),
                   ),
-                const SizedBox(width: 12),
-                _noneOption(sctx, current == BoardConfig.hiddenMajorColor),
               ],
             ),
             const SizedBox(height: 8),

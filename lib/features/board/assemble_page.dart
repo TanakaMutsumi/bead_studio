@@ -733,8 +733,7 @@ class _AssemblePageState extends State<AssemblePage> {
                       ),
 
                       ///< 组间分隔（2026-11-12 用户反馈：其他色号与排列
-                      ///< 模式两钮连在一起没有区分）——竖线分组；
-                      ///< 色号序已移到底部色条行（见 _buildColorBar）
+                      ///< 模式两钮连在一起没有区分）——竖线分组
                       const Padding(
                         padding: EdgeInsets.symmetric(horizontal: 7),
                         child: SizedBox(
@@ -829,7 +828,7 @@ class _AssemblePageState extends State<AssemblePage> {
 
             ///< 批量行槽位恒占位（2026-11-12 用户反馈：选色后批量行出现
             ///< 把画布顶起 ~40px 突然缩移，同一手指点位会映射到不同格）：
-            ///< 未选色=空槽，画布高度全程恒定
+            ///< 未选色=仅色号序入口（十九轮起常显），画布高度全程恒定
             SizedBox(height: 46, child: _buildBatchRow()),
             _buildColorBar(totals, scope),
           ],
@@ -1067,9 +1066,11 @@ class _AssemblePageState extends State<AssemblePage> {
     );
   }
 
-  /// 选中色操作行（选中色号才出现；未选色返回空槽）：批量圈选模式
+  /// 选中色操作行（未选色只留色号序入口）：色号序行首 + 批量圈选模式
   ///（单格 / 区块）+ 取消选色（2026-11-11 需求 8/10——色条滚远后没有
   /// 就地取消入口；长按滑动批量完成没有可见入口）。
+  /// 色号序在行首固定位常显（2026-11-13 用户定稿：不放顶部控件行、
+  /// 也不插圈选逻辑后面——未选色/选色两态同位同大小，禁止跳位）。
   /// 圈选待确认（_pending 非空）时整行换成确认条：设为已完成/取消——
   /// 弹窗确认已废弃（2026-11-12 用户需求：确认前要能拖动/缩放画布核对
   /// 圈选内容，弹窗挡画布）。确认条就位期间单击/长按画布仍是追加圈选，
@@ -1123,7 +1124,13 @@ class _AssemblePageState extends State<AssemblePage> {
       );
     }
     if (_highlightId == null) {
-      return const SizedBox.shrink(); // 空槽：槽位由调用处 SizedBox 恒占
+      ///< 未选色不再空槽：色号序常显（十九轮用户要求「无论是否有选中
+      ///< 的都显示」）。就在行首固定位——与选中态同位同大小，选色后
+      ///< 不跳位（2026-11-13 用户定稿：UI 必须固定位置固定大小）
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 2),
+        child: Align(alignment: Alignment.centerLeft, child: _sortPopup()),
+      );
     }
 
     ///< 固定单行 Row（槽位 46px 恒占，Wrap 换行会被裁）：提示文案
@@ -1133,6 +1140,11 @@ class _AssemblePageState extends State<AssemblePage> {
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 2),
         child: Row(
           children: [
+            ///< 色号序行首固定位（2026-11-13 用户定稿：未选色时本行只剩
+            ///< 它、也画在同一位置同一大小——选色后不跳位；文案四模式
+            ///< 定宽防切换挤动后续控件）
+            _sortPopup(),
+            const SizedBox(width: 8),
             Flexible(
               child: Text(
                 "长按滑动圈选：",
@@ -1251,14 +1263,13 @@ class _AssemblePageState extends State<AssemblePage> {
     );
     _barOrder = used; // build 期速记，_revealChip 滚动定位用
 
-    ///< 色号序与色条同排（2026-11-12 用户需求 3：排序直接作用于色条，
-    ///< 就地就近；顶部控件行同时让位给分组分隔）。固定在左，不随滚动
+    ///< 排序入口十九轮移回顶部控件行（原在条首固定占 ~200px，少看
+    ///< 2-3 个色号——用户反馈影响单次可观察的色号数）；色条整行让给
+    ///< 色号芯片
     return SizedBox(
       height: 76,
       child: Row(
         children: [
-          Center(child: _sortPopup()),
-          const SizedBox(width: 4),
           Expanded(
             child: ListView.builder(
               controller: _barCtrl,
