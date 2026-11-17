@@ -18,6 +18,92 @@ import 'palette.dart';
 /// 图片转换风格
 enum ConvertStyle { blocks, detail }
 
+/// 像素 -> 调色板的匹配度量
+///
+/// - lab76：ΔE76（Lab 欧氏距离）。图纸还原的色彩回退/空白判定沿用此度量
+///   （基线调参口径，勿动）。
+/// - ciede2000：CIEDE2000。图片转换专用——ΔE76 在饱和蓝紫区高估色差导致
+///   选错豆色（人眼对蓝区明度差不敏感、对色相差敏感，CIEDE2000 有 hue
+///   加权修正；PubMed Gómez-Polo 2016、Datacolor 等工业配色口径）。
+enum ConvertMetric { lab76, ciede2000 }
+
+/// CIEDE2000 色差（Sharma et al. 2005 实现指南口径，kL=kC=kH=1）
+///
+/// 单测内嵌 Sharma 官方 34 组测试向量锁实现正确性（色相回绕/近中性/
+/// 暗色等边角分支全覆盖），改公式必跑 test/convert_de2000_test.dart
+double ciede2000(List<double> lab1, List<double> lab2) {
+  final l1 = lab1[0], a1 = lab1[1], b1 = lab1[2];
+  final l2 = lab2[0], a2 = lab2[1], b2 = lab2[2];
+
+  final c1 = math.sqrt(a1 * a1 + b1 * b1);
+  final c2 = math.sqrt(a2 * a2 + b2 * b2);
+  final cBar = (c1 + c2) / 2;
+  final cBar7 = math.pow(cBar, 7).toDouble();
+  final pow25_7 = 6103515625.0; // 25⁷
+  final g = 0.5 * (1 - math.sqrt(cBar7 / (cBar7 + pow25_7)));
+
+  final a1p = (1 + g) * a1, a2p = (1 + g) * a2;
+  final c1p = math.sqrt(a1p * a1p + b1 * b1);
+  final c2p = math.sqrt(a2p * a2p + b2 * b2);
+  final rad = math.pi / 180.0;
+  // 色相角 [0,360)：Dart atan2(y, x) 首参为纵坐标，这里 y=b、x=a'
+  double hue(double b, double aPrime) {
+    if (b == 0 && aPrime == 0) return 0;
+    var h = math.atan2(b, aPrime) / rad;
+    if (h < 0) h += 360;
+    return h;
+  }
+
+  final h1p = hue(b1, a1p), h2p = hue(b2, a2p);
+
+  final dLp = l2 - l1;
+  final dCp = c2p - c1p;
+  double dhp = 0;
+  if (c1p * c2p != 0) {
+    dhp = h2p - h1p;
+    if (dhp > 180) {
+      dhp -= 360;
+    } else if (dhp < -180) {
+      dhp += 360;
+    }
+  }
+  final dHp = 2 * math.sqrt(c1p * c2p) * math.sin(dhp * rad / 2);
+
+  final lBarP = (l1 + l2) / 2;
+  final cBarP = (c1p + c2p) / 2;
+  double hBarP;
+  if (c1p * c2p == 0) {
+    hBarP = h1p + h2p;
+  } else {
+    final sum = h1p + h2p;
+    if ((h1p - h2p).abs() <= 180) {
+      hBarP = sum / 2;
+    } else if (sum < 360) {
+      hBarP = (sum + 360) / 2;
+    } else {
+      hBarP = (sum - 360) / 2;
+    }
+  }
+
+  final t =
+      1 -
+      0.17 * math.cos((hBarP - 30) * rad) +
+      0.24 * math.cos(2 * hBarP * rad) +
+      0.32 * math.cos((3 * hBarP + 6) * rad) -
+      0.20 * math.cos((4 * hBarP - 63) * rad);
+  final dTheta = 30 * math.exp(-math.pow((hBarP - 275) / 25, 2).toDouble());
+  final cBarP7 = math.pow(cBarP, 7).toDouble();
+  final rc = 2 * math.sqrt(cBarP7 / (cBarP7 + pow25_7));
+  final l50 = lBarP - 50;
+  final sl = 1 + 0.015 * l50 * l50 / math.sqrt(20 + l50 * l50);
+  final sc = 1 + 0.045 * cBarP;
+  final sh = 1 + 0.015 * cBarP * t;
+  final rt = -math.sin(2 * dTheta * rad) * rc;
+
+  final tl = dLp / sl, tc = dCp / sc, th = dHp / sh;
+  return math.sqrt(tl * tl + tc * tc + th * th + rt * tc * th);
+}
+
 /// 把 RGB 转 CIE Lab（人眼感知较均匀的空间，匹配效果优于 RGB 距离）
 List<double> _rgbToLab(int r, int g, int b) {
   // sRGB -> 线性化
@@ -74,7 +160,10 @@ const _despeckleGateDe = 25.0;
 const _despeckleGateSingleDe = 35.0;
 
 /// 孤立点清除的最大连通域尺寸，随板尺寸放大（26/29→2，52→3，78→4）
-int _maxSpeckSize(int boardSize) => 1 + (boardSize - 1) ~/ 20;
+///
+/// 非方形取两边较大者（大图孤立域容忍度同尺度放大）
+int maxSpeckSizeFor(int width, int height) =>
+    1 + ((width > height ? width : height) - 1) ~/ 20;
 
 /// 量化器
 class Quantizer {
@@ -83,11 +172,57 @@ class Quantizer {
     for (final c in palette.colors) _rgbToLab(c.r, c.g, c.b),
   ];
 
+  ///< ΔE00 对 ΔE76 的比值下界：ΔE00 ≥ ΔE76 / R。全表扫描时的安全
+  ///< 剪枝——某候选的 ΔE76/R 已 ≥ 当前最优 ΔE00 时，其 ΔE00 必不可
+  ///< 能更小，跳过精算。R 实测校准：MARD 291 色 × 400 采样最差比率
+  ///< 6.48（ΔE00 对大色差/高彩度差压缩剧烈），取 8.0 留余量；更小的
+  ///< R（3.0/4.5）实测会错杀真最近色，固定长度短名单（前 K 名）同样
+  ///< 在饱和蓝区失准（ΔE00 最近色可落在 ΔE76 排序 12 名开外），勿回退。
+  static const _de76PerDe00Floor = 8.0;
+
+  final Map<int, int> _de00Memo = {};
+
   Quantizer(this.palette);
 
   /// 单个 RGB 找最近调色板索引（Lab 距离）
   int nearestIndex(int r, int g, int b) =>
       _nearest(_rgbToLab(r, g, b), null).$1;
+
+  /// 单个 RGB 找最近调色板索引（CIEDE2000 度量）
+  ///
+  /// 全表扫描：ΔE76 廉价距离先行，靠 [_de76PerDe00Floor] 下界剪枝跳过
+  /// 无望候选的 CIEDE2000 精算；相同 RGB 结果 memo（降采样后同色像素
+  /// 大量重复，命中率高）。无上限大格转换时整条链在 compute isolate 里跑。
+  int nearestIndexDe00(int r, int g, int b) {
+    final key = (r << 16) | (g << 8) | b;
+    final hit = _de00Memo[key];
+    if (hit != null) {
+      return hit;
+    }
+
+    final lab = _rgbToLab(r, g, b);
+    var best = -1;
+    var bestDe = double.infinity;
+    for (var i = 0; i < _labCache.length; i++) {
+      final p = _labCache[i];
+      final dl = lab[0] - p[0];
+      final da = lab[1] - p[1];
+      final db = lab[2] - p[2];
+      // ΔE76 下界剪枝（见 _de76PerDe00Floor 注释）
+      if (math.sqrt(dl * dl + da * da + db * db) / _de76PerDe00Floor >=
+          bestDe) {
+        continue;
+      }
+      final de = ciede2000(lab, p);
+      if (de < bestDe) {
+        bestDe = de;
+        best = i;
+      }
+    }
+
+    _de00Memo[key] = best;
+    return best;
+  }
 
   /// 在候选索引子集内找最近色，返回 (索引, Lab 距离平方)（图纸还原限色识别用）
   ///
@@ -127,6 +262,7 @@ class Quantizer {
     required int width,
     required int height,
     ConvertStyle style = ConvertStyle.blocks,
+    ConvertMetric metric = ConvertMetric.lab76,
   }) {
     if (style == ConvertStyle.blocks) {
       // 色块统一：先保边平滑把块内近色融合，再量化
@@ -136,7 +272,9 @@ class Quantizer {
     final n = width * height;
     final result = List<int>.filled(n, 0);
     for (var i = 0; i < n; i++) {
-      result[i] = nearestIndex(pixelsR[i], pixelsG[i], pixelsB[i]);
+      result[i] = metric == ConvertMetric.ciede2000
+          ? nearestIndexDe00(pixelsR[i], pixelsG[i], pixelsB[i])
+          : nearestIndex(pixelsR[i], pixelsG[i], pixelsB[i]);
     }
 
     // 近似色统一（两种风格都做：视觉重复色并存只添乱）
@@ -144,7 +282,7 @@ class Quantizer {
 
     if (style == ConvertStyle.blocks) {
       // 孤立点清除：消灭残余的小色斑
-      grid = despeckle(grid, width, height, _maxSpeckSize(width));
+      grid = despeckle(grid, width, height, maxSpeckSizeFor(width, height));
     }
     return grid;
   }
