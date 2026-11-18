@@ -203,12 +203,6 @@ class _RestorePageState extends State<RestorePage> {
   // ========== 色卡 ==========
   BeadPalette _palette = const BeadPalette([]);
 
-  ///< 当前色卡（初始空占位，initState 异步换为选中色卡）
-  List<PaletteInfo> _palettes = const [];
-
-  ///< 可选色卡列表
-  String _paletteId = "";
-
   // ========== 图例（步骤 1/2） ==========
   Rect? _legendSel;
 
@@ -522,17 +516,14 @@ class _RestorePageState extends State<RestorePage> {
     });
   }
 
-  /// 加载选中色卡 + 全部可选色卡
+  /// 加载选中色卡
   Future<void> _initPalette() async {
     final selected = await PaletteRegistry.loadSelected();
-    final all = await PaletteRegistry.load();
     if (!mounted) {
       return;
     }
     setState(() {
       _palette = selected.palette;
-      _paletteId = selected.id;
-      _palettes = all;
     });
   }
 
@@ -1974,34 +1965,9 @@ class _RestorePageState extends State<RestorePage> {
             ],
           ),
           actions: [
-            // 自动框选图例区（载入时已自动尝试过，这里供失败重试/重新选）
-            if (_stage == RestoreStage.legend)
-              IconButton(
-                onPressed: _autoSelectLegend,
-                icon: const Icon(Icons.auto_awesome),
-                tooltip: "自动框选图例",
-              ),
-            if (_stage == RestoreStage.legend ||
-                _stage == RestoreStage.align ||
-                _stage == RestoreStage.frame)
-              PopupMenuButton<String>(
-                tooltip: "切换色卡",
-                icon: const Icon(Icons.palette),
-                onSelected: (id) => _switchPalette(id),
-                itemBuilder: (_) => [
-                  for (final p in _palettes)
-                    PopupMenuItem(
-                      value: p.id,
-                      child: Row(
-                        children: [
-                          if (p.id == _paletteId)
-                            const Icon(Icons.check, size: 18),
-                          Text(p.label),
-                        ],
-                      ),
-                    ),
-                ],
-              ),
+            // 2026-11-18 用户定稿：AppBar 只留右上 ✕。自动框选魔法棒（①页
+            // 底部已有同功能按钮）与切换色卡图标按用户要求移除，色卡切换
+            // 功能随入口移除（PaletteRegistry 仍按全局选中色卡加载）
             // 完全退出图纸还原：右上角 ✕（弹确认后整页出栈，与左上角
             // 「返回上一步」相对——一个保现场逐级退、一个整页丢弃退）
             if (_stage != RestoreStage.pick)
@@ -2153,37 +2119,6 @@ class _RestorePageState extends State<RestorePage> {
         _legendRowsCtrl.clear();
       }
     });
-  }
-
-  /// 切换色卡（图例清单作废，需重新识别）
-  Future<void> _switchPalette(String id) async {
-    if (id == _paletteId) {
-      return;
-    }
-    if (_stageBusy) {
-      // 识别/检测进行中换色卡（AppBar 下拉不被 body 遮罩拦，单独守卫）：
-      // await 前后建的候选集/清单条目（旧卡索引）与色号查找表（新卡）
-      // 混判错认，拒绝——识别结束（进复核或回失败）后再切
-      if (mounted) {
-        AppSnackBar.show(context, "识别进行中，请等识别完成后再切换色卡");
-      }
-      return;
-    }
-    await PaletteRegistry.saveSelectedId(id);
-    if (!mounted) {
-      return;
-    }
-    final target = _palettes.where((p) => p.id == id).first;
-    setState(() {
-      _paletteId = id;
-      _palette = target.palette;
-      for (final e in _legend) {
-        e.countCtrl.dispose();
-      }
-      _legend = [];
-      _legendByOcr = false;
-    });
-    AppSnackBar.show(context, "已切换到${target.label}，图例需重新识别");
   }
 
   /// 阶段一：选图入口（面板实现在 steps/pick_step.dart）
