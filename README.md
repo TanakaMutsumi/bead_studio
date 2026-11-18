@@ -19,12 +19,14 @@
 
 | | |
 |:---:|:---:|
-| ![主页](docs/screenshots/home.png) | ![识别复核](docs/screenshots/review.png) |
-| 主页 · 四大入口 | ④ 识别复核 · 逐色核对截图墙 |
-| ![框图例](docs/screenshots/legend.png) | ![九宫格对齐](docs/screenshots/align.png) |
-| ① 框图例 · OCR 读图例色号与颗数 | ② 九宫格对齐 · 校正拍摄偏移 |
-| ![板设置](docs/screenshots/board.png) | ![拼豆页](docs/screenshots/assemble.png) |
-| 板设置 · 作品摆位与板参数 | 拼豆页 · 选中色号高亮、已放打勾 |
+| ![主页](docs/screenshots/home.png) | ![框图例](docs/screenshots/legend.png) |
+| 主页 · 四大入口 | ① 框图例 · OCR 读图例色号与颗数 |
+| ![九宫格对齐](docs/screenshots/align.png) | ![框选主体](docs/screenshots/frame.png) |
+| ② 九宫格对齐 · 校正拍摄偏移 | ③ 框选主体 · 自动框出图案主体 |
+| ![识别复核](docs/screenshots/review.png) | ![板设置](docs/screenshots/board.png) |
+| ④ 识别复核 · 逐色核对截图墙 | 板设置 · 作品摆位与板参数 |
+| ![拼豆页](docs/screenshots/assemble.png) | |
+| 拼豆页 · 选中色号高亮、已放打勾 | |
 
 ## 核心功能
 
@@ -44,8 +46,7 @@
 
 ### 🔗 链接导入
 
-选图页直接粘小红书 / 抖音分享文案，免登录解析原图（小红书可取 6400px 原图；
-抖音走 SSR + 页面内 DOM 通道取作者上传原字节），挑图进还原流程。
+选图页直接粘贴小红书 / 抖音的分享文案，挑图进还原流程。
 
 ### 🖼️ 图片转换
 
@@ -75,9 +76,7 @@
   重活（解码/缩放/OCR 预处理）全部 `compute` isolate 出主线程，识别中 UI 不冻结、可随时终止；
 - 识别哲学：**OCR 权威 + 色彩回退**——印刷色号命中即采用，未命中回落 Lab 最近色采样，
   近白无文本判空白格；
-- 图例检测为自研游程带算法（v1→v9 调参记录见 [docs/vision_tuning_notes.md](docs/vision_tuning_notes.md)）；
-- 小红书/抖音免登录取图通道的调研与配方见
-  [docs/douyin_lossless_channel.md](docs/douyin_lossless_channel.md)。
+- 图例检测为自研游程带算法（v1→v9 调参记录见 [docs/vision_tuning_notes.md](docs/vision_tuning_notes.md)）。
 
 ### 代码结构
 
