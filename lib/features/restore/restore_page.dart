@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 
+import '../../core/adaptive_text.dart';
 import '../../core/app_build.dart';
 import '../../core/app_snack_bar.dart';
 import '../../core/decode_image.dart';
@@ -1952,11 +1953,14 @@ class _RestorePageState extends State<RestorePage> {
             icon: const Icon(Icons.arrow_back),
             tooltip: _stage == RestoreStage.pick ? "返回主页" : "返回上一步",
           ),
+          // 标题接 AdaptiveTitleText（2026-11-18 用户反馈：①②③步的步骤名
+          // 被 leading + 右侧 2~3 个图标挤压截断出省略号）——先缩字号完整
+          // 显示，缩不下限才省略号；与编辑器/拼豆页等 AppBar 同款处理
           title: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(switch (_stage) {
+              AdaptiveTitleText(switch (_stage) {
                 RestoreStage.pick => "图纸还原 · 选图",
                 RestoreStage.legend => "图纸还原 · ① 框图例",
                 RestoreStage.align => "图纸还原 · ② 九宫格对齐",
