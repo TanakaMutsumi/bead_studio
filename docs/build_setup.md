@@ -1,6 +1,8 @@
 # 开发环境搭建（Windows，全新机器）
 
 从零把「豆田」跑起来的完整步骤。已有 Flutter 环境的可直接看 [README](../README.md) 的构建命令。
+要连模拟器测试环境一起搭（命令行装 Android SDK、建模拟器、带测试资料），接着看
+[test_setup.md](test_setup.md)。
 
 ## 1. Flutter SDK
 

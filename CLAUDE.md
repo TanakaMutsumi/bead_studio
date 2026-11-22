@@ -16,6 +16,7 @@ Flutter 拼豆图纸还原 App（Android 优先，web 兼容）。核心链路�
 | 接续开发 / 项目现状 / 代码地图 / 环境全表 | `.claude/skills/project-status.md` |
 | 走全流程 UI 测试（adb 坐标表/页面判别/坑清单） | `.claude/skills/full-flow-test.md` |
 | 发新版本 / 出更新公告（模板每版必用，可 `/update-notice` 直调） | `.claude/skills/update-notice/SKILL.md` |
+| 换电脑部署模拟器测试环境（Android SDK / 模拟器 / 测试资料 / 测试基线） | `docs/test_setup.md` |
 | 动图例/主体检测算法 | `docs/vision_tuning_notes.md` |
 
 ## Windows/adb 环境要点（详见 project-status §2）
@@ -24,4 +25,5 @@ Flutter 拼豆图纸还原 App（Android 优先，web 兼容）。核心链路�
 - adb pull 本地路径用 `D:/` 风格（`/d/` 间歇性报错）；临时文件放 `.test/`（/tmp 不跨 Bash 调用持久）
 - GBK 控制台 python print 中文：`.encode('ascii','backslashreplace').decode('ascii')`
 - 测试设备：模拟器 `emulator-5554`（adb 全路径 `/d/Android/Sdk/platform-tools/adb.exe`）
+- **别跑 `avdmanager`**（哪怕是建别的 AVD）：它一被加载就会重写现有 AVD 的 config.ini。建测试模拟器用 `scripts/create_test_avd.ps1`
 - 交付 APK 必须 `flutter build apk --release` 全架构包（`flutter run` 产物只有 x86，真机装不上）

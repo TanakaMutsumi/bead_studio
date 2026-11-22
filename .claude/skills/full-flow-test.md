@@ -13,6 +13,8 @@ description: 拼豆 App（bead_studio）五步还原全流程自动化测试：a
 
 ## 0. 环境准备
 
+> 模拟器还没建、或是刚换了一台电脑：先按 `docs/test_setup.md` 把环境搭起来（建模拟器用 `scripts/create_test_avd.ps1`，**不要用 avdmanager**）。
+
 ```bash
 # 每次 Bash 会话开头（adb 命令内含 /sdcard 远端路径，防 MSYS 转换）
 export MSYS_NO_PATHCONV=1

@@ -115,6 +115,8 @@ flutter build apk --release   # 全架构包，真机可直接安装
 
 Windows 全新机器从零搭建环境的详细步骤见
 [docs/build_setup.md](docs/build_setup.md)。
+要在新电脑上把模拟器测试环境也搭起来（Android SDK、模拟器、测试资料、测试基线），见
+[docs/test_setup.md](docs/test_setup.md)。
 
 ## 版本记录
 
