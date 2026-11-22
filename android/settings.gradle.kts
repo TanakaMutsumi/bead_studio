@@ -12,9 +12,12 @@ pluginManagement {
 
     repositories {
         // mavenCentral 直连超时（2026-11-06 实测），阿里云镜像补位；
-        // google() 直连可达保持原位
+        // google() 直连可达保持原位。google 镜像 2026-11-22 补：新测试机
+        // maven.google.com 直连不通，AGP 系插件（com.android.tools.build:*）
+        // 不在 central/gradle-plugin 里，缺它必落到 google() 直连超时
         maven(url = "https://maven.aliyun.com/repository/central")
         maven(url = "https://maven.aliyun.com/repository/gradle-plugin")
+        maven(url = "https://maven.aliyun.com/repository/google")
         google()
         mavenCentral()
         gradlePluginPortal()

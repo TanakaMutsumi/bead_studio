@@ -70,6 +70,14 @@ flutter --version      # Flutter 3.47.1 • channel stable，Dart 3.13.1
 
 不要执行 `flutter upgrade`。版本一变，`flutter analyze` 的基线和依赖解析结果都可能跟着变。
 
+Windows 还需要**开发者模式**（`flutter pub get` 生成插件 symlink 用，否则报
+"Building with plugins requires symlink support"）。开一次就行，立即生效不用重启：
+
+```powershell
+# 管理员 PowerShell；可与 §4 的 WHPX 合并成一次提权操作
+reg.exe add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v AllowDevelopmentWithoutDevLicense /d 1
+```
+
 ### 2.3 JDK 17
 
 安装 Microsoft Build of OpenJDK 17（https://learn.microsoft.com/java/openjdk/download ，主开发机是
@@ -114,7 +122,28 @@ python -c "import PIL, numpy; print(PIL.__version__, numpy.__version__)"      # 
    下载慢或失败时挂代理：在命令里加上
    `--proxy=http --proxy_host=127.0.0.1 --proxy_port=<代理端口>`。
 
-5. 验收：
+5. **dl.google.com 完全不通时的镜像装法**（2026-11-22 新机器实测，sdkmanager 拉不动时的替代路径）。
+   腾讯镜像 `https://mirrors.cloud.tencent.com/AndroidSDK/` 原样镜像了 Google 仓库，
+   实测 70MB/s+。文件名要从仓库清单拿：镜像上下 `repository2-3.xml` 解析出各包
+   `<url>`（系统镜像不在清单里，直接按 `sys-img/google_apis/x86_64-36_r07.zip`
+   路径探）。本机实测的五个 Windows 包与解压布局：
+
+   | 包 | zip 文件名 | 解压到 | 注意 |
+   |---|---|---|---|
+   | platform-tools | `platform-tools_r37.0.3-win.zip` | `D:\Android\Sdk\` | zip 根就是 platform-tools/ |
+   | emulator | `emulator-windows_x64-16916650.zip` | `D:\Android\Sdk\` | rev 37.4.1 对应这个 build 号 |
+   | platforms;android-36 | `platform-36_r02.zip` | `D:\Android\Sdk\platforms\` | zip 根是 android-36/，正好 |
+   | build-tools;36.0.0 | `build-tools_r36_windows.zip` | 先解到临时目录 | **zip 根是 android-16/**，要改名 `build-tools\36.0.0` |
+   | system-images;…x86_64 | `sys-img/google_apis/x86_64-36_r07.zip` | `…\system-images\android-36\google_apis\` | zip 根是 x86_64/ |
+
+   license 文件要手写（`D:\Android\Sdk\licenses\android-sdk-license`，每行一个 hash）：
+   `8933bad161af4178b1185d1a37fbf41ea5269c55`、`d56f5187479451eabf01fb78af6dfcb131a6481e`、
+   `24333f8a63b6825ea9c5514f83c2829b004d1fee`；再补
+   `android-sdk-preview-license`：`84831b9409646a918e30573bab4c9c91346d8abd`。
+   不够的话 `yes | flutter doctor --android-licenses` 会补全。
+   装完用第 6 步的 `sdkmanager --list_installed` 验收——手动解压的包它同样认。
+
+6. 验收：
 
    ```powershell
    & "$env:ANDROID_HOME\cmdline-tools\latest\bin\sdkmanager.bat" --list_installed
@@ -356,6 +385,7 @@ $ADB shell "content query --uri content://media/external/images/media --projecti
 | `flutter test` 编译期失败 | 可用内存被模拟器和编辑器吃光 | 关掉模拟器再跑。主开发机有过可用内存只剩 0.7GB 时编译失败的记录 |
 | Gradle 构建卡死（java 进程 CPU 长时间是 0） | Gradle daemon 挂死 | 结束所有 java 进程后重试。成功构建过一次之后，连续卡死可以走离线构建：在 `android` 目录执行 `.\gradlew.bat assembleDebug -Ptarget-platform=android-x64 --offline --no-daemon` |
 | 构建卡在下载依赖 | 国内直连 Google / Maven 仓库慢或超时 | 仓库里已配阿里云镜像。仍然不行，在 `%USERPROFILE%\.gradle\gradle.properties` 里填代理（`systemProp.https.proxyHost` 和 `systemProp.https.proxyPort`）。主开发机的经验是镜像比代理稳 |
+| 构建报 `Could not get resource 'https://dl.google.com/dl/android/maven2/...'`，一挂十几分钟 | maven.google.com 直连不通的机器（2026-11-22 新测试机实测），落到 `google()` 直连的 artifact 全部超时。两处仓库表仓库级镜像盖不到：①主工程 pluginManagement 原来只有阿里云 central/gradle-plugin，AGP 系插件不在其中；②Flutter SDK 自带 gradle 工程（included build，settings 里 `FAIL_ON_PROJECT_REPOS`，init 脚本加 project 仓库会直接炸） | ①主工程 `android/settings.gradle.kts` pluginManagement 已补阿里云 google 镜像（2026-11-22 入库，后续机器无需再做）；②机器本地改 `D:\flutter\packages\flutter_tools\gradle\settings.gradle.kts`，dependencyResolutionManagement.repositories 前插 `maven("https://maven.aliyun.com/repository/google")` 和 `central`——**flutter 升级会还原此文件，要重加**；③`%USERPROFILE%\.gradle\gradle.properties` 加 `org.gradle.internal.http.connectionTimeout=15000` / `socketTimeout=15000` 让死源快速失败 |
 | `avdmanager create avd` 报 `Cannot invoke IdDisplay.getId() because "tag" is null` | 旧版 cmdline-tools 读不懂新版镜像的元数据 | 别用 avdmanager，用 `scripts\create_test_avd.ps1` |
 | PowerShell 里 `adb exec-out screencap -p > x.png` 得到打不开的 PNG | PowerShell 5.1 的 `>` 按文本处理，毁掉二进制 | 截图在 Git Bash 里做，或按 full-flow-test.md §4.2：先 `adb shell screencap -p /sdcard/s.png` 再 `adb pull` |
 
@@ -395,3 +425,16 @@ $ADB shell "content query --uri content://media/external/images/media --projecti
 没有在主开发机上重做的（那边已经装好，磁盘和内存也不允许再来一遍）：各工具的首次安装、
 模拟器首次开机、开机后的验收命令、`flutter run` 首次构建、集成测试命令。
 在新机器上第一次走通之后，把实际的耗时和踩到的坑回填到本文。
+
+2026-11-22 在新测试机（Win10 Pro 19045 / i5-13400F / 32GB）上实际执行过的：
+
+- §2.2 Flutter 3.47.1 zip 解压 + 镜像环境变量；§2.3 JDK 17（ms-jdk 17.0.21.1 zip 解压，
+  按用户要求装在 `D:\Program Files (x86)\tool\`，JAVA_HOME 指过去构建正常）；
+  §2.4 Python 沿用机器上已有的 3.12（pillow 13.0.0 / numpy 2.5.5）
+- §2.2 补的开发者模式、§3 第 5 步的镜像装法：都是本机踩出来的坑
+- §3 验收 `sdkmanager --list_installed` 五包全认、`flutter doctor` 三项达标
+  （Android toolchain 首跑会因 dl.google.com 拖慢超时 4 分半，重跑即绿）
+- §6 `create_test_avd.ps1` 正常创建（设了 `ANDROID_AVD_HOME=D:\avd`）
+- §8 `flutter analyze` 90 条与基线零差；`flutter test -j 2` 160/161——唯一红项
+  `legend_skia_sim_test` 是 `.test/test_pic5.png` 还没从主开发机带过来，非环境问题
+- WHPX 与开发者模式合并成一次 UAC 提权办完；**重启前模拟器无法开机，装机/全流程待续**
