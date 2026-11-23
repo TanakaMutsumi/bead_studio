@@ -3,7 +3,6 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../../core/palette.dart';
-import '../../../core/responsive.dart';
 import '../restore_types.dart';
 import 'stage_frame.dart';
 
@@ -130,7 +129,13 @@ class LegendStep extends StatelessWidget {
       //（图下半出视口，滚轮/双指平移看回；收起清单即完整露出原图图例带）
       final listH = math
           .max(cons.maxHeight - imgH - 172, cons.maxHeight * 0.42)
-          .clamp(120.0, 420.0);
+          // 上限除 420 外还得受真实视口钳制：矮窗口（分屏/小平板横屏）下
+          // 不钳会超出「摘要行+操作行+按钮+padding」的固定开销、底部溢出
+          .clamp(
+            120.0,
+            math.max(120.0, cons.maxHeight - 210.0),
+          )
+          .toDouble();
       return StageFrame(
         stage: imageStage(
           sel: legendSel,
@@ -319,10 +324,9 @@ class LegendStep extends StatelessWidget {
                       ],
                     ),
                   const SizedBox(height: 8),
-                  _listSized(
-                    context,
-                    listH,
-                    ListView.builder(
+                  SizedBox(
+                    height: listH,
+                    child: ListView.builder(
                       itemCount: sorted.length,
                       itemBuilder: (_, i) {
                         final e = sorted[i];
@@ -443,14 +447,6 @@ class LegendStep extends StatelessWidget {
       );
     });
   }
-
-  /// 清单容器：紧凑档按 [height] 定高（多拿的空间由图区吸收，见 build 注释）；
-  /// 展开档面板独占一列，清单直接 Expanded 吃掉剩余高度——不靠估算
-  /// 固定开销（估小了底部溢出、估大了白白留白）
-  Widget _listSized(BuildContext context, double height, Widget child) =>
-      isExpandedWidth(context)
-          ? Expanded(child: child)
-          : SizedBox(height: height, child: child);
 
   /// 总豆数徽标（摘要行右侧）：已填条目的颗数之和，随输入框敲键实时
   /// 刷新（Listenable.merge 全部 countCtrl，只重建本徽标不动整页）。

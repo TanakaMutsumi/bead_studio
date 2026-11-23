@@ -218,8 +218,14 @@ void main() {
         imageWidth: 1440,
         imageHeight: 2100,
       );
-      final stageH = 800 - 48 - kToolbarHeight - kZoomStripHeight - 24;
-      final stageW = 1280 - kSidePanelWidth - 1 - 24;
+      // 堆叠布局 + 控制面板常见高度预算（kStackedPanelBudget）
+      final stageH = 800 -
+          48 -
+          kToolbarHeight -
+          kZoomStripHeight -
+          kStackedPanelBudget -
+          24;
+      final stageW = 1280 - 24;
       expect(s.height, closeTo(stageH, 1e-9));
       expect(s.width, closeTo(stageH * 1440 / 2100, 1e-9));
       expect(s.width, lessThanOrEqualTo(stageW));
@@ -235,9 +241,18 @@ void main() {
         imageWidth: 3000,
         imageHeight: 1000,
       );
-      final stageW = 1280 - kSidePanelWidth - 1 - 24;
-      expect(s.width, closeTo(stageW, 1e-9));
-      expect(s.height, closeTo(stageW * 1000 / 3000, 1e-9));
+      // 高度（含面板预算）比宽度更受限：整幅装入时宽高都由高度决定
+      final stageH = 800 -
+          24 -
+          48 -
+          kToolbarHeight -
+          kZoomStripHeight -
+          kStackedPanelBudget -
+          24;
+      final stageW = 1280 - 24;
+      expect(s.height, closeTo(stageH, 1e-9));
+      expect(s.width, closeTo(stageH * 3000 / 1000, 1e-9));
+      expect(s.width, lessThanOrEqualTo(stageW));
     });
 
     test('带状态栏时图区视口相应变矮，图不出视口', () {
@@ -250,7 +265,16 @@ void main() {
       );
       expect(
         s.height,
-        closeTo(800 - 24 - 48 - kToolbarHeight - kZoomStripHeight - 24, 1e-9),
+        closeTo(
+          800 -
+              24 -
+              48 -
+              kToolbarHeight -
+              kZoomStripHeight -
+              kStackedPanelBudget -
+              24,
+          1e-9,
+        ),
       );
     });
   });
@@ -597,7 +621,7 @@ void main() {
           imageStage: stubStage,
           zoomStrip: stubZoom,
           viewerCtrl: TransformationController(),
-          displaySize: () => Size.zero,
+          displaySize: () => const Size(300, 420), // 存根图高：真实设备载图后必有图高
           stageViewSize: () => Size.zero,
           sel: null,
           overlay: null,
@@ -615,7 +639,7 @@ void main() {
           imageStage: stubStage,
           zoomStrip: stubZoom,
           viewerCtrl: TransformationController(),
-          displaySize: () => Size.zero,
+          displaySize: () => const Size(300, 420), // 存根图高：真实设备载图后必有图高
           stageViewSize: () => Size.zero,
           overlay: null,
           cornerPts: null,
@@ -652,7 +676,7 @@ void main() {
         imageStage: stubStage,
         zoomStrip: stubZoom,
         viewerCtrl: TransformationController(),
-        displaySize: () => Size.zero,
+        displaySize: () => const Size(300, 420), // 存根图高：真实设备载图后必有图高
         stageViewSize: () => Size.zero,
         legendSel: null,
         overlay: null,
@@ -728,7 +752,7 @@ void main() {
       }
     });
 
-    testWidgets('平板横屏（展开档）：图区居左吃满，面板靠右独占 360', (tester) async {
+    testWidgets('平板横屏（完全手机式）：与竖屏同一堆叠结构，控件行全宽', (tester) async {
       await _window(tester, _tabletLandscape);
       for (final (name, build) in cases) {
         await tester.pumpWidget(_app(home: Scaffold(body: build())));
@@ -736,21 +760,15 @@ void main() {
         final stage = tester.getRect(find.byKey(_stageKey));
         final zoom = tester.getRect(find.byKey(_zoomKey));
         final p = tester.getRect(panel);
-        final panelX = 1280 - kSidePanelWidth;
         expect(stage.left, 12, reason: name);
         expect(stage.top, 12, reason: name);
-        expect(stage.right, panelX - 1 - 12,
-            reason: name); // 分隔线 1 + 图区 padding 12
-        expect(
-          stage.bottom,
-          800 - kZoomStripHeight - 12,
-          reason: "$name：图区高度不再被面板压缩",
-        );
+        expect(stage.right, 1280 - 12, reason: name); // 图区吃满全宽
         expect(zoom.top, stage.bottom + 12, reason: name);
-        expect(zoom.right, panelX - 1, reason: "$name：缩放条仍在图区下缘");
-        expect(p.left, panelX, reason: name); // 面板外框 = 右侧整列
-        expect(p.right, 1280, reason: name);
-        expect(p.top, 0, reason: name);
+        expect(zoom.height, kZoomStripHeight, reason: name);
+        expect(zoom.right, 1280, reason: name); // 缩放条全宽、按钮贴右
+        expect(p.left, 0, reason: name);
+        expect(p.right, 1280, reason: name); // 控件行全宽（用户定稿）
+        expect(p.top, zoom.bottom, reason: name);
         expect(p.bottom, 800, reason: name);
       }
     });
@@ -767,11 +785,12 @@ void main() {
       await tester.pumpAndSettle();
       final list = tester.getRect(find.byType(ListView));
       final next = tester.getRect(find.text("下一步：九宫格对齐（1色）"));
-      expect(list.left, greaterThanOrEqualTo(1280 - kSidePanelWidth));
+      expect(list.left, greaterThanOrEqualTo(0));
       expect(list.top, greaterThan(40)); // 在摘要行 / 操作行之下
       expect(list.bottom, lessThanOrEqualTo(next.top)); // 不压住底部按钮
       expect(next.bottom, lessThanOrEqualTo(800 - 12 + 0.5)); // 底部按钮完整露出
-      expect(list.height, greaterThan(400)); // 确实吃到了大部分面板高度
+      // 紧凑公式：max(视口800 - 图高420 - 172, 42%=336) -> 336，上限 590 不绑定
+      expect(list.height, closeTo(336, 1.0));
     });
 
     testWidgets('窗口很矮时（高 500，展开档下限）面板也不溢出', (tester) async {
@@ -811,19 +830,26 @@ void main() {
       var image = tester.getRect(find.byType(Image));
       expect(image.width, closeTo(800 - 24, 0.5));
 
-      // 转到横屏（展开档）
+      // 转到横屏（完全手机式：堆叠 + 整幅装入 + 水平居中）
       tester.view.physicalSize = _tabletLandscape;
       await tester.pumpAndSettle();
       image = tester.getRect(find.byType(Image));
-      final stageH = 800 - kToolbarHeight - kZoomStripHeight - 24;
+      // 测试窗口无系统栏：topPadding/bottomInset = 0
+      final stageH =
+          800 - kToolbarHeight - kZoomStripHeight - kStackedPanelBudget - 24;
       expect(image.top, kToolbarHeight + 12);
-      expect(image.bottom, kToolbarHeight + 12 + stageH);
       expect(image.bottom, lessThanOrEqualTo(800 - kZoomStripHeight));
+      expect(image.height, closeTo(stageH, 0.5));
+      // 水平居中：图区视口 x 12..1268dp，图在其中居中
+      expect(
+        image.left,
+        closeTo(12 + (1256 - image.width) / 2, 1.0),
+      );
       expect(image.width, closeTo(stageH * 144 / 210, 0.5));
-      expect(image.right, lessThanOrEqualTo(1280 - kSidePanelWidth - 1));
-      // 面板文字在右侧面板内
+      // 面板在图区下方（不再分栏）
       final auto = tester.getRect(find.text("自动框选图例区"));
-      expect(auto.left, greaterThanOrEqualTo(1280 - kSidePanelWidth));
+      expect(auto.top, greaterThan(image.bottom));
+      expect(auto.left, greaterThanOrEqualTo(0));
       expect(auto.right, lessThanOrEqualTo(1280));
     });
   });

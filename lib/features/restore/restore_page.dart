@@ -3302,8 +3302,8 @@ class _CancelBusyDialogState extends State<_CancelBusyDialog> {
 /// 便于单测，不用在测试环境里解图 / 跑 isolate）。
 ///
 /// 紧凑档：可用宽 = 窗口宽 - 两侧 12 padding（图横向铺满，与布局公式一致）。
-/// 展开档（平板横屏/桌面，图区居左、面板靠右，见 StageFrame）：图区又宽又矮，按
-/// 窗口宽铺满会让竖版图纸高出视口数倍（minScale=1 缩不回去，底部的
+/// 展开档（宽 ≥ 840dp 且高 ≥ 500dp 的窗口，平板横屏/桌面）：堆叠布局下若仍按
+/// 窗口宽铺满，竖版图纸会高出视口数倍（minScale=1 缩不回去，底部的
 /// 图例带够不着）——改为整图等比装入图区视口（宽高同时受限，整幅可见）。
 /// 两档都只由窗口尺寸决定、与面板展开/步骤切换无关：显示坐标系在一幅
 /// 图的生命周期内保持稳定，存量选区/锚点/四角不会因面板高度变化而错位。
@@ -3323,13 +3323,16 @@ Size restoreDisplaySize({
   if (!isExpandedSize(window)) {
     return Size(compactW, compactW * imageHeight / imageWidth);
   }
-  // 图区视口 = 窗口去掉右侧面板、分隔线、图区 padding(12×2)、AppBar、缩放条、底部系统栏
-  final stageW = window.width - kSidePanelWidth - 1 - 24;
+  // 图区视口 = 窗口去掉图区 padding(12×2)、AppBar、缩放条、底部系统栏，
+  // 再预留一份控制面板的常见高度（堆叠布局下面板高度随步骤/展开态变化，
+  // 显示尺寸只能按固定预算算，否则面板一动图就重排、选区错位）
+  final stageW = window.width - 24;
   final stageH = window.height -
       topPadding -
       bottomInset -
       kToolbarHeight -
       kZoomStripHeight -
+      kStackedPanelBudget -
       24;
   final k = math.min(stageW / imageWidth, stageH / imageHeight);
   return Size(imageWidth * k, imageHeight * k);

@@ -43,6 +43,13 @@ bool fitsSidePanel(double width) =>
 /// 这两处尺寸改动时同步改这里
 const double kZoomStripHeight = 38;
 
+/// 还原流程堆叠布局下、图区下方控制面板的常见高度预算（②九宫格步最高
+/// ~270dp；①③更矮）。图的显示尺寸只能由窗口决定（选区/锚点等显示坐标
+/// 要在面板展开时保持稳定），而堆叠布局下面板实际高度随步骤/展开态变化
+/// ——按预算装图：面板更矮时图下方留白，更高时图底被裁、可平移看回
+/// （与手机上「图下半出视口」同一语义）
+const double kStackedPanelBudget = 270;
+
 /// 窗口是否达到中等档（平板竖屏及以上宽度）
 bool isMediumWidth(BuildContext context) =>
     MediaQuery.sizeOf(context).width >= kMediumWidth;
