@@ -190,6 +190,7 @@ void main() {
       final s = restoreDisplaySize(
         window: _phone,
         topPadding: top,
+        bottomInset: 0,
         imageWidth: 1440,
         imageHeight: 2100,
       );
@@ -201,6 +202,7 @@ void main() {
       final s = restoreDisplaySize(
         window: _tabletPortrait,
         topPadding: 24,
+        bottomInset: 0,
         imageWidth: 1440,
         imageHeight: 2100,
       );
@@ -212,10 +214,11 @@ void main() {
       final s = restoreDisplaySize(
         window: _tabletLandscape,
         topPadding: 0,
+        bottomInset: 48,
         imageWidth: 1440,
         imageHeight: 2100,
       );
-      final stageH = 800 - kToolbarHeight - kZoomStripHeight - 24;
+      final stageH = 800 - 48 - kToolbarHeight - kZoomStripHeight - 24;
       final stageW = 1280 - kSidePanelWidth - 1 - 24;
       expect(s.height, closeTo(stageH, 1e-9));
       expect(s.width, closeTo(stageH * 1440 / 2100, 1e-9));
@@ -228,6 +231,7 @@ void main() {
       final s = restoreDisplaySize(
         window: _tabletLandscape,
         topPadding: 24,
+        bottomInset: 48,
         imageWidth: 3000,
         imageHeight: 1000,
       );
@@ -240,12 +244,13 @@ void main() {
       final s = restoreDisplaySize(
         window: _tabletLandscape,
         topPadding: 24,
+        bottomInset: 48,
         imageWidth: 1440,
         imageHeight: 2100,
       );
       expect(
         s.height,
-        closeTo(800 - 24 - kToolbarHeight - kZoomStripHeight - 24, 1e-9),
+        closeTo(800 - 24 - 48 - kToolbarHeight - kZoomStripHeight - 24, 1e-9),
       );
     });
   });

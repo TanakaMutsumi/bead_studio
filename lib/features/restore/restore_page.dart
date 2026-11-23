@@ -505,9 +505,11 @@ class _RestorePageState extends State<RestorePage> {
     // ClipRect 裁剪 + 平移夹限双重锁死不可点（与换图残留同症状）
     final image = _image!;
     final top = MediaQuery.paddingOf(context).top;
+    final bottom = MediaQuery.viewPaddingOf(context).bottom;
     double displayW(Size window) => restoreDisplaySize(
           window: window,
           topPadding: top,
+          bottomInset: bottom,
           imageWidth: image.width,
           imageHeight: image.height,
         ).width;
@@ -680,6 +682,7 @@ class _RestorePageState extends State<RestorePage> {
   Size _displaySize() => restoreDisplaySize(
         window: MediaQuery.sizeOf(context),
         topPadding: MediaQuery.paddingOf(context).top,
+        bottomInset: MediaQuery.viewPaddingOf(context).bottom,
         imageWidth: _image!.width,
         imageHeight: _image!.height,
       );
@@ -2279,38 +2282,51 @@ class _RestorePageState extends State<RestorePage> {
                       onDoubleTap: () {
                         _viewerCtrl.value = Matrix4.identity();
                       },
-                      child: Stack(
-                        children: [
-                          Image.memory(
-                            _displayBytes ?? _bytes!,
-                            width: ds.width,
-                            height: ds.height,
-                            fit: BoxFit.fill,
-                            // 解码失败必须可见（红底提示），不能静默白屏让用户"不知发生了什么"
-                            errorBuilder: (ctx, error, stack) {
-                              return ColoredBox(
-                                color: Colors.redAccent,
-                                child: Center(
-                                  child: Text(
-                                    "显示解码失败: $error",
-                                    textAlign: TextAlign.center,
-                                    style: const TextStyle(color: Colors.white),
+                      // Align 在 IV(constrained:false) 的无界约束下会收缩成子尺寸、对齐失效：
+                      // 先用视口尺寸的 SizedBox 把约束变有界再居中。展开档整图
+                      // 装入后横向居中（不再贴左边留一大块空白）；手机上图宽
+                      // =视口宽、垂直仍顶部对齐，逐像素不变
+                      child: SizedBox(
+                        width: cons.maxWidth,
+                        height: cons.maxHeight,
+                        child: Align(
+                          alignment: Alignment.topCenter,
+                          child: Stack(
+                            children: [
+                              Image.memory(
+                                _displayBytes ?? _bytes!,
+                                width: ds.width,
+                                height: ds.height,
+                                fit: BoxFit.fill,
+                                // 解码失败必须可见（红底提示），不能静默白屏让用户"不知发生了什么"
+                                errorBuilder: (ctx, error, stack) {
+                                  return ColoredBox(
+                                    color: Colors.redAccent,
+                                    child: Center(
+                                      child: Text(
+                                        "显示解码失败: $error",
+                                        textAlign: TextAlign.center,
+                                        style: const TextStyle(
+                                            color: Colors.white),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                              if (sel != null && sel.width > 2)
+                                Positioned.fill(
+                                  child: CustomPaint(
+                                    painter: SelPainter(sel, ctrl: _viewerCtrl),
                                   ),
                                 ),
-                              );
-                            },
+                              if (overlay != null)
+                                Positioned.fill(
+                                  child:
+                                      CustomPaint(painter: overlay, size: ds),
+                                ),
+                            ],
                           ),
-                          if (sel != null && sel.width > 2)
-                            Positioned.fill(
-                              child: CustomPaint(
-                                painter: SelPainter(sel, ctrl: _viewerCtrl),
-                              ),
-                            ),
-                          if (overlay != null)
-                            Positioned.fill(
-                              child: CustomPaint(painter: overlay, size: ds),
-                            ),
-                        ],
+                        ),
                       ),
                     ),
                   );
@@ -3293,10 +3309,13 @@ class _CancelBusyDialogState extends State<_CancelBusyDialog> {
 /// 图的生命周期内保持稳定，存量选区/锚点/四角不会因面板高度变化而错位。
 ///
 /// [window] 窗口逻辑尺寸；[topPadding] 状态栏高度（AppBar 占的高度 = 它 + kToolbarHeight）；
+/// [bottomInset] 底部系统栏内边距（SafeArea(top:false) 已消费 padding.bottom，但本公式
+/// 从窗口总高起算，不减它会把图区多算高一截、图纸底部被裁掉）；
 /// [imageWidth]/[imageHeight] 原图像素尺寸。
 Size restoreDisplaySize({
   required Size window,
   required double topPadding,
+  required double bottomInset,
   required int imageWidth,
   required int imageHeight,
 }) {
@@ -3304,10 +3323,14 @@ Size restoreDisplaySize({
   if (!isExpandedSize(window)) {
     return Size(compactW, compactW * imageHeight / imageWidth);
   }
-  // 图区视口 = 窗口去掉右侧面板、分隔线、图区 padding(12×2)、AppBar、缩放条
+  // 图区视口 = 窗口去掉右侧面板、分隔线、图区 padding(12×2)、AppBar、缩放条、底部系统栏
   final stageW = window.width - kSidePanelWidth - 1 - 24;
-  final stageH =
-      window.height - topPadding - kToolbarHeight - kZoomStripHeight - 24;
+  final stageH = window.height -
+      topPadding -
+      bottomInset -
+      kToolbarHeight -
+      kZoomStripHeight -
+      24;
   final k = math.min(stageW / imageWidth, stageH / imageHeight);
   return Size(imageWidth * k, imageHeight * k);
 }
