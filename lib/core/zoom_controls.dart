@@ -53,11 +53,11 @@ Rect? photoLodCropRect({
   }
   final t = m.getTranslation();
   final vis = Rect.fromLTWH(
-        -t.x / s,
-        -t.y / s,
-        canvas.width / s,
-        canvas.height / s,
-      ).intersect(Offset.zero & canvas);
+    -t.x / s,
+    -t.y / s,
+    canvas.width / s,
+    canvas.height / s,
+  ).intersect(Offset.zero & canvas);
   if (vis.isEmpty) {
     return null;
   }
@@ -109,6 +109,13 @@ class ZoomControls extends StatelessWidget {
   final VoidCallback? onChanged;
 
   ///< 缩放/复位落定后回调（viewScale 依赖方 setState 用）
+
+  final Offset? Function()? anchor;
+
+  ///< 缩放锚点提供者（**视口坐标**；null/返回 null = 以视口中心为锚）。
+  /// 还原页传当前选框中心（显示坐标经 topCenter 放置换算），实现
+  /// 「放大/缩小以选框中心为焦点」
+
   final Size Function()? viewportSize;
 
   ///< 视口尺寸提供者（null = 经 ancestor RenderStack 探取）。Center 内
@@ -127,6 +134,7 @@ class ZoomControls extends StatelessWidget {
     required this.contentSize,
     this.maxScale = 10,
     this.onChanged,
+    this.anchor,
     this.viewportSize,
     this.fitAllTooltip = "还原全幅（缩放/平移复位）",
   });
@@ -174,6 +182,7 @@ class ZoomControls extends StatelessWidget {
       content: contentSize(),
       factor: factor,
       maxScale: maxScale,
+      anchor: anchor?.call(),
     );
     if (changed) {
       onChanged?.call();

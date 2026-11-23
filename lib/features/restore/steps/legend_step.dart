@@ -146,6 +146,7 @@ class LegendStep extends StatelessWidget {
           viewerCtrl,
           displaySize,
           viewport: stageViewSize,
+          selection: () => legendSel,
         ),
         panel: Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),

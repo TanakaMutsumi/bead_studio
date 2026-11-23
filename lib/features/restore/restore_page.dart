@@ -1170,6 +1170,7 @@ class _RestorePageState extends State<RestorePage> {
     Size Function() contentSize, {
     double maxScale = kPhotoMaxZoom,
     Size Function()? viewport,
+    Rect? Function()? selection,
   }) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 2, 16, 2),
@@ -1180,9 +1181,25 @@ class _RestorePageState extends State<RestorePage> {
           contentSize: contentSize,
           viewportSize: viewport ?? contentSize,
           maxScale: maxScale,
+          anchor:
+              selection == null ? null : () => _selectionAnchor(selection()),
         ),
       ),
     );
+  }
+
+  /// 选框中心（显示坐标）→ 视口坐标：图在图区 topCenter 放置，原点 =
+  /// ((视口宽 - 显示宽)/2, 0)。无选框/视口未就绪返回 null（回退视口中心）
+  Offset? _selectionAnchor(Rect? sel) {
+    if (sel == null) {
+      return null;
+    }
+    final vs = _stageViewSize;
+    if (vs == Size.zero) {
+      return null;
+    }
+    final ds = _displaySize();
+    return Offset((vs.width - ds.width) / 2 + sel.center.dx, sel.center.dy);
   }
 
   // ==================== 四角对齐 ====================

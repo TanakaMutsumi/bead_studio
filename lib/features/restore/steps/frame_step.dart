@@ -62,6 +62,7 @@ class FrameStep extends StatelessWidget {
         viewerCtrl,
         displaySize,
         viewport: stageViewSize,
+        selection: () => sel,
       ),
       panel: Padding(
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),

@@ -600,6 +600,7 @@ void main() {
       Size Function() contentSize, {
       double maxScale = 10,
       Size Function()? viewport,
+      Rect? Function()? selection,
     }) =>
         const Padding(
           key: _zoomKey,

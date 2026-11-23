@@ -23,6 +23,9 @@ typedef ZoomStripBuilder = Widget Function(
   Size Function() contentSize, {
   double maxScale,
   Size Function()? viewport,
+  Rect? Function()? selection,
+
+  ///< 当前选框（显示坐标；非 null 时放大/缩小以选框中心为锚）
 });
 
 /// 图例条目：图纸图例里识别出的一个用色

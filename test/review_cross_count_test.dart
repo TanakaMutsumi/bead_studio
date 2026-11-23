@@ -66,7 +66,7 @@ void main() {
             builder: (context, setState) {
               setHost = setState;
               return ReviewStep(
-                zoomStrip: (ctrl, size, {maxScale = 12, viewport}) =>
+                zoomStrip: (ctrl, size, {maxScale = 12, viewport, selection}) =>
                     const SizedBox(width: 40, height: 20),
                 model: model,
                 palette: palette,
