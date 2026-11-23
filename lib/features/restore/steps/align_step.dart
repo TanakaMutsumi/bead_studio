@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../restore_types.dart';
+import 'stage_frame.dart';
 
 /// 阶段②：九宫格标定每格大小（本步只做标定，框选主体在下一步独立
 /// 进行）；四角对齐作歪图透视备选（四角即区域、无独立框选步，直接识别）
@@ -108,235 +109,229 @@ class AlignStep extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Expanded(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: imageStage(
-              // 本步无选区交互：sel 恒 null，九宫格未命中的拖动走
-              // panFallback=平移画面查看（放大核对格线重叠情况）
-              sel: null,
-              onSel: (_) {},
-              overlay: overlay,
-              cornerPts: cornerPts,
-              onCornerDrag: onCornerDrag,
-              miniAnchor: miniAnchor,
-              onMiniAnchor: onMiniAnchor,
-              panFallback: true,
-            ),
-          ),
-        ),
-        zoomStrip(
-          viewerCtrl,
-          displaySize,
-          viewport: stageViewSize,
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SegmentedButton<bool>(
-                showSelectedIcon: false,
-                style: const ButtonStyle(visualDensity: VisualDensity.compact),
-                segments: const [
-                  ButtonSegment(
-                    value: false,
-                    icon: Icon(Icons.grid_3x3, size: 18),
-                    label: Text("九宫格标定"),
-                  ),
-                  ButtonSegment(
-                    value: true,
-                    icon: Icon(Icons.crop_free, size: 18),
-                    label: Text("四角对齐"),
-                  ),
-                ],
-                selected: {useCorner},
-                onSelectionChanged: (sel) => onSwitchMode(sel.first),
-              ),
-              const SizedBox(height: 6),
-              Text(hint, style: Theme.of(context).textTheme.bodySmall),
-              const SizedBox(height: 8),
-              if (useCorner) ...[
-                Row(
-                  children: [
-                    SizedBox(
-                      width: 64,
-                      child: TextField(
-                        controller: colsCtrl,
-                        keyboardType: TextInputType.number,
-                        // 四角覆盖层读 controller 文本定行列，改动即重画
-                        onChanged: (_) => onDimChanged(),
-                        decoration: const InputDecoration(
-                          labelText: "列",
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                      ),
-                    ),
-                    const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 8),
-                      child: Text("×"),
-                    ),
-                    SizedBox(
-                      width: 64,
-                      child: TextField(
-                        controller: rowsCtrl,
-                        keyboardType: TextInputType.number,
-                        onChanged: (_) => onDimChanged(),
-                        decoration: const InputDecoration(
-                          labelText: "行",
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    OutlinedButton.icon(
-                      onPressed: onResetCorners,
-                      icon: const Icon(Icons.restart_alt, size: 18),
-                      label: const Text("重置四角"),
-                    ),
-                  ],
+    return StageFrame(
+      stage: imageStage(
+        // 本步无选区交互：sel 恒 null，九宫格未命中的拖动走
+        // panFallback=平移画面查看（放大核对格线重叠情况）
+        sel: null,
+        onSel: (_) {},
+        overlay: overlay,
+        cornerPts: cornerPts,
+        onCornerDrag: onCornerDrag,
+        miniAnchor: miniAnchor,
+        onMiniAnchor: onMiniAnchor,
+        panFallback: true,
+      ),
+      zoomStrip: zoomStrip(
+        viewerCtrl,
+        displaySize,
+        viewport: stageViewSize,
+      ),
+      panel: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SegmentedButton<bool>(
+              showSelectedIcon: false,
+              style: const ButtonStyle(visualDensity: VisualDensity.compact),
+              segments: const [
+                ButtonSegment(
+                  value: false,
+                  icon: Icon(Icons.grid_3x3, size: 18),
+                  label: Text("九宫格标定"),
                 ),
-                const SizedBox(height: 4),
-                Row(
-                  children: [
-                    Expanded(
-                      child: SwitchListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        title: const Text(
-                          "偏色过大识别为空白格",
-                          style: TextStyle(fontSize: 13),
-                        ),
-                        value: blankEnable,
-                        onChanged: onBlankChanged,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: recognizing ? null : onRecognize,
-                        icon: recognizing
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.document_scanner),
-                        label: Text(recognizing ? "识别中…" : "开始识别"),
-                      ),
-                    ),
-                  ],
-                ),
-              ] else ...[
-                // 紧凑 IconButton（36 逻辑点击区 + 22 图标）+ 格子大小/微移
-                // 拆两行：单行放 6 个按钮加标签在窄屏/大字体下仍会溢出
-                // （用户实测微移控件被裁出屏错误显示）
-                Row(
-                  children: [
-                    const Text("格子大小"),
-                    _compactIconBtn(
-                      onPressed: pitchX > 0 ? () => onAdjustPitch(-step) : null,
-                      icon: Icons.remove_circle_outline,
-                    ),
-                    Text(pitchX > 0 ? pitchX.toStringAsFixed(2) : "--"),
-                    _compactIconBtn(
-                      onPressed: pitchX > 0 ? () => onAdjustPitch(step) : null,
-                      icon: Icons.add_circle_outline,
-                    ),
-                  ],
-                ),
-                Row(
-                  children: [
-                    const Text("微移"),
-                    _compactIconBtn(
-                      onPressed: pitchX > 0 ? () => onNudge(-step, 0) : null,
-                      icon: Icons.arrow_back,
-                      tooltip: "左移",
-                    ),
-                    _compactIconBtn(
-                      onPressed: pitchX > 0 ? () => onNudge(0, -step) : null,
-                      icon: Icons.arrow_upward,
-                      tooltip: "上移",
-                    ),
-                    _compactIconBtn(
-                      onPressed: pitchX > 0 ? () => onNudge(0, step) : null,
-                      icon: Icons.arrow_downward,
-                      tooltip: "下移",
-                    ),
-                    _compactIconBtn(
-                      onPressed: pitchX > 0 ? () => onNudge(step, 0) : null,
-                      icon: Icons.arrow_forward,
-                      tooltip: "右移",
-                    ),
-                  ],
-                ),
-                // 步长档位：格子大小与微移共用（每次点击改变的图片像素数）。
-                // chips 单排放下 5 档（compact+收窄 padding ~300px < 360dp 窄屏）
-                Row(
-                  children: [
-                    const Text("步长"),
-                    for (final (v, label) in _stepChoices)
-                      Padding(
-                        padding: const EdgeInsets.only(left: 6),
-                        child: ChoiceChip(
-                          label: Text(
-                            label,
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                          selected: step == v,
-                          onSelected: (_) => onStepChange(v),
-                          visualDensity: VisualDensity.compact,
-                          materialTapTargetSize:
-                              MaterialTapTargetSize.shrinkWrap,
-                          labelPadding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                // 重新识别：手调格距/微移越调越歪时重跑自动检测重放九宫格
-                //（与图例步的重新识别对位；进入本步时自动跑过一次，改动
-                // 后想重选即点这里）
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: detecting ? null : onRedetect,
-                        icon: detecting
-                            ? const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.refresh, size: 18),
-                        label: Text(detecting ? "检测中…" : "重新识别"),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      flex: 2,
-                      child: FilledButton.icon(
-                        onPressed:
-                            pitchX > 0 && miniAnchor != null ? onGoFrame : null,
-                        icon: const Icon(Icons.arrow_forward),
-                        label: const Text("下一步：框选主体"),
-                      ),
-                    ),
-                  ],
+                ButtonSegment(
+                  value: true,
+                  icon: Icon(Icons.crop_free, size: 18),
+                  label: Text("四角对齐"),
                 ),
               ],
+              selected: {useCorner},
+              onSelectionChanged: (sel) => onSwitchMode(sel.first),
+            ),
+            const SizedBox(height: 6),
+            Text(hint, style: Theme.of(context).textTheme.bodySmall),
+            const SizedBox(height: 8),
+            if (useCorner) ...[
+              Row(
+                children: [
+                  SizedBox(
+                    width: 64,
+                    child: TextField(
+                      controller: colsCtrl,
+                      keyboardType: TextInputType.number,
+                      // 四角覆盖层读 controller 文本定行列，改动即重画
+                      onChanged: (_) => onDimChanged(),
+                      decoration: const InputDecoration(
+                        labelText: "列",
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 8),
+                    child: Text("×"),
+                  ),
+                  SizedBox(
+                    width: 64,
+                    child: TextField(
+                      controller: rowsCtrl,
+                      keyboardType: TextInputType.number,
+                      onChanged: (_) => onDimChanged(),
+                      decoration: const InputDecoration(
+                        labelText: "行",
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  OutlinedButton.icon(
+                    onPressed: onResetCorners,
+                    icon: const Icon(Icons.restart_alt, size: 18),
+                    label: const Text("重置四角"),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  Expanded(
+                    child: SwitchListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text(
+                        "偏色过大识别为空白格",
+                        style: TextStyle(fontSize: 13),
+                      ),
+                      value: blankEnable,
+                      onChanged: onBlankChanged,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: recognizing ? null : onRecognize,
+                      icon: recognizing
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.document_scanner),
+                      label: Text(recognizing ? "识别中…" : "开始识别"),
+                    ),
+                  ),
+                ],
+              ),
+            ] else ...[
+              // 紧凑 IconButton（36 逻辑点击区 + 22 图标）+ 格子大小/微移
+              // 拆两行：单行放 6 个按钮加标签在窄屏/大字体下仍会溢出
+              // （用户实测微移控件被裁出屏错误显示）
+              Row(
+                children: [
+                  const Text("格子大小"),
+                  _compactIconBtn(
+                    onPressed: pitchX > 0 ? () => onAdjustPitch(-step) : null,
+                    icon: Icons.remove_circle_outline,
+                  ),
+                  Text(pitchX > 0 ? pitchX.toStringAsFixed(2) : "--"),
+                  _compactIconBtn(
+                    onPressed: pitchX > 0 ? () => onAdjustPitch(step) : null,
+                    icon: Icons.add_circle_outline,
+                  ),
+                ],
+              ),
+              Row(
+                children: [
+                  const Text("微移"),
+                  _compactIconBtn(
+                    onPressed: pitchX > 0 ? () => onNudge(-step, 0) : null,
+                    icon: Icons.arrow_back,
+                    tooltip: "左移",
+                  ),
+                  _compactIconBtn(
+                    onPressed: pitchX > 0 ? () => onNudge(0, -step) : null,
+                    icon: Icons.arrow_upward,
+                    tooltip: "上移",
+                  ),
+                  _compactIconBtn(
+                    onPressed: pitchX > 0 ? () => onNudge(0, step) : null,
+                    icon: Icons.arrow_downward,
+                    tooltip: "下移",
+                  ),
+                  _compactIconBtn(
+                    onPressed: pitchX > 0 ? () => onNudge(step, 0) : null,
+                    icon: Icons.arrow_forward,
+                    tooltip: "右移",
+                  ),
+                ],
+              ),
+              // 步长档位：格子大小与微移共用（每次点击改变的图片像素数）。
+              // chips 单排放下 5 档（实测需 ~334dp：选中档自带对勾图标）。用 Wrap 不用
+              // Row：393dp 屏上仍是一排（布局与原 Row 一致）；内容宽只有 328dp 的场景
+              // （360dp 手机、平板横屏右侧面板）会溢出 5.6dp，改为自动折行
+              Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
+                runSpacing: 4,
+                children: [
+                  const Text("步长"),
+                  for (final (v, label) in _stepChoices)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 6),
+                      child: ChoiceChip(
+                        label: Text(
+                          label,
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                        selected: step == v,
+                        onSelected: (_) => onStepChange(v),
+                        visualDensity: VisualDensity.compact,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        labelPadding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              // 重新识别：手调格距/微移越调越歪时重跑自动检测重放九宫格
+              //（与图例步的重新识别对位；进入本步时自动跑过一次，改动
+              // 后想重选即点这里）
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: detecting ? null : onRedetect,
+                      icon: detecting
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.refresh, size: 18),
+                      label: Text(detecting ? "检测中…" : "重新识别"),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    flex: 2,
+                    child: FilledButton.icon(
+                      onPressed:
+                          pitchX > 0 && miniAnchor != null ? onGoFrame : null,
+                      icon: const Icon(Icons.arrow_forward),
+                      label: const Text("下一步：框选主体"),
+                    ),
+                  ),
+                ],
+              ),
             ],
-          ),
+          ],
         ),
-      ],
+      ),
     );
   }
 }

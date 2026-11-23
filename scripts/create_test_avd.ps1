@@ -23,12 +23,19 @@
   powershell -ExecutionPolicy Bypass -File scripts\create_test_avd.ps1
   powershell -ExecutionPolicy Bypass -File scripts\create_test_avd.ps1 -Dir E:\avd\bead_test.avd
   powershell -ExecutionPolicy Bypass -File scripts\create_test_avd.ps1 -Force   # 只重写两个 ini，不动磁盘镜像
+  powershell -ExecutionPolicy Bypass -File scripts\create_test_avd.ps1 -Name bead_tablet -Dir D:\avd\bead_tablet.avd -Width 1600 -Height 2560 -Density 320   # 平板（~800×1280dp 竖屏）
 #>
 param(
     [string]$Name    = "bead_test",
     [string]$Dir     = "D:\avd\bead_test.avd",
     [string]$SdkRoot = $env:ANDROID_HOME,
     [string]$IniDir  = "",
+    [int]$Width      = 1080,
+    [int]$Height     = 2340,
+    [int]$Density    = 440,
+
+    #初始方向（portrait/landscape）；平板 AVD 也是 portrait，运行时再旋
+    [string]$Orientation = "portrait",
     [switch]$Force
 )
 
@@ -48,6 +55,9 @@ foreach ($f in "system.img", "kernel-ranchu") {
     if (-not (Test-Path (Join-Path $sysdir $f))) {
         throw "系统镜像不完整：缺少 $sysdir\$f。先按 docs/test_setup.md 安装 system-images;android-36;google_apis;x86_64。"
     }
+}
+if ($Orientation -ne "portrait" -and $Orientation -ne "landscape") {
+    throw "Orientation 只能是 portrait 或 landscape：$Orientation"
 }
 if (-not (Test-Path ([IO.Path]::GetPathRoot($Dir)))) {
     throw "盘符不存在：$Dir。用 -Dir 指定一个剩余空间 >= 12GB 的路径。"
@@ -103,9 +113,10 @@ hw.gps=yes
 hw.gpu.enabled=yes
 hw.gpu.mode=host
 hw.keyboard=yes
-hw.lcd.density=440
-hw.lcd.height=2340
-hw.lcd.width=1080
+hw.initialOrientation=$Orientation
+hw.lcd.density=$Density
+hw.lcd.height=$Height
+hw.lcd.width=$Width
 hw.mainKeys=no
 hw.ramSize=6144
 hw.sdCard=yes

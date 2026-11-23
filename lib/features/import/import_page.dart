@@ -9,6 +9,7 @@ import '../../core/app_snack_bar.dart';
 import '../../core/decode_image.dart';
 import '../../core/palette.dart';
 import '../../core/palette_registry.dart';
+import '../../core/responsive.dart';
 import '../../core/pixel_engine.dart';
 import '../../core/quantizer.dart';
 import '../editor/editor_page.dart';
@@ -289,163 +290,222 @@ class _ImportPageState extends State<ImportPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text("图片转换")),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          // 预览区
-          AspectRatio(
-            aspectRatio: 1,
-            child: _pickedBytes == null || _decoding
-                ? Container(
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surface,
-                      border: Border.all(color: Colors.black12),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Center(
-                      // 解码转圈遮罩：与空白占位同框，避免"白屏不知发生什么"
-                      child: _decoding
-                          ? const Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                CircularProgressIndicator(),
-                                SizedBox(height: 10),
-                                Text("正在解码图片…", style: TextStyle(fontSize: 13)),
-                              ],
-                            )
-                          : const Text("选择一张图片开始"),
-                    ),
-                  )
-                : ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    // 喂重编码 JPEG（decodeForDisplay 产物），转换仍用原始字节
-                    child: Image.memory(
-                      _displayBytes!,
-                      fit: BoxFit.cover,
-                      // 解码失败必须可见（红底提示），不能静默白屏让用户"不知发生了什么"
-                      errorBuilder: (ctx, error, stack) {
-                        return ColoredBox(
-                          color: Colors.redAccent,
-                          child: Center(
-                            child: Text(
-                              "显示解码失败: $error",
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(color: Colors.white),
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: FilledButton.tonalIcon(
-                  onPressed: () => _pickImage(ImageSource.gallery),
-                  icon: const Icon(Icons.photo_library),
-                  label: const Text("相册"),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: FilledButton.tonalIcon(
-                  onPressed: () => _pickImage(ImageSource.camera),
-                  icon: const Icon(Icons.photo_camera),
-                  label: const Text("拍照"),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 20),
-
-          // 色卡选择
-          if (_palettes.length > 1) ...[
-            const Text("色卡", style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            SegmentedButton<String>(
-              segments: [
-                for (final p in _palettes)
-                  ButtonSegment(value: p.id, label: Text(p.label)),
-              ],
-              selected: {_paletteId},
-              onSelectionChanged: (sel) => _switchPalette(sel.first),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              "色号与实物拼豆对齐（如 MARD A1~M15）；切换后新作品用新色卡，旧作品按原色号打开",
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            const SizedBox(height: 12),
-          ],
-
-          // 格子数（预设正方形 + 自定义无上限宽×高）
-          const Text("格子数", style: TextStyle(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          SegmentedButton<int>(
-            segments: [
-              for (final s in _presets)
-                ButtonSegment(value: s, label: Text("$s×$s")),
-              const ButtonSegment(value: _customPreset, label: Text("自定义")),
-            ],
-            selected: {_presetValue},
-            onSelectionChanged: (sel) {
-              final v = sel.first;
-              if (v == _customPreset) {
-                _pickCustomGrid();
-              } else {
-                setState(() {
-                  _gridW = v;
-                  _gridH = v;
-                });
-              }
-            },
-          ),
-          const SizedBox(height: 8),
-          Text(_gridInfoLine(), style: Theme.of(context).textTheme.bodySmall),
-          const SizedBox(height: 12),
-
-          // 转换风格选择
-          const Text("转换风格", style: TextStyle(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          SegmentedButton<ConvertStyle>(
-            segments: const [
-              ButtonSegment(value: ConvertStyle.blocks, label: Text("色块")),
-              ButtonSegment(value: ConvertStyle.detail, label: Text("细节")),
-            ],
-            selected: {_style},
-            onSelectionChanged: (sel) => setState(() => _style = sel.first),
-          ),
-          const SizedBox(height: 4),
-          Text(switch (_style) {
-            ConvertStyle.blocks => "近似色自动合并成整块，消除孤立色点，照片/插画首选",
-            ConvertStyle.detail => "保留更多色彩层次与微小细节，适合线稿/像素画",
-          }, style: Theme.of(context).textTheme.bodySmall),
-          const SizedBox(height: 20),
-
-          FilledButton.icon(
-            onPressed: _pickedFile == null || _converting ? null : _convert,
-            icon: _converting
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.auto_awesome),
-            label: Text(_converting ? "转换中…" : "开始转换"),
-          ),
-          const SizedBox(height: 12),
-          // 构建标识：现场确认模拟器/设备上跑的是哪次构建
-          Align(
-            alignment: Alignment.centerRight,
-            child: Text(
-              "构建 $appBuildLabel",
-              style: const TextStyle(fontSize: 10, color: Colors.black26),
-            ),
-          ),
-        ],
-      ),
+      // 平板/宽屏（放得下右侧面板的宽度，见 fitsSidePanel）：预览居左、选图与参数居右
+      // 分两栏；手机竖屏与放不下面板的窄窗口走原单列滚动布局不变
+      body: fitsSidePanel(MediaQuery.sizeOf(context).width)
+          ? _buildWide(context)
+          : _buildCompact(context),
     );
+  }
+
+  /// 手机竖屏：单列滚动（原布局，组件树逐节点不变）
+  Widget _buildCompact(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        _buildPreview(context),
+        const SizedBox(height: 12),
+        _buildSourceButtons(),
+        const SizedBox(height: 20),
+        ..._buildSettings(context),
+      ],
+    );
+  }
+
+  /// 平板 / 宽屏：预览区吃掉左侧全部空间（正方形，宽高同时受限居中），
+  /// 选图按钮与全部参数收进右侧面板——单列铺满时预览方块会撑到整屏宽
+  /// （横屏 ~1250dp）、比视口还高，参数全被挤到折叠线以下。
+  /// 面板宽度固定 = kSidePanelWidth，不随窗口收窄（里面的分段按钮是按手机可用宽度排的，
+  /// 收到 ~270dp 会横向溢出）；窗口窄到放不下面板（见 fitsSidePanel）就保持单列。
+  /// 内容偏多或窗口偏矮时面板自身滚动，不挤预览
+  Widget _buildWide(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Center(child: _buildPreview(context)),
+          ),
+        ),
+        const VerticalDivider(width: 1),
+        SizedBox(
+          width: kSidePanelWidth,
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildSourceButtons(),
+                const SizedBox(height: 20),
+                ..._buildSettings(context),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 预览区（正方形；未选图时为占位框）
+  Widget _buildPreview(BuildContext context) {
+    return AspectRatio(
+      aspectRatio: 1,
+      child: _pickedBytes == null || _decoding
+          ? Container(
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surface,
+                border: Border.all(color: Colors.black12),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Center(
+                // 解码转圈遮罩：与空白占位同框，避免"白屏不知发生什么"
+                child: _decoding
+                    ? const Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          CircularProgressIndicator(),
+                          SizedBox(height: 10),
+                          Text("正在解码图片…", style: TextStyle(fontSize: 13)),
+                        ],
+                      )
+                    : const Text("选择一张图片开始"),
+              ),
+            )
+          : ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              // 喂重编码 JPEG（decodeForDisplay 产物），转换仍用原始字节
+              child: Image.memory(
+                _displayBytes!,
+                fit: BoxFit.cover,
+                // 解码失败必须可见（红底提示），不能静默白屏让用户"不知发生了什么"
+                errorBuilder: (ctx, error, stack) {
+                  return ColoredBox(
+                    color: Colors.redAccent,
+                    child: Center(
+                      child: Text(
+                        "显示解码失败: $error",
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+    );
+  }
+
+  /// 选图入口：相册 / 拍照
+  Widget _buildSourceButtons() {
+    return Row(
+      children: [
+        Expanded(
+          child: FilledButton.tonalIcon(
+            onPressed: () => _pickImage(ImageSource.gallery),
+            icon: const Icon(Icons.photo_library),
+            label: const Text("相册"),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: FilledButton.tonalIcon(
+            onPressed: () => _pickImage(ImageSource.camera),
+            icon: const Icon(Icons.photo_camera),
+            label: const Text("拍照"),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 参数区：色卡 / 格子数 / 转换风格 / 开始转换（紧凑、宽屏两套布局共用）
+  List<Widget> _buildSettings(BuildContext context) {
+    return [
+      // 色卡选择
+      if (_palettes.length > 1) ...[
+        const Text("色卡", style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        SegmentedButton<String>(
+          segments: [
+            for (final p in _palettes)
+              ButtonSegment(value: p.id, label: Text(p.label)),
+          ],
+          selected: {_paletteId},
+          onSelectionChanged: (sel) => _switchPalette(sel.first),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          "色号与实物拼豆对齐（如 MARD A1~M15）；切换后新作品用新色卡，旧作品按原色号打开",
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 12),
+      ],
+
+      // 格子数（预设正方形 + 自定义无上限宽×高）
+      const Text("格子数", style: TextStyle(fontWeight: FontWeight.bold)),
+      const SizedBox(height: 8),
+      SegmentedButton<int>(
+        segments: [
+          for (final s in _presets)
+            ButtonSegment(value: s, label: Text("$s×$s")),
+          const ButtonSegment(value: _customPreset, label: Text("自定义")),
+        ],
+        selected: {_presetValue},
+        onSelectionChanged: (sel) {
+          final v = sel.first;
+          if (v == _customPreset) {
+            _pickCustomGrid();
+          } else {
+            setState(() {
+              _gridW = v;
+              _gridH = v;
+            });
+          }
+        },
+      ),
+      const SizedBox(height: 8),
+      Text(_gridInfoLine(), style: Theme.of(context).textTheme.bodySmall),
+      const SizedBox(height: 12),
+
+      // 转换风格选择
+      const Text("转换风格", style: TextStyle(fontWeight: FontWeight.bold)),
+      const SizedBox(height: 8),
+      SegmentedButton<ConvertStyle>(
+        segments: const [
+          ButtonSegment(value: ConvertStyle.blocks, label: Text("色块")),
+          ButtonSegment(value: ConvertStyle.detail, label: Text("细节")),
+        ],
+        selected: {_style},
+        onSelectionChanged: (sel) => setState(() => _style = sel.first),
+      ),
+      const SizedBox(height: 4),
+      Text(switch (_style) {
+        ConvertStyle.blocks => "近似色自动合并成整块，消除孤立色点，照片/插画首选",
+        ConvertStyle.detail => "保留更多色彩层次与微小细节，适合线稿/像素画",
+      }, style: Theme.of(context).textTheme.bodySmall),
+      const SizedBox(height: 20),
+
+      FilledButton.icon(
+        onPressed: _pickedFile == null || _converting ? null : _convert,
+        icon: _converting
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(Icons.auto_awesome),
+        label: Text(_converting ? "转换中…" : "开始转换"),
+      ),
+      const SizedBox(height: 12),
+      // 构建标识：现场确认模拟器/设备上跑的是哪次构建
+      Align(
+        alignment: Alignment.centerRight,
+        child: Text(
+          "构建 $appBuildLabel",
+          style: const TextStyle(fontSize: 10, color: Colors.black26),
+        ),
+      ),
+    ];
   }
 }

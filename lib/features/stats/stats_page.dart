@@ -10,6 +10,7 @@ import '../../core/file_saver.dart';
 import '../../core/inventory_store.dart';
 import '../../core/palette.dart';
 import '../../core/pattern_model.dart';
+import '../../core/responsive.dart';
 import '../inventory/inventory_page.dart';
 import '../restore/restore_types.dart';
 
@@ -148,53 +149,56 @@ class _StatsPageState extends State<StatsPage> {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          Card(
-            margin: const EdgeInsets.all(12),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: [
-                  _SummaryCell(label: "总豆数", value: "$totalBeads"),
-                  _SummaryCell(label: "用色数", value: "${entries.length}"),
-                  _SummaryCell(
-                    label: "网格",
-                    value: "${widget.model.width}×${widget.model.height}",
-                  ),
-                  if (_checkMode)
+      // 平板（宽 ≥ 600dp）摘要卡与列表限宽居中，不再被拉到整屏宽；手机原样
+      body: ContentWidth(
+        child: Column(
+          children: [
+            Card(
+              margin: const EdgeInsets.all(12),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    _SummaryCell(label: "总豆数", value: "$totalBeads"),
+                    _SummaryCell(label: "用色数", value: "${entries.length}"),
                     _SummaryCell(
-                      label: "缺料",
-                      value: totalShortage > 0 ? "$totalShortage" : "无",
-                      highlight: totalShortage > 0,
+                      label: "网格",
+                      value: "${widget.model.width}×${widget.model.height}",
                     ),
-                ],
-              ),
-            ),
-          ),
-          if (_checkMode && totalShortage > 0)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  onPressed: () => _exportShoppingList(rows),
-                  icon: const Icon(Icons.shopping_cart_outlined),
-                  label: Text("导出采购单（缺 $totalShortage 颗）"),
+                    if (_checkMode)
+                      _SummaryCell(
+                        label: "缺料",
+                        value: totalShortage > 0 ? "$totalShortage" : "无",
+                        highlight: totalShortage > 0,
+                      ),
+                  ],
                 ),
               ),
             ),
-          Expanded(
-            child: entries.isEmpty
-                ? const Center(child: Text("画布为空"))
-                : ListView.builder(
-                    padding: const EdgeInsets.only(bottom: 24),
-                    itemCount: rows.length,
-                    itemBuilder: (context, i) => _buildRow(rows[i]),
+            if (_checkMode && totalShortage > 0)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () => _exportShoppingList(rows),
+                    icon: const Icon(Icons.shopping_cart_outlined),
+                    label: Text("导出采购单（缺 $totalShortage 颗）"),
                   ),
-          ),
-        ],
+                ),
+              ),
+            Expanded(
+              child: entries.isEmpty
+                  ? const Center(child: Text("画布为空"))
+                  : ListView.builder(
+                      padding: const EdgeInsets.only(bottom: 24),
+                      itemCount: rows.length,
+                      itemBuilder: (context, i) => _buildRow(rows[i]),
+                    ),
+            ),
+          ],
+        ),
       ),
     );
   }

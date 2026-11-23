@@ -22,6 +22,7 @@ import '../../core/palette.dart';
 import '../../core/palette_registry.dart';
 import '../../core/pattern_model.dart';
 import '../../core/quantizer.dart';
+import '../../core/responsive.dart';
 import '../../core/subject_detect.dart';
 import '../../core/zoom_controls.dart';
 import '../editor/editor_page.dart';
@@ -497,11 +498,20 @@ class _RestorePageState extends State<RestorePage> {
     if (last == null || _image == null || last == sz) {
       return;
     }
-    // 屏幕尺寸变化（旋转/分屏）：显示坐标以屏宽-24 定基，坐标系整体按宽
-    // 度比例重标定。存量四角/选区/锚点都是「图上的位置」，等比缩放后语
+    // 屏幕尺寸变化（旋转/分屏/窗口拖拽）：显示坐标系整体按新旧显示宽度的比例重标定
+    // （紧凑档 = 屏宽-24 之比；展开档 = 装入图区视口后的显示宽之比，平板竖屏转横屏
+    // 会跳档）。存量四角/选区/锚点都是「图上的位置」，等比缩放后语
     // 义不变；直接沿用旧坐标在宽变窄时会落到新图界外——图外手圆被
     // ClipRect 裁剪 + 平移夹限双重锁死不可点（与换图残留同症状）
-    final f = (sz.width - 24) / (last.width - 24);
+    final image = _image!;
+    final top = MediaQuery.paddingOf(context).top;
+    double displayW(Size window) => restoreDisplaySize(
+          window: window,
+          topPadding: top,
+          imageWidth: image.width,
+          imageHeight: image.height,
+        ).width;
+    final f = displayW(sz) / displayW(last);
     Rect scaleRect(Rect r) =>
         Rect.fromLTRB(r.left * f, r.top * f, r.right * f, r.bottom * f);
     setState(() {
@@ -659,12 +669,20 @@ class _RestorePageState extends State<RestorePage> {
 
   // ==================== 坐标换算 ====================
 
-  /// 图片实际显示尺寸（与布局公式一致：可用宽 = 屏幕 - 两侧 12 padding）
-  Size _displaySize() {
-    final ctx = context;
-    final displayW = MediaQuery.sizeOf(ctx).width - 24;
-    return Size(displayW, displayW * _image!.height / _image!.width);
-  }
+  /// 图片实际显示尺寸
+  ///
+  /// 紧凑档：可用宽 = 屏宽 - 两侧 12 padding（图横向铺满，与布局公式一致）。
+  /// 展开档（平板横屏/桌面，图区居左、面板靠右）：图区又宽又矮，按屏宽铺满会让竖版
+  /// 图纸高出视口数倍（minScale=1 缩不回去，底部的图例带够不着）——改为
+  /// 整图等比装入图区视口（宽高同时受限，整幅可见）。
+  /// 两档都只由窗口尺寸决定、与面板展开/步骤切换无关：显示坐标系在一幅
+  /// 图的生命周期内保持稳定，存量选区/锚点/四角不会因面板高度变化而错位
+  Size _displaySize() => restoreDisplaySize(
+        window: MediaQuery.sizeOf(context),
+        topPadding: MediaQuery.paddingOf(context).top,
+        imageWidth: _image!.width,
+        imageHeight: _image!.height,
+      );
 
   // ==================== 图例区自动检测 ====================
 
@@ -3262,4 +3280,34 @@ class _CancelBusyDialogState extends State<_CancelBusyDialog> {
       ],
     );
   }
+}
+
+/// 图区里图片的显示尺寸（[RestorePage] 的 _displaySize；抽成顶层纯函数
+/// 便于单测，不用在测试环境里解图 / 跑 isolate）。
+///
+/// 紧凑档：可用宽 = 窗口宽 - 两侧 12 padding（图横向铺满，与布局公式一致）。
+/// 展开档（平板横屏/桌面，图区居左、面板靠右，见 StageFrame）：图区又宽又矮，按
+/// 窗口宽铺满会让竖版图纸高出视口数倍（minScale=1 缩不回去，底部的
+/// 图例带够不着）——改为整图等比装入图区视口（宽高同时受限，整幅可见）。
+/// 两档都只由窗口尺寸决定、与面板展开/步骤切换无关：显示坐标系在一幅
+/// 图的生命周期内保持稳定，存量选区/锚点/四角不会因面板高度变化而错位。
+///
+/// [window] 窗口逻辑尺寸；[topPadding] 状态栏高度（AppBar 占的高度 = 它 + kToolbarHeight）；
+/// [imageWidth]/[imageHeight] 原图像素尺寸。
+Size restoreDisplaySize({
+  required Size window,
+  required double topPadding,
+  required int imageWidth,
+  required int imageHeight,
+}) {
+  final compactW = window.width - 24;
+  if (!isExpandedSize(window)) {
+    return Size(compactW, compactW * imageHeight / imageWidth);
+  }
+  // 图区视口 = 窗口去掉右侧面板、分隔线、图区 padding(12×2)、AppBar、缩放条
+  final stageW = window.width - kSidePanelWidth - 1 - 24;
+  final stageH =
+      window.height - topPadding - kToolbarHeight - kZoomStripHeight - 24;
+  final k = math.min(stageW / imageWidth, stageH / imageHeight);
+  return Size(imageWidth * k, imageHeight * k);
 }

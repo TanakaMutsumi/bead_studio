@@ -13,6 +13,7 @@ import '../../core/grid_ops.dart';
 import '../../core/palette.dart';
 import '../../core/pattern_model.dart';
 import '../../core/quantizer.dart';
+import '../../core/responsive.dart';
 import '../../core/zoom_controls.dart';
 import '../palette_picker.dart';
 import '../preview/preview_page.dart';
@@ -713,10 +714,12 @@ class _EditorPageState extends State<EditorPage> {
                       ),
                     ),
                   if (_selRectCells != null)
+                    // 选区条宽度随内容：中等档以上不再左右拉满（平板上会变成一条
+                    // 横贯整屏的空长条）；手机竖屏保持原样铺开
                     Positioned(
                       top: 6,
                       left: 10,
-                      right: 10,
+                      right: isMediumWidth(context) ? null : 10,
                       child: _floatCard(_buildSelectionBar()),
                     ),
                 ],

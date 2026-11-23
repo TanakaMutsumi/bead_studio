@@ -26,6 +26,13 @@ class BeadStudioApp extends StatelessWidget {
         useMaterial3: true,
         brightness: Brightness.light,
         fontFamily: "NotoSansSC", // 本地打包字体，避免 web 端从 gstatic 拉中文分片被墙
+        // 对话框限宽 560（M3 规范值）：Dialog 默认约束只有 minWidth 280、
+        // 没有上限，平板横屏上每个 AlertDialog 都会被拉到「屏宽 − 80」
+        // （~1200dp）。手机上对话框本就窄于 560，不受影响。整屏型的原图
+        // 核对弹窗（cell_preview）自带 constraints 不走这条
+        dialogTheme: const DialogThemeData(
+          constraints: BoxConstraints(minWidth: 280, maxWidth: 560),
+        ),
       ),
       // Android 15 起强制 edge-to-edge：窗口会画到三键/手势导航栏后面，
       // 内容被系统导航栏挡住。全局包一层 SafeArea 让整个导航区（含各页面、

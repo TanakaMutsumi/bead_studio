@@ -6,6 +6,10 @@ description: 拼豆 App（bead_studio）五步还原全流程自动化测试：a
 # 拼豆 App 全流程测试（full-flow-test）
 
 > 多轮实测沉淀的可复用操作手册（模拟器 emulator-5554，1080×2340）。
+> **平板**：平板形态用 `bead_tablet` AVD（1600×2560@320，默认横屏 1280×800dp，
+> 建法见 test_setup.md §6）——本文坐标表按 bead_test 实测，**对平板不通用**；
+> 平板上驱动 UI 先 screencap + PIL 色块分析定位控件再 tap，系统选择器可用
+> `uiautomator dump` 拿控件矩形。
 > **每次走流程前先读本文件**；发现问题/修复后**必须回来更新 §7 修改记录与相关章节**。
 > 问题清单跟踪在 `.test/full_flow_test.md`（本文件只管怎么测，那文件管还有什么没修）。
 

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/inventory_store.dart';
 import '../../core/palette.dart';
+import '../../core/responsive.dart';
 
 /// 珠子库存管理页：每色库存颗数的清点/入库/出库，供缺料校验用
 class InventoryPage extends StatefulWidget {
@@ -162,7 +163,9 @@ class _InventoryPageState extends State<InventoryPage> {
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : Column(
+          // 平板（宽 ≥ 600dp）搜索框与列表限宽居中，不再被拉到整屏宽；手机原样
+          : ContentWidth(
+              child: Column(
               children: [
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
@@ -231,6 +234,7 @@ class _InventoryPageState extends State<InventoryPage> {
                   ),
                 ),
               ],
+            ),
             ),
     );
   }

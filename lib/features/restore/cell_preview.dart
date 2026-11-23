@@ -71,6 +71,9 @@ class _CellPreviewDialogState extends State<_CellPreviewDialog> {
     return Dialog(
       backgroundColor: Colors.black87,
       insetPadding: EdgeInsets.zero,
+      // 整屏型弹窗：不套主题的对话框限宽（平板适配给普通对话框封了
+      // 560 上限；这里要看清原图格子，保持铺满）
+      constraints: const BoxConstraints(),
       child: Column(
         children: [
           SafeArea(

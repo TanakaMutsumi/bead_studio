@@ -267,6 +267,28 @@ powershell -ExecutionPolicy Bypass -File scripts\create_test_avd.ps1 -Dir E:\avd
 | `hw.mainKeys` | no | 屏内导航栏。手势条在 y=2304–2311，与主开发机截图一致 |
 | `tag.id` | google_apis | 可以 `adb root` |
 
+#### 平板模拟器 bead_tablet（可选，平板适配调试用）
+
+同一脚本加参数即可再建一台平板形态的 AVD（共用同一系统镜像，不额外下载）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\create_test_avd.ps1 -Name bead_tablet -Dir D:\avd\bead_tablet.avd -Width 1600 -Height 2560 -Density 320 -Orientation landscape
+```
+
+1600×2560@320 = 800×1280dp（平板竖屏）；`-Orientation landscape` 让开机即横屏
+（2560×1600 = 1280×800dp——平板横屏是宽屏布局的主战场）。开机后的验收与 §6
+相同（`wm size` 应为 1600x2560，`wm density` 320）。运行中把已开机的模拟器转
+方向：`adb emu rotate` 对无皮肤 AVD 常常无效，用系统设置强制——
+
+```bash
+$ADB shell settings put system accelerometer_rotation 0
+$ADB shell settings put system user_rotation 1   # 0=竖屏 1=横屏（90°）
+```
+
+平板的坐标与 1080×2340 的 bead_test **不通用**（full-flow-test.md 的坐标表只
+适用于 bead_test）；在平板上驱动 UI 先 `screencap` 落图用 PIL 色块分析定位再
+`input tap`，系统选择器（相册）可用 `uiautomator dump` 拿控件矩形。
+
 Windows 用户名含中文时，可以先设用户环境变量 `ANDROID_AVD_HOME=D:\avd` 再跑脚本，`.ini` 会放到
 那里而不是用户目录（模拟器 37.1.11 实测认这个变量）。
 
@@ -388,6 +410,8 @@ $ADB shell "content query --uri content://media/external/images/media --projecti
 | 构建报 `Could not get resource 'https://dl.google.com/dl/android/maven2/...'`，一挂十几分钟 | maven.google.com 直连不通的机器（2026-11-22 新测试机实测），落到 `google()` 直连的 artifact 全部超时。两处仓库表仓库级镜像盖不到：①主工程 pluginManagement 原来只有阿里云 central/gradle-plugin，AGP 系插件不在其中；②Flutter SDK 自带 gradle 工程（included build，settings 里 `FAIL_ON_PROJECT_REPOS`，init 脚本加 project 仓库会直接炸） | ①主工程 `android/settings.gradle.kts` pluginManagement 已补阿里云 google 镜像（2026-11-22 入库，后续机器无需再做）；②机器本地改 `D:\flutter\packages\flutter_tools\gradle\settings.gradle.kts`，dependencyResolutionManagement.repositories 前插 `maven("https://maven.aliyun.com/repository/google")` 和 `central`——**flutter 升级会还原此文件，要重加**；③`%USERPROFILE%\.gradle\gradle.properties` 加 `org.gradle.internal.http.connectionTimeout=15000` / `socketTimeout=15000` 让死源快速失败 |
 | `avdmanager create avd` 报 `Cannot invoke IdDisplay.getId() because "tag" is null` | 旧版 cmdline-tools 读不懂新版镜像的元数据 | 别用 avdmanager，用 `scripts\create_test_avd.ps1` |
 | PowerShell 里 `adb exec-out screencap -p > x.png` 得到打不开的 PNG | PowerShell 5.1 的 `>` 按文本处理，毁掉二进制 | 截图在 Git Bash 里做，或按 full-flow-test.md §4.2：先 `adb shell screencap -p /sdcard/s.png` 再 `adb pull` |
+| `flutter run` 热重载报 `Error while starting Kernel isolate task`（热重启 R 正常） | 用户目录含中文时 DevFS 增量产物落在中文 %TEMP% 路径下，VM 的 Kernel isolate 读不了 | 给 flutter 进程把 `TEMP`/`TMP` 指到纯英文目录再跑（2026-11-23 实测有效；`.test/run_driver.py` 已内置） |
+| 平板等不同分辨率模拟器上坐标表失效 | full-flow-test.md 坐标表按 bead_test 的 1080×2340@440 实测 | 平板（bead_tablet，1280×800dp 横屏）先 screencap 用 PIL 色块分析定位控件再 `input tap`；相册选择器可用 `uiautomator dump` |
 
 ## 12. 主开发机参考环境
 

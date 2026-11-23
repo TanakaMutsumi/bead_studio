@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../restore_types.dart';
+import 'stage_frame.dart';
 
 /// 阶段③：框选主体区域（九宫格已定格距，本步只做框选——拖画/挪框/
 /// 把手调大小）。选区四边吸附格线（相位锚定九宫格锚点）：框的一切
@@ -55,78 +56,67 @@ class FrameStep extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Expanded(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: imageStage(
-              sel: sel,
-              onSel: onSel,
-              overlay: overlay,
-            ),
-          ),
-        ),
-        zoomStrip(
-          viewerCtrl,
-          displaySize,
-          viewport: stageViewSize,
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(hint, style: Theme.of(context).textTheme.bodySmall),
+    return StageFrame(
+      stage: imageStage(sel: sel, onSel: onSel, overlay: overlay),
+      zoomStrip: zoomStrip(
+        viewerCtrl,
+        displaySize,
+        viewport: stageViewSize,
+      ),
+      panel: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(hint, style: Theme.of(context).textTheme.bodySmall),
+            const SizedBox(height: 8),
+            // 显式自动框选入口（与①「自动框选图例区」同范式）：进本步已
+            // 自动尝试过一次，检测失败/想重跑时点这里（有选区后隐藏——
+            // 重选直接拖新框覆盖即可）
+            if (showAutoSelect) ...[
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: onAutoSelect,
+                  icon: const Icon(Icons.auto_awesome, size: 18),
+                  label: const Text("自动框选主体"),
+                ),
+              ),
               const SizedBox(height: 8),
-              // 显式自动框选入口（与①「自动框选图例区」同范式）：进本步已
-              // 自动尝试过一次，检测失败/想重跑时点这里（有选区后隐藏——
-              // 重选直接拖新框覆盖即可）
-              if (showAutoSelect) ...[
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: onAutoSelect,
-                    icon: const Icon(Icons.auto_awesome, size: 18),
-                    label: const Text("自动框选主体"),
+            ],
+            Row(
+              children: [
+                Expanded(
+                  child: SwitchListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      "偏色过大识别为空白格",
+                      style: TextStyle(fontSize: 13),
+                    ),
+                    value: blankEnable,
+                    onChanged: onBlankChanged,
                   ),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: recognizing ? null : onRecognize,
+                    icon: recognizing
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.document_scanner),
+                    label: Text(recognizing ? "识别中…" : "开始识别"),
+                  ),
+                ),
               ],
-              Row(
-                children: [
-                  Expanded(
-                    child: SwitchListTile(
-                      dense: true,
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text(
-                        "偏色过大识别为空白格",
-                        style: TextStyle(fontSize: 13),
-                      ),
-                      value: blankEnable,
-                      onChanged: onBlankChanged,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed: recognizing ? null : onRecognize,
-                      icon: recognizing
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.document_scanner),
-                      label: Text(recognizing ? "识别中…" : "开始识别"),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
-      ],
+      ),
     );
   }
 }
