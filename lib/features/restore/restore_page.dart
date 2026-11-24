@@ -1199,7 +1199,9 @@ class _RestorePageState extends State<RestorePage> {
       return null;
     }
     final ds = _displaySize();
-    return Offset((vs.width - ds.width) / 2 + sel.center.dx, sel.center.dy);
+    final ox = (vs.width - ds.width) / 2;
+    final oy = ds.height > vs.height ? 0.0 : (vs.height - ds.height) / 2;
+    return Offset(ox + sel.center.dx, oy + sel.center.dy);
   }
 
   // ==================== 四角对齐 ====================
@@ -2301,13 +2303,18 @@ class _RestorePageState extends State<RestorePage> {
                       },
                       // Align 在 IV(constrained:false) 的无界约束下会收缩成子尺寸、对齐失效：
                       // 先用视口尺寸的 SizedBox 把约束变有界再居中。展开档整图
-                      // 装入后横向居中（不再贴左边留一大块空白）；手机上图宽
-                      // =视口宽、垂直仍顶部对齐，逐像素不变
+                      // 图在图区内居中：横向恒居中；纵向图矮于视口时上下
+                      // 留白均分（2026-11-24 用户要求），高出视口时顶对齐
+                      // （顶部可见、下方溢出可平移看回 = 手机原语义）。
+                      // 夹限与选框锚点换算同规则（clampTranslation /
+                      // _selectionAnchor），四处必须一致
                       child: SizedBox(
                         width: cons.maxWidth,
                         height: cons.maxHeight,
                         child: Align(
-                          alignment: Alignment.topCenter,
+                          alignment: ds.height > cons.maxHeight
+                              ? Alignment.topCenter
+                              : Alignment.center,
                           child: Stack(
                             children: [
                               Image.memory(
@@ -2700,10 +2707,8 @@ class _RestorePageState extends State<RestorePage> {
     var dx = center.dx - (c0.dx - t0.x) * (s1 / s0);
     var dy = center.dy - (c0.dy - t0.y) * (s1 / s0);
     final dsz = _displaySize();
-    final minX = math.min(0.0, cons.maxWidth - dsz.width * s1);
-    final minY = math.min(0.0, cons.maxHeight - dsz.height * s1);
-    dx = dx.clamp(minX, 0.0).toDouble();
-    dy = dy.clamp(minY, 0.0).toDouble();
+    dx = ZoomControls.clampTranslation(dx, cons.maxWidth, dsz.width * s1);
+    dy = ZoomControls.clampTranslation(dy, cons.maxHeight, dsz.height * s1);
     // 直设矩阵元（translate/scale 已废弃）：纯平移 + 等比缩放，无旋转
     final m = Matrix4.identity();
     m.setEntry(0, 0, s1);
@@ -2773,10 +2778,16 @@ class _RestorePageState extends State<RestorePage> {
     final cur = _viewerCtrl.value;
     final scale = cur.storage[0];
     final ds = _displaySize();
-    final minX = math.min(0.0, cons.maxWidth - ds.width * scale);
-    final minY = math.min(0.0, cons.maxHeight - ds.height * scale);
-    final dx = (cur.getTranslation().x + delta.dx).clamp(minX, 0.0).toDouble();
-    final dy = (cur.getTranslation().y + delta.dy).clamp(minY, 0.0).toDouble();
+    final dx = ZoomControls.clampTranslation(
+      cur.getTranslation().x + delta.dx,
+      cons.maxWidth,
+      ds.width * scale,
+    );
+    final dy = ZoomControls.clampTranslation(
+      cur.getTranslation().y + delta.dy,
+      cons.maxHeight,
+      ds.height * scale,
+    );
     // 直设矩阵元（translate/scale 已废弃）：纯平移 + 等比缩放，无旋转
     final m = Matrix4.identity();
     m.setEntry(0, 0, scale);
@@ -2797,12 +2808,16 @@ class _RestorePageState extends State<RestorePage> {
     final cur = _viewerCtrl.value;
     final scale = cur.storage[0];
     final ds = _displaySize();
-    final minX = math.min(0.0, cons.maxWidth - ds.width * scale);
-    final minY = math.min(0.0, cons.maxHeight - ds.height * scale);
-    final dx =
-        (cur.getTranslation().x - s.scrollDelta.dx).clamp(minX, 0.0).toDouble();
-    final dy =
-        (cur.getTranslation().y - s.scrollDelta.dy).clamp(minY, 0.0).toDouble();
+    final dx = ZoomControls.clampTranslation(
+      cur.getTranslation().x - s.scrollDelta.dx,
+      cons.maxWidth,
+      ds.width * scale,
+    );
+    final dy = ZoomControls.clampTranslation(
+      cur.getTranslation().y - s.scrollDelta.dy,
+      cons.maxHeight,
+      ds.height * scale,
+    );
     // 直设矩阵元（translate/scale 已废弃）：纯平移 + 等比缩放，无旋转
     final m = Matrix4.identity();
     m.setEntry(0, 0, scale);

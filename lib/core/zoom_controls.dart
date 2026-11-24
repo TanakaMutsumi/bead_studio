@@ -160,10 +160,8 @@ class ZoomControls extends StatelessWidget {
     // 屏幕点 p = t + s*x；锚点 c 的内容保持在 c：t1 = c - (c - t0) * s1/s0
     var dx = c.dx - (c.dx - t0.x) * (s1 / s0);
     var dy = c.dy - (c.dy - t0.y) * (s1 / s0);
-    final minX = math.min(0.0, viewport.width - content.width * s1);
-    final minY = math.min(0.0, viewport.height - content.height * s1);
-    dx = dx.clamp(minX, 0.0).toDouble();
-    dy = dy.clamp(minY, 0.0).toDouble();
+    dx = clampTranslation(dx, viewport.width, content.width * s1);
+    dy = clampTranslation(dy, viewport.height, content.height * s1);
     // 直设矩阵元（translate/scale 已废弃）：纯平移 + 等比缩放，无旋转
     final m = Matrix4.identity();
     m.setEntry(0, 0, s1);
@@ -172,6 +170,19 @@ class ZoomControls extends StatelessWidget {
     m.setEntry(1, 3, dy);
     controller.value = m;
     return true;
+  }
+
+  /// 单轴平移夹限：内容超出视口时夹在 [视口-内容, 0]（可见边界到原点）；
+  /// 内容小于视口时钳在居中位 ((视口-内容)/2)——图在图区内居中显示的布局
+  /// （还原页宽屏 contain-fit）缩放/平移后不会弹回左上角。还原页捏合/
+  /// 滚轮/双指平移的手势夹限同用本函数
+  static double clampTranslation(
+      double value, double viewport, double content) {
+    final overflow = viewport - content;
+    if (overflow > 0) {
+      return overflow / 2;
+    }
+    return value.clamp(overflow, 0.0).toDouble();
   }
 
   void _zoom(BuildContext ctx, double factor) {
