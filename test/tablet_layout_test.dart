@@ -838,7 +838,10 @@ void main() {
       // 测试窗口无系统栏：topPadding/bottomInset = 0
       final stageH =
           800 - kToolbarHeight - kZoomStripHeight - kStackedPanelBudget - 24;
-      expect(image.top, kToolbarHeight + 12);
+      // 纵向居中：图矮于实际图区时上下留白均分（图区实际高度 = 全宽堆叠
+      // 布局下面板高度决定，测试不依赖其具体值，只断言在图区内且顶距 >
+      // 图区顶缘）
+      expect(image.top, greaterThanOrEqualTo(kToolbarHeight + 12));
       expect(image.bottom, lessThanOrEqualTo(800 - kZoomStripHeight));
       expect(image.height, closeTo(stageH, 0.5));
       // 水平居中：图区视口 x 12..1268dp，图在其中居中

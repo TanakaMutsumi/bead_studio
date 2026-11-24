@@ -314,6 +314,26 @@ class _RestorePageState extends State<RestorePage> {
   ///< 图区视口尺寸速记（_imageStage 内 LayoutBuilder 赋值）——缩放
   ///< 按钮外置后不在画布 Stack 内，探取失效，须显式传给 ZoomControls
 
+  var _needsCentering = false;
+
+  ///< 图区变换待居中：载图后图区首帧布局完成时置居中矩阵（LayoutBuilder
+  ///< 内消费；此时才知道视口尺寸）
+
+  /// 图区当前窗口下的「整幅居中」矩阵：scale 1 + 平移到居中位
+  /// （图超出图区的轴上平移 0 = 顶/左对齐，与手机原语义一致）。
+  /// 视口未就绪时返回恒等矩阵
+  Matrix4 _centeredImageTransform() {
+    final vs = _stageViewSize;
+    final m = Matrix4.identity();
+    if (vs == Size.zero || _image == null) {
+      return m;
+    }
+    final ds = _displaySize();
+    m.setEntry(0, 3, ZoomControls.clampTranslation(0, vs.width, ds.width));
+    m.setEntry(1, 3, ZoomControls.clampTranslation(0, vs.height, ds.height));
+    return m;
+  }
+
   ///< 复核总览变换（还原全幅按钮复位用）
   final GlobalKey _viewerKey = GlobalKey();
 
@@ -516,6 +536,9 @@ class _RestorePageState extends State<RestorePage> {
     final f = displayW(sz) / displayW(last);
     Rect scaleRect(Rect r) =>
         Rect.fromLTRB(r.left * f, r.top * f, r.right * f, r.bottom * f);
+    // 窗口变了，居中矩阵也随新视口重算（图区 LayoutBuilder 消费标记）；
+    // 用户的放大/平移视角在旋转/分屏后回归整幅居中
+    _needsCentering = true;
     setState(() {
       if (_cornerPts != null) {
         _cornerPts = [
@@ -633,7 +656,9 @@ class _RestorePageState extends State<RestorePage> {
         _cellSrc?.dispose();
         _cellSrc = null;
         _decoding = false;
-        // 换图重置图区变换（上一张图的缩放/平移不带到新图）
+        // 换图重置图区变换（上一张图的缩放/平移不带到新图）；
+        // 居中矩阵待图区首帧布局后由 LayoutBuilder 落地
+        _needsCentering = true;
         _viewerCtrl.value = Matrix4.identity();
         _stage = RestoreStage.legend;
       });
@@ -1183,6 +1208,7 @@ class _RestorePageState extends State<RestorePage> {
           maxScale: maxScale,
           anchor:
               selection == null ? null : () => _selectionAnchor(selection()),
+          fitAllTransform: _centeredImageTransform,
         ),
       ),
     );
@@ -1194,14 +1220,14 @@ class _RestorePageState extends State<RestorePage> {
     if (sel == null) {
       return null;
     }
-    final vs = _stageViewSize;
-    if (vs == Size.zero) {
-      return null;
-    }
-    final ds = _displaySize();
-    final ox = (vs.width - ds.width) / 2;
-    final oy = ds.height > vs.height ? 0.0 : (vs.height - ds.height) / 2;
-    return Offset(ox + sel.center.dx, oy + sel.center.dy);
+    // 选框中心此刻在屏幕上的位置 = 变换后的坐标——缩放保持它不动，
+    // 即「以选框中心为焦点」
+    final cur = _viewerCtrl.value;
+    final scale = cur.storage[0];
+    return Offset(
+      cur.storage[12] + scale * sel.center.dx,
+      cur.storage[13] + scale * sel.center.dy,
+    );
   }
 
   // ==================== 四角对齐 ====================
@@ -1863,7 +1889,7 @@ class _RestorePageState extends State<RestorePage> {
         _selDisplay = auto;
       }
     });
-    _viewerCtrl.value = Matrix4.identity();
+    _viewerCtrl.value = _centeredImageTransform();
     if (auto != null) {
       AppSnackBar.show(context, "已自动框选主体，可拖动调整");
     }
@@ -1916,7 +1942,7 @@ class _RestorePageState extends State<RestorePage> {
     // 回框选步同样全图化（与 _goFrame 同理由：带着别步的放大视角
     // 进框选，主体不在视野里）
     if (prev == RestoreStage.frame) {
-      _viewerCtrl.value = Matrix4.identity();
+      _viewerCtrl.value = _centeredImageTransform();
     }
   }
 
@@ -2262,10 +2288,19 @@ class _RestorePageState extends State<RestorePage> {
             // 速记图区视口尺寸（无 setState，build 期间赋值）——缩放
             // 按钮已外置出画布 Stack，边界计算须显式传视口
             _stageViewSize = Size(cons.maxWidth, cons.maxHeight);
+            if (_needsCentering) {
+              _needsCentering = false;
+              _viewerCtrl.value = _centeredImageTransform();
+            }
             return InteractiveViewer(
               maxScale: kPhotoMaxZoom,
               minScale: 1,
               transformationController: _viewerCtrl,
+              // 边界无限：宽屏 contain-fit 后图小于视口（scale=1 也盖不住
+              // 视口），默认零边距会让 IV 不断改写控制器矩阵来强求「盖住
+              // 视口」——倍率自行回退、图被顶出屏幕。缩放/平移的合法范围
+              // 由 ZoomControls.clampTranslation 与手势夹限接管
+              boundaryMargin: const EdgeInsets.all(double.infinity),
               // 滚轮缩放禁用开关：InteractiveViewer 滚轮缩放量 = exp(-dy/scaleFactor)，
               // 取无穷大恒为 1（源码 _receivedPointerSignal），滚轮成无操作——
               // 平移浏览交给 child 内 Listener（_onImgPointerSignal）；scaleFactor
@@ -2297,60 +2332,51 @@ class _RestorePageState extends State<RestorePage> {
                     onPointerPanZoomStart: (_) => _onStagePanZoomStart(onSel),
                     child: GestureDetector(
                       // 双击复位视角：滚轮平移把图（连同选区框）滚出视口后，
-                      // 框没被删只是看不见——双击立即回到全图视角找回
+                      // 框没被删只是看不见——双击回到居中视角找回
                       onDoubleTap: () {
-                        _viewerCtrl.value = Matrix4.identity();
+                        _viewerCtrl.value = _centeredImageTransform();
                       },
-                      // Align 在 IV(constrained:false) 的无界约束下会收缩成子尺寸、对齐失效：
-                      // 先用视口尺寸的 SizedBox 把约束变有界再居中。展开档整图
-                      // 图在图区内居中：横向恒居中；纵向图矮于视口时上下
-                      // 留白均分（2026-11-24 用户要求），高出视口时顶对齐
-                      // （顶部可见、下方溢出可平移看回 = 手机原语义）。
-                      // 夹限与选框锚点换算同规则（clampTranslation /
-                      // _selectionAnchor），四处必须一致
-                      child: SizedBox(
-                        width: cons.maxWidth,
-                        height: cons.maxHeight,
-                        child: Align(
-                          alignment: ds.height > cons.maxHeight
-                              ? Alignment.topCenter
-                              : Alignment.center,
-                          child: Stack(
-                            children: [
-                              Image.memory(
-                                _displayBytes ?? _bytes!,
-                                width: ds.width,
-                                height: ds.height,
-                                fit: BoxFit.fill,
-                                // 解码失败必须可见（红底提示），不能静默白屏让用户"不知发生了什么"
-                                errorBuilder: (ctx, error, stack) {
-                                  return ColoredBox(
-                                    color: Colors.redAccent,
-                                    child: Center(
-                                      child: Text(
-                                        "显示解码失败: $error",
-                                        textAlign: TextAlign.center,
-                                        style: const TextStyle(
-                                            color: Colors.white),
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                              if (sel != null && sel.width > 2)
-                                Positioned.fill(
-                                  child: CustomPaint(
-                                    painter: SelPainter(sel, ctrl: _viewerCtrl),
+                      // 图在图区内居中（横向恒居中；纵向图矮于图区时上下留白
+                      // 均分、高出图区时顶对齐 = 手机原语义）不靠布局实现——
+                      // IV(constrained:false) 的 child 若包一层视口大小的
+                      // SizedBox，变换缩放的就是「盒子」而不是图，锚点缩放的
+                      // 数学（content=图）与渲染不一致，点缩放图会飞出屏幕。
+                      // 居中改由矩阵平移表达：_centeredImageTransform 在载图/
+                      // 双击/进出步骤时设置，ZoomControls.clampTranslation
+                      // （内容小于视口=钳在居中位）保持后续缩放/平移一致，
+                      // _selectionAnchor 按当前矩阵换算选框屏幕坐标
+                      child: Stack(
+                        children: [
+                          Image.memory(
+                            _displayBytes ?? _bytes!,
+                            width: ds.width,
+                            height: ds.height,
+                            fit: BoxFit.fill,
+                            // 解码失败必须可见（红底提示），不能静默白屏让用户"不知发生了什么"
+                            errorBuilder: (ctx, error, stack) {
+                              return ColoredBox(
+                                color: Colors.redAccent,
+                                child: Center(
+                                  child: Text(
+                                    "显示解码失败: $error",
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(color: Colors.white),
                                   ),
                                 ),
-                              if (overlay != null)
-                                Positioned.fill(
-                                  child:
-                                      CustomPaint(painter: overlay, size: ds),
-                                ),
-                            ],
+                              );
+                            },
                           ),
-                        ),
+                          if (sel != null && sel.width > 2)
+                            Positioned.fill(
+                              child: CustomPaint(
+                                painter: SelPainter(sel, ctrl: _viewerCtrl),
+                              ),
+                            ),
+                          if (overlay != null)
+                            Positioned.fill(
+                              child: CustomPaint(painter: overlay, size: ds),
+                            ),
+                        ],
                       ),
                     ),
                   );

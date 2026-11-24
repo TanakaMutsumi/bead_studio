@@ -112,6 +112,12 @@ class ZoomControls extends StatelessWidget {
 
   final Offset? Function()? anchor;
 
+  /// 「还原全幅」的目标变换（null = 恒等矩阵）
+  final Matrix4 Function()? fitAllTransform;
+
+  ///< 「还原全幅」的目标变换（null = 恒等矩阵=回到左上原点）。还原页
+  ///< contain-fit 的图在 scale 1 时小于视口且应居中，故传居中矩阵
+
   ///< 缩放锚点提供者（**视口坐标**；null/返回 null = 以视口中心为锚）。
   /// 还原页传当前选框中心（显示坐标经 topCenter 放置换算），实现
   /// 「放大/缩小以选框中心为焦点」
@@ -135,6 +141,7 @@ class ZoomControls extends StatelessWidget {
     this.maxScale = 10,
     this.onChanged,
     this.anchor,
+    this.fitAllTransform,
     this.viewportSize,
     this.fitAllTooltip = "还原全幅（缩放/平移复位）",
   });
@@ -201,7 +208,7 @@ class ZoomControls extends StatelessWidget {
   }
 
   void _fitAll() {
-    controller.value = Matrix4.identity();
+    controller.value = fitAllTransform?.call() ?? Matrix4.identity();
     onChanged?.call();
   }
 
